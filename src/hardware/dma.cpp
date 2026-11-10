@@ -267,9 +267,10 @@ void DmaController::WriteControllerReg(const io_port_t reg,
 		break;
 	case 0xb: /* Mode Register */
 		UpdateEMSMapping();
-		chan                 = GetChannel(val & 3);
-		chan->is_autoiniting = (val & 0x10) > 0;
-		chan->is_incremented = (val & 0x20) > 0;
+		chan                      = GetChannel(val & 3);
+		chan->is_device_to_memory = (val & 0x0c) == 0x04;
+		chan->is_autoiniting      = (val & 0x10) > 0;
+		chan->is_incremented      = (val & 0x20) > 0;
 		// TODO Maybe other bits?
 		break;
 	case 0xc: /* Clear Flip/Flip */ flipflop = false; break;
@@ -504,6 +505,7 @@ void DmaChannel::Reset()
 	page_num = 0;
 
 	is_incremented             = true;
+	is_device_to_memory        = false;
 	is_autoiniting             = false;
 	is_masked                  = true;
 	has_reached_terminal_count = false;
