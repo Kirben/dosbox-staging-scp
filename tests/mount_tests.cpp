@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 
 #include "dos/programs/mount.h"
+#include "dos/programs/mount_common.h"
 
 #include <gtest/gtest.h>
 
@@ -2177,7 +2178,7 @@ protected:
 
 	static std::shared_ptr<imageDisk> BiosDiskAt(const char drive_letter)
 	{
-		return imageDiskList.at(drive_index(drive_letter));
+		return BIOS_GetDisk(drive_index(drive_letter));
 	}
 
 	static void ExpectHddGeometry(imageDisk& disk)
@@ -2463,6 +2464,27 @@ TEST_F(MountDiskImageTest, FloppyImageInHomeMountedAsDriveA)
 	ASSERT_TRUE(BiosDiskAt('A'));
 	EXPECT_EQ(BiosDiskAt('A'), drive->loadedDisk);
 	EXPECT_FALSE(BiosDiskAt('A')->hardDrive);
+}
+
+TEST_F(MountDiskImageTest, FloppySwapAndEjectUpdateTheBiosSlot)
+{
+	write_floppy_image(P("first.img"), "FIRST");
+	write_floppy_image(P("second.ima"), "SECOND");
+
+	ASSERT_TRUE(Mount("A " + P("first.img") + " " + P("second.ima") +
+	                  " -t floppy"));
+	const auto first = BiosDiskAt('A');
+	ASSERT_TRUE(first);
+
+	DriveManager::CycleDisks(drive_index('A'), false);
+	const auto second = std::dynamic_pointer_cast<fatDrive>(DriveAt('A'));
+	ASSERT_TRUE(second);
+	ASSERT_NE(first, second->loadedDisk);
+	EXPECT_EQ(BiosDiskAt('A'), second->loadedDisk);
+
+	UnmountHelper('A');
+	EXPECT_FALSE(DriveAt('A'));
+	EXPECT_FALSE(BiosDiskAt('A'));
 }
 
 TEST_F(MountDiskImageTest, FloppyImageInHomeMountedAsDriveAWithLabel)

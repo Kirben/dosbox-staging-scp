@@ -155,6 +155,8 @@ void BOOT::Run(void)
 	FILE *usefile_1 = nullptr;
 	FILE *usefile_2 = nullptr;
 	Bitu i = 0;
+	BiosBootDisks boot_disks = {};
+	size_t boot_disk_count   = 0;
 	uint32_t floppysize = 0;
 	uint32_t rombytesize_1 = 0;
 	uint32_t rombytesize_2 = 0;
@@ -232,12 +234,12 @@ void BOOT::Run(void)
 				continue;
 			}
 
-			if (imageDiskList[0] || imageDiskList[1]) {
+			if (BIOS_GetDisk(0) || BIOS_GetDisk(1)) {
 				WriteOut(MSG_Get("PROGRAM_BOOT_IMAGE_MOUNTED"));
 				return;
 			}
 
-			if (i >= MAX_SWAPPABLE_DISKS) {
+			if (boot_disk_count >= boot_disks.size()) {
 				return; // TODO give a warning.
 			}
 			WriteOut(MSG_Get("PROGRAM_BOOT_IMAGE_OPEN"),
@@ -246,7 +248,7 @@ void BOOT::Run(void)
 			FILE *usefile = getFSFile(temp_line.c_str(),
 			                          &floppysize, &rombytesize);
 			if (usefile != nullptr) {
-				diskSwap[i] = std::make_shared<imageDisk>(
+				boot_disks[boot_disk_count++] = std::make_shared<imageDisk>(
 				        usefile, temp_line.c_str(), floppysize, false);
 				if (usefile_1 == nullptr) {
 					usefile_1 = usefile;
@@ -264,16 +266,18 @@ void BOOT::Run(void)
 		i++;
 	}
 
-	swapInDisks(0);
-
-	if (!imageDiskList.at(drive_index(drive))) {
+	const auto boot_from_files = drive == 'A' && boot_disk_count != 0;
+	const auto boot_disk = boot_from_files ? boot_disks.front()
+	                                       : BIOS_GetDisk(drive_index(drive));
+	bootSector bootarea = {};
+	if (!boot_disk ||
+	    (boot_from_files && rombytesize_1 < sizeof(bootarea.rawdata)) ||
+	    boot_disk->getSectSize() != sizeof(bootarea.rawdata) ||
+	    boot_disk->Read_Sector(0, 0, 1, bootarea.rawdata) != 0) {
 		WriteOut(MSG_Get("PROGRAM_BOOT_UNABLE"), drive);
 		return;
 	}
 
-	bootSector bootarea;
-	imageDiskList.at(drive_index(drive))
-	        ->Read_Sector(0, 0, 1, reinterpret_cast<uint8_t*>(&bootarea));
 	if ((bootarea.rawdata[0] == 0x50) && (bootarea.rawdata[1] == 0x43) &&
 	    (bootarea.rawdata[2] == 0x6a) && (bootarea.rawdata[3] == 0x72)) {
 		if (!is_machine_pcjr()) {
@@ -301,7 +305,6 @@ void BOOT::Run(void)
 				        rombuf, 1, rom_bytes_expected, usefile_1);
 				if (rom_bytes_read < rom_bytes_expected) {
 					LOG_ERR("BOOT: Failed to read sufficient cartridge data");
-					fclose(usefile_1);
 					return;
 				}
 				// Null-terminate the buffer
@@ -337,7 +340,6 @@ void BOOT::Run(void)
 						WriteOut(MSG_Get(
 						        "PROGRAM_BOOT_CART_NO_CMDS"));
 					}
-					diskSwap.fill(nullptr);
 
 					return;
 				} else {
@@ -369,7 +371,6 @@ void BOOT::Run(void)
 							WriteOut(MSG_Get(
 							        "PROGRAM_BOOT_CART_NO_CMDS"));
 						}
-						diskSwap.fill(nullptr);
 						return;
 					}
 				}
@@ -402,7 +403,6 @@ void BOOT::Run(void)
 				}
 				if (fread(rombuf, 1, 0x200, usefile_2) < 0x200) {
 					LOG_MSG("Failed to read sufficient ROM data");
-					fclose(usefile_2);
 					return;
 				}
 
@@ -415,13 +415,8 @@ void BOOT::Run(void)
 				if (fread(rombuf, 1, rombytesize_2 - 0x200, usefile_2) <
 				    rombytesize_2 - 0x200) {
 					LOG_MSG("Failed to read sufficient ROM data");
-					fclose(usefile_2);
 					return;
 				}
-
-				// fclose(usefile_2); //usefile_2 is in diskSwap
-				// structure which should be deleted to close
-				// the file
 
 				/* write cartridge data into ROM */
 				for (i = 0; i < rombytesize_2 - 0x200; i++)
@@ -433,7 +428,6 @@ void BOOT::Run(void)
 			}
 			if (fread(rombuf, 1, 0x200, usefile_1) < 0x200) {
 				LOG_MSG("Failed to read sufficient cartridge data");
-				fclose(usefile_1);
 				return;
 			}
 
@@ -446,18 +440,12 @@ void BOOT::Run(void)
 			if (fread(rombuf, 1, rombytesize_1 - 0x200, usefile_1) <
 			    rombytesize_1 - 0x200) {
 				LOG_MSG("Failed to read sufficient cartridge data");
-				fclose(usefile_1);
 				return;
 			}
-			// fclose(usefile_1); //usefile_1 is in diskSwap
-			// structure which should be deleted to close the file
 
 			/* write cartridge data into ROM */
 			for (i = 0; i < rombytesize_1 - 0x200; i++)
 				phys_writeb((romseg << 4) + i, rombuf[i]);
-
-			// Close cardridges
-			diskSwap.fill(nullptr);
 
 			NotifyBooting();
 
@@ -486,6 +474,9 @@ void BOOT::Run(void)
 			}
 		}
 	} else {
+		if (boot_disk_count) {
+			BIOS_SetBootDisks(std::move(boot_disks));
+		}
 		DisableUmbXmsEms();
 		MEM_RemoveEMSPageFrame();
 
