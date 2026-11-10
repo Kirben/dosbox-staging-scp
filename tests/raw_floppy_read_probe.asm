@@ -59,11 +59,16 @@ org 100h
     mov byte [stage],4
     call read_id
     mov bl,[result+5]
+%ifdef REORDERED
+    xor bh,bh
+    mov bl,[next_id+bx-1]
+%else
     cmp bl,SECTORS
     jb .advance
     xor bl,bl
 .advance:
     inc bl
+%endif
     call read_id
     cmp bl,[result+5]
     jne finish
@@ -293,3 +298,6 @@ stage db 0
 saved_imr db 0
 interrupts db 0
 result times 7 db 0
+%ifdef REORDERED
+next_id db 2,4,5,3,6,7,8,9,1
+%endif
