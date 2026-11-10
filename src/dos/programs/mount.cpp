@@ -18,6 +18,7 @@
 #include "gui/mapper.h"
 #include "hardware/ide.h"
 #include "ints/bios_disk.h"
+#include "ints/disk_image_factory.h"
 #include "ints/int10.h"
 #include "misc/cross.h"
 #include "misc/notifications.h"
@@ -481,35 +482,19 @@ bool MOUNT::MountImageIso(const MountParameters& params)
 //
 bool MOUNT::MountImageRaw(MountParameters& params)
 {
-	auto new_disk = fopen_wrap_ro_fallback(params.paths[0], params.roflag);
-	if (!new_disk) {
-		NOTIFY_DisplayWarning(Notification::Source::Console,
-		                      "MOUNT",
-		                      "PROGRAM_IMGMOUNT_INVALID_IMAGE");
-		return false;
-	}
-
-	const auto sz = stdio_size_kb(new_disk);
-	if (sz < 0) {
-		fclose(new_disk);
-
-		NOTIFY_DisplayWarning(Notification::Source::Console,
-		                      "MOUNT",
-		                      "PROGRAM_IMGMOUNT_INVALID_IMAGE");
-		return false;
-	}
-
-	auto imagesize = check_cast<uint32_t>(sz);
-
 	// 0=A:, 1=B:, 2=C:, 3=D:
 	const auto is_hdd = (params.drive >= '2');
+	auto disk = OpenSectorDiskImage(params.paths[0], params.roflag, is_hdd);
+	if (!disk) {
+		NOTIFY_DisplayWarning(Notification::Source::Console,
+		                      "MOUNT",
+		                      "PROGRAM_IMGMOUNT_INVALID_IMAGE");
+		return false;
+	}
 
 	// Seems to make sense to require a valid geometry..
 	if (is_hdd && params.sizes[0] == 0 && params.sizes[1] == 0 &&
 	    params.sizes[2] == 0 && params.sizes[3] == 0) {
-
-		fclose(new_disk);
-
 		NOTIFY_DisplayWarning(Notification::Source::Console,
 		                      "MOUNT",
 		                      "PROGRAM_IMGMOUNT_SPECIFY_GEOMETRY");
@@ -517,10 +502,6 @@ bool MOUNT::MountImageRaw(MountParameters& params)
 	}
 
 	const auto drv_idx = params.drive - '0';
-	auto disk = std::make_shared<imageDisk>(new_disk,
-	                                        params.paths[0].c_str(),
-	                                        imagesize,
-	                                        is_hdd);
 
 	if (is_hdd) {
 		disk->Set_Geometry(params.sizes[2],

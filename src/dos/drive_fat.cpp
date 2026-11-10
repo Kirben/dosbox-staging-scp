@@ -11,6 +11,7 @@
 #include "dos.h"
 #include "ints/bios.h"
 #include "ints/bios_disk.h"
+#include "ints/disk_image_factory.h"
 #include "misc/support.h"
 #include "utils/string_utils.h"
 
@@ -555,37 +556,37 @@ bool fatDrive::getDirClustNum(const char* dir, uint32_t* clustNum, bool parDir)
 }
 
 uint8_t fatDrive::readSector(uint32_t sectnum, void * data) {
-	// Guard
-	if (!loadedDisk) {
+	SectorMedia* const media = loadedDisk.get();
+	if (!media) {
 		return 0;
 	}
 
 	if (absolute) {
-		return loadedDisk->Read_AbsoluteSector(sectnum, data);
+		return media->Read_AbsoluteSector(sectnum, data);
 	}
 	uint32_t cylindersize = bootbuffer.headcount * bootbuffer.sectorspertrack;
 	uint32_t cylinder = sectnum / cylindersize;
 	sectnum %= cylindersize;
 	uint32_t head = sectnum / bootbuffer.sectorspertrack;
 	uint32_t sector = sectnum % bootbuffer.sectorspertrack + 1L;
-	return loadedDisk->Read_Sector(head, cylinder, sector, data);
+	return media->Read_Sector(head, cylinder, sector, data);
 }
 
 uint8_t fatDrive::writeSector(uint32_t sectnum, void * data) {
-	// Guard
-	if (!loadedDisk) {
+	SectorMedia* const media = loadedDisk.get();
+	if (!media) {
 		return 0;
 	}
 
 	if (absolute) {
-		return loadedDisk->Write_AbsoluteSector(sectnum, data);
+		return media->Write_AbsoluteSector(sectnum, data);
 	}
 	uint32_t cylindersize = bootbuffer.headcount * bootbuffer.sectorspertrack;
 	uint32_t cylinder = sectnum / cylindersize;
 	sectnum %= cylindersize;
 	uint32_t head = sectnum / bootbuffer.sectorspertrack;
 	uint32_t sector = sectnum % bootbuffer.sectorspertrack + 1L;
-	return loadedDisk->Write_Sector(head, cylinder, sector, data);
+	return media->Write_Sector(head, cylinder, sector, data);
 }
 
 uint32_t fatDrive::getSectorCount()
@@ -782,9 +783,6 @@ fatDrive::fatDrive(const char* sysFilename, uint32_t bytesector,
           fatSectBuffer{0},
           curFatSect(0)
 {
-	FILE *diskfile;
-	uint32_t filesize;
-	bool is_hdd;
 	struct partTable mbrData;
 
 	if(imgDTASeg == 0) {
@@ -793,20 +791,12 @@ fatDrive::fatDrive(const char* sysFilename, uint32_t bytesector,
 		imgDTA    = new DOS_DTA(imgDTAPtr);
 	}
 	assert(sysFilename);
-	diskfile = fopen_wrap_ro_fallback(sysFilename, readonly);
-	created_successfully = (diskfile != nullptr);
-	if (!created_successfully)
-		return;
-	const auto sz = stdio_size_kb(diskfile);
-	if (sz < 0) {
-		fclose(diskfile);
+	loadedDisk           = OpenSectorDiskImage(sysFilename, readonly);
+	created_successfully = static_cast<bool>(loadedDisk);
+	if (!created_successfully) {
 		return;
 	}
-	filesize = check_cast<uint32_t>(sz);
-	is_hdd   = (filesize > 2880);
-
-	/* Load disk image */
-	loadedDisk = std::make_shared<imageDisk>(diskfile, sysFilename, filesize, is_hdd);
+	const auto is_hdd = loadedDisk->hardDrive;
 
 	if(is_hdd) {
 		/* Set user specified harddrive parameters */
