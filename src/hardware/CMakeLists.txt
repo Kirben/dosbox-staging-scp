@@ -68,6 +68,7 @@ target_sources(dosboxcommon PRIVATE
 
   cmos.cpp
   dma.cpp
+  floppy_controller.cpp
   ide.cpp
   memory.cpp
   pci_bus.cpp

@@ -45,6 +45,7 @@ public:
 	const uint8_t is_16bit = 0;
 
 	bool is_incremented             = true;
+	bool is_device_to_memory        = false;
 	bool is_autoiniting             = false;
 	bool is_masked                  = true;
 	bool has_reached_terminal_count = false;

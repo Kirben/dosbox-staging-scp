@@ -1,0 +1,368 @@
+// SPDX-License-Identifier: GPL-2.0-or-later
+
+#include "hardware/floppy_controller.h"
+
+#include <algorithm>
+#include <array>
+#include <cmath>
+#include <memory>
+
+#include "hardware/dma.h"
+#include "hardware/pic.h"
+#include "hardware/port.h"
+#include "ints/bios_disk.h"
+#include "utils/checks.h"
+
+CHECK_NARROWING();
+
+namespace {
+
+constexpr auto FloppyIrq                  = 6;
+constexpr auto FloppyDma                  = 2;
+constexpr auto ResetReleased              = 0x04;
+constexpr auto InterruptEnabled           = 0x08;
+constexpr auto SectorSize                 = 512;
+constexpr auto SectorSizeCode             = 2;
+constexpr auto StandardRevolutionMs       = 200.0;
+constexpr auto HighDensity525RevolutionMs = 1000.0 / 6;
+constexpr auto StepMs                     = 3.0;
+
+enum class Phase { Command, Execution, Result };
+enum class Command {
+	Specify        = 0x03,
+	ReadData       = 0x06,
+	Recalibrate    = 0x07,
+	SenseInterrupt = 0x08,
+	ReadId         = 0x0a,
+	Seek           = 0x0f,
+};
+
+struct Drive {
+	uint8_t cylinder        = 0;
+	double motor_started_ms = 0;
+};
+
+struct Controller {
+	std::array<Drive, 2> drives     = {};
+	std::array<uint8_t, 9> command  = {};
+	std::array<uint8_t, 7> result   = {};
+	std::shared_ptr<imageDisk> disk = {};
+	Phase phase                     = Phase::Command;
+	size_t command_count            = 0;
+	size_t result_count             = 0;
+	size_t result_length            = 0;
+	uint8_t dor                     = 0;
+	uint8_t reset_unit              = 4;
+	uint8_t seek_status             = 0;
+	uint8_t seek_cylinder           = 0;
+	uint8_t cylinder                = 0;
+	uint8_t head                    = 0;
+	uint8_t sector                  = 0;
+	bool irq_pending                = false;
+	bool seek_pending               = false;
+	bool non_dma                    = false;
+};
+
+Controller fdc = {};
+
+void update_irq()
+{
+	if (fdc.irq_pending && (fdc.dor & InterruptEnabled)) {
+		PIC_ActivateIRQ(FloppyIrq);
+	} else {
+		PIC_DeActivateIRQ(FloppyIrq);
+	}
+}
+
+size_t selected_unit()
+{
+	return fdc.command[1] & 3;
+}
+
+bool motor_on(const size_t unit)
+{
+	return unit < fdc.drives.size() && (fdc.dor & (0x10u << unit));
+}
+
+bool media_ready(const size_t unit)
+{
+	return motor_on(unit) && unit == (fdc.dor & 3u) && fdc.disk &&
+	       fdc.disk == BIOS_GetDisk(unit) && fdc.disk->active &&
+	       !fdc.disk->hardDrive;
+}
+
+void begin_result(const size_t length, const bool interrupt)
+{
+	fdc.phase         = Phase::Result;
+	fdc.result_count  = 0;
+	fdc.result_length = length;
+	fdc.irq_pending   = interrupt;
+	update_irq();
+}
+
+void finish_data(const uint8_t status_1)
+{
+	const auto status_0 = check_cast<uint8_t>(
+	        (status_1 ? 0x40 : 0) | (fdc.head << 2) | selected_unit());
+	fdc.result = {status_0, status_1, 0, fdc.cylinder, fdc.head, fdc.sector, SectorSizeCode};
+	fdc.disk.reset();
+	begin_result(fdc.result.size(), true);
+}
+
+double revolution_ms()
+{
+	// The 1.2 MB 5.25-inch drive spins at 360 RPM.
+	return fdc.disk->GetBiosType() == 2 ? HighDensity525RevolutionMs
+	                                    : StandardRevolutionMs;
+}
+
+double slot_length_ms()
+{
+	return revolution_ms() / fdc.disk->sectors;
+}
+
+double rotation_ms()
+{
+	const auto elapsed_ms = PIC_FullIndex() -
+	                        fdc.drives[selected_unit()].motor_started_ms;
+	return std::fmod(std::max(0.0, elapsed_ms), revolution_ms());
+}
+
+void complete_read_id(uint32_t)
+{
+	finish_data(media_ready(selected_unit()) ? 0 : 0x04);
+}
+
+void transfer_sector(uint32_t)
+{
+	if (!media_ready(selected_unit())) {
+		finish_data(0x04);
+		return;
+	}
+
+	auto* dma = DMA_GetChannel(FloppyDma);
+	if (!dma || dma->is_masked || !dma->is_device_to_memory ||
+	    fdc.non_dma || !(fdc.dor & InterruptEnabled)) {
+		finish_data(0x10);
+		return;
+	}
+
+	std::array<uint8_t, SectorSize> buffer = {};
+	if (!fdc.disk->ReadSectorForController(fdc.head, fdc.cylinder, fdc.sector, buffer)) {
+		finish_data(0x04);
+		return;
+	}
+
+	const auto remaining = static_cast<size_t>(dma->curr_count) + 1;
+	const auto count     = std::min(remaining, buffer.size());
+	dma->RaiseRequest();
+	const auto transferred = dma->Write(count, buffer.data());
+	dma->ClearRequest();
+	if (transferred != count) {
+		finish_data(0x10);
+	} else if (remaining == count) {
+		finish_data(0);
+	} else if (fdc.sector < fdc.command[6]) {
+		++fdc.sector;
+		PIC_AddEvent(transfer_sector, slot_length_ms());
+	} else if ((fdc.command[0] & 0x80) && fdc.head == 0 && fdc.disk->heads > 1) {
+		fdc.head   = 1;
+		fdc.sector = 1;
+		PIC_AddEvent(transfer_sector, slot_length_ms());
+	} else {
+		finish_data(0x80);
+	}
+}
+
+void start_data(const Command command)
+{
+	const auto unit = selected_unit();
+	fdc.disk        = BIOS_GetDisk(unit);
+	fdc.head        = (fdc.command[1] >> 2) & 1;
+	fdc.cylinder = unit < fdc.drives.size() ? fdc.drives[unit].cylinder : 0;
+	fdc.sector   = command == Command::ReadId ? 1 : fdc.command[4];
+
+	if (!media_ready(unit) || fdc.head >= fdc.disk->heads ||
+	    fdc.cylinder >= fdc.disk->cylinders || fdc.disk->sectors == 0 ||
+	    fdc.disk->getSectSize() != SectorSize) {
+		finish_data(0x04);
+		return;
+	}
+
+	const auto length_ms   = slot_length_ms();
+	const auto position_ms = rotation_ms();
+	fdc.phase              = Phase::Execution;
+	if (command == Command::ReadId) {
+		const auto next_slot = std::floor(position_ms / length_ms) + 1.0;
+		fdc.sector = check_cast<uint8_t>(
+		        static_cast<unsigned>(next_slot) % fdc.disk->sectors + 1u);
+		PIC_AddEvent(complete_read_id, next_slot * length_ms - position_ms);
+		return;
+	}
+
+	const auto end_sector = fdc.command[6];
+	if (fdc.command[2] != fdc.cylinder || fdc.command[3] != fdc.head ||
+	    fdc.command[5] != SectorSizeCode || fdc.sector == 0 ||
+	    fdc.sector > end_sector || end_sector > fdc.disk->sectors) {
+		finish_data(0x04);
+		return;
+	}
+
+	const auto target_ms = (fdc.sector - 1) * length_ms;
+	const auto delay_ms = target_ms > position_ms
+	                            ? target_ms - position_ms
+	                            : revolution_ms() + target_ms - position_ms;
+	PIC_AddEvent(transfer_sector, delay_ms);
+}
+
+void complete_seek(uint32_t)
+{
+	const auto unit = selected_unit();
+	if (motor_on(unit) && unit == (fdc.dor & 3u)) {
+		fdc.drives[unit].cylinder = fdc.seek_cylinder;
+		fdc.seek_status = check_cast<uint8_t>(0x20u | (fdc.command[1] & 7u));
+	} else {
+		fdc.seek_status = check_cast<uint8_t>(0x68u | (fdc.command[1] & 7u));
+	}
+	fdc.seek_cylinder = unit < fdc.drives.size() ? fdc.drives[unit].cylinder : 0;
+	fdc.seek_pending = true;
+	fdc.phase        = Phase::Command;
+	fdc.irq_pending  = true;
+	update_irq();
+}
+
+void execute_command(const Command command)
+{
+	switch (command) {
+	case Command::Specify: fdc.non_dma = (fdc.command[2] & 1) != 0; break;
+	case Command::SenseInterrupt:
+		if (fdc.reset_unit < 4) {
+			const auto unit = fdc.reset_unit++;
+			fdc.result = {check_cast<uint8_t>(0xc0u | unit), 0};
+			begin_result(2, false);
+		} else if (fdc.seek_pending) {
+			fdc.seek_pending = false;
+			fdc.result       = {fdc.seek_status, fdc.seek_cylinder};
+			begin_result(2, false);
+		} else {
+			fdc.result[0] = 0x80;
+			begin_result(1, false);
+		}
+		break;
+	case Command::Seek:
+	case Command::Recalibrate: {
+		const auto unit     = selected_unit();
+		const auto cylinder = unit < fdc.drives.size()
+		                            ? fdc.drives[unit].cylinder
+		                            : 0;
+		fdc.seek_cylinder = command == Command::Seek ? fdc.command[2] : 0;
+		const auto steps = std::max(1, std::abs(cylinder - fdc.seek_cylinder));
+		fdc.phase = Phase::Execution;
+		PIC_AddEvent(complete_seek, steps * StepMs);
+		break;
+	}
+	case Command::ReadId:
+	case Command::ReadData: start_data(command); break;
+	default:
+		fdc.result[0] = 0x80;
+		begin_result(1, false);
+		break;
+	}
+}
+
+size_t command_length(const Command command)
+{
+	switch (command) {
+	case Command::ReadData: return 9;
+	case Command::Seek:
+	case Command::Specify: return 3;
+	case Command::Recalibrate:
+	case Command::ReadId: return 2;
+	default: return 1;
+	}
+}
+
+void write_data(io_port_t, const io_val_t value, io_width_t)
+{
+	if (!(fdc.dor & ResetReleased) || fdc.phase != Phase::Command) {
+		return;
+	}
+	fdc.command[fdc.command_count++] = check_cast<uint8_t>(value);
+	const auto command = static_cast<Command>(fdc.command.front() & 0x1f);
+	if (fdc.command_count == command_length(command)) {
+		fdc.command_count = 0;
+		execute_command(command);
+	}
+}
+
+io_val_t read_data(io_port_t, io_width_t)
+{
+	if (fdc.phase != Phase::Result) {
+		return 0xff;
+	}
+	if (fdc.result_count == 0) {
+		fdc.irq_pending = false;
+		update_irq();
+	}
+	const auto value = fdc.result[fdc.result_count++];
+	if (fdc.result_count == fdc.result_length) {
+		fdc.phase = Phase::Command;
+	}
+	return value;
+}
+
+io_val_t read_status(io_port_t, io_width_t)
+{
+	if (!(fdc.dor & ResetReleased)) {
+		return 0;
+	}
+	switch (fdc.phase) {
+	case Phase::Execution: return 0x10;
+	case Phase::Result: return 0xd0;
+	case Phase::Command: return fdc.command_count ? 0x90 : 0x80;
+	}
+	return 0;
+}
+
+void reset_controller()
+{
+	PIC_RemoveEvents(complete_seek);
+	PIC_RemoveEvents(complete_read_id);
+	PIC_RemoveEvents(transfer_sector);
+	fdc = {};
+}
+
+void write_dor(io_port_t, const io_val_t value, io_width_t)
+{
+	const auto previous = fdc.dor;
+	if (!(value & ResetReleased)) {
+		reset_controller();
+	}
+	fdc.dor = check_cast<uint8_t>(value);
+	for (size_t unit = 0; unit < fdc.drives.size(); ++unit) {
+		if (motor_on(unit) &&
+		    (!(value & ResetReleased) || !(previous & (0x10u << unit)))) {
+			fdc.drives[unit].motor_started_ms = PIC_FullIndex();
+		}
+	}
+	if ((value & ResetReleased) && !(previous & ResetReleased)) {
+		fdc.reset_unit  = 0;
+		fdc.irq_pending = true;
+	}
+	update_irq();
+}
+
+} // namespace
+
+void FLOPPY_Init()
+{
+	if (is_machine_pcjr()) {
+		return;
+	}
+	reset_controller();
+	update_irq();
+	IO_RegisterWriteHandler(0x3f2, write_dor, io_width_t::byte);
+	IO_RegisterReadHandler(0x3f4, read_status, io_width_t::byte);
+	IO_RegisterReadHandler(0x3f5, read_data, io_width_t::byte);
+	IO_RegisterWriteHandler(0x3f5, write_data, io_width_t::byte);
+}
