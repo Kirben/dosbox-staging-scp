@@ -10,16 +10,18 @@ import subprocess
 from tempfile import TemporaryDirectory
 
 
-def run_probe(dosbox, nasm, directory, extension, unit, size_kb, sectors):
+def run_probe(dosbox, nasm, directory, extension, unit, size_kb, sectors, encode=None):
     image = directory / f"disk.{extension}"
     data = bytearray(size_kb * 1024)
     for sector in (3, 4):
         offset = ((2 * 2 + 1) * sectors + sector - 1) * 512
         data[offset:offset + 512] = bytes([0x50 + sector]) * 512
-    image.write_bytes(data)
+    image_bytes = encode(data) if encode else data
+    image.write_bytes(image_bytes)
 
     source = Path(__file__).with_name("raw_floppy_read_probe.asm")
-    subprocess.run([nasm, "-f", "bin", f"-DUNIT={unit}",
+    options = ["-DREORDERED"] if encode else []
+    subprocess.run([nasm, *options, "-f", "bin", f"-DUNIT={unit}",
                     f"-DSECTORS={sectors}", source,
                     "-o", directory / "PROBE.COM"], check=True)
     config = directory / "probe.conf"
@@ -41,7 +43,7 @@ def run_probe(dosbox, nasm, directory, extension, unit, size_kb, sectors):
         stage = report.read_bytes().hex() if report.exists() else "missing"
         raise RuntimeError(f".{extension} {size_kb} KB drive {unit} failed at stage {stage}\n"
                            f"{run.stdout}{run.stderr}")
-    if image.read_bytes() != data:
+    if image.read_bytes() != image_bytes:
         raise RuntimeError(f".{extension} changed during a read-only test")
     print(f".{extension} {size_kb} KB drive {'AB'[unit]}: seek, Read ID, DMA and IRQ6 passed")
 

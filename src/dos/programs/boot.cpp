@@ -19,6 +19,7 @@
 #include "hardware/virtualbox.h"
 #include "hardware/vmware.h"
 #include "ints/bios_disk.h"
+#include "ints/disk_image_factory.h"
 #include "misc/video.h"
 #include "more_output.h"
 #include "utils/fs_utils.h"
@@ -248,6 +249,26 @@ void BOOT::Run(void)
 			FILE *usefile = getFSFile(temp_line.c_str(),
 			                          &floppysize, &rombytesize);
 			if (usefile != nullptr) {
+				if (IsHxcMfmPath(temp_line)) {
+					const auto close_file = [](FILE* file) {
+						fclose(file);
+					};
+					const std::unique_ptr<FILE, decltype(close_file)>
+					        image_file(usefile, close_file);
+					auto disk = LoadHxcMfmDisk(image_file.get(),
+					                           temp_line);
+					if (!disk) {
+						WriteOut(MSG_Get("PROGRAM_BOOT_IMAGE_NOT_OPEN"),
+						         temp_line.c_str());
+						return;
+					}
+					if (boot_disk_count == 0) {
+						rombytesize_1 = rombytesize;
+					}
+					boot_disks[boot_disk_count++] = std::move(disk);
+					++i;
+					continue;
+				}
 				boot_disks[boot_disk_count++] = std::make_shared<imageDisk>(
 				        usefile, temp_line.c_str(), floppysize, false);
 				if (usefile_1 == nullptr) {
@@ -278,8 +299,9 @@ void BOOT::Run(void)
 		return;
 	}
 
-	if ((bootarea.rawdata[0] == 0x50) && (bootarea.rawdata[1] == 0x43) &&
-	    (bootarea.rawdata[2] == 0x6a) && (bootarea.rawdata[3] == 0x72)) {
+	if (!boot_disk->GetTrackImage() && (bootarea.rawdata[0] == 0x50) &&
+	    (bootarea.rawdata[1] == 0x43) && (bootarea.rawdata[2] == 0x6a) &&
+	    (bootarea.rawdata[3] == 0x72)) {
 		if (!is_machine_pcjr()) {
 			WriteOut(MSG_Get("PROGRAM_BOOT_CART_WO_PCJR"));
 		} else {

@@ -5,6 +5,7 @@ target_sources(dosboxcommon PRIVATE
   bios_pci.cpp
   disk_image_factory.cpp
   ems.cpp
+  hxc_mfm_image.cpp
   int10.cpp
   int10_char.cpp
   int10_memory.cpp
