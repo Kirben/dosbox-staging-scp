@@ -386,8 +386,7 @@ bool MOUNT::MountImageFat(MountParameters& params)
 	const auto is_hdd = (params.drive == 'C' || params.drive == 'D') && has_hdd;
 
 	if (is_floppy || is_hdd) {
-		imageDiskList.at(drive_index(params.drive)) = fat_image->loadedDisk;
-		updateDPT();
+		BIOS_SetDisk(drive_index(params.drive), fat_image->loadedDisk);
 	}
 
 	return true;
@@ -518,21 +517,18 @@ bool MOUNT::MountImageRaw(MountParameters& params)
 	}
 
 	const auto drv_idx = params.drive - '0';
-
-	imageDiskList.at(drv_idx) = std::make_shared<imageDisk>(
-	        new_disk, params.paths[0].c_str(), imagesize, is_hdd);
+	auto disk = std::make_shared<imageDisk>(new_disk,
+	                                        params.paths[0].c_str(),
+	                                        imagesize,
+	                                        is_hdd);
 
 	if (is_hdd) {
-		imageDiskList.at(drv_idx)->Set_Geometry(params.sizes[2],
-		                                        params.sizes[3],
-		                                        params.sizes[1],
-		                                        params.sizes[0]);
+		disk->Set_Geometry(params.sizes[2],
+		                   params.sizes[3],
+		                   params.sizes[1],
+		                   params.sizes[0]);
 	}
-
-	if ((params.drive == '2' || params.drive == '3') && is_hdd) {
-		updateDPT();
-	}
-
+	BIOS_SetDisk(drv_idx, std::move(disk));
 	WriteOut(MSG_Get("PROGRAM_IMGMOUNT_MOUNT_NUMBER"),
 	         drv_idx,
 	         params.paths[0].c_str());

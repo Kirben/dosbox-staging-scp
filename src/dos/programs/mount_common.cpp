@@ -23,7 +23,7 @@ std::string UnmountHelper(char umount)
 	                                           : drive_index(drive_id);
 	assert(i_drive < DOS_DRIVES);
 
-	if (i_drive < MAX_DISK_IMAGES && !Drives[i_drive] && !imageDiskList[i_drive]) {
+	if (i_drive < MAX_DISK_IMAGES && !Drives[i_drive] && !BIOS_GetDisk(i_drive)) {
 		return MSG_Get("PROGRAM_MOUNT_UMOUNT_NOT_MOUNTED");
 	}
 
@@ -44,8 +44,8 @@ std::string UnmountHelper(char umount)
 
 	}
 
-	if (i_drive < MAX_DISK_IMAGES && imageDiskList[i_drive]) {
-		imageDiskList[i_drive] = nullptr;
+	if (i_drive < MAX_DISK_IMAGES && BIOS_GetDisk(i_drive)) {
+		BIOS_SetDisk(i_drive, nullptr);
 	}
 
 	return MSG_Get("PROGRAM_MOUNT_UMOUNT_SUCCESS");

@@ -51,37 +51,69 @@ static bool swapping_requested;
 void BIOS_SetEquipment(uint16_t equipment);
 
 /* 2 floppys and 2 harddrives, max */
-std::array<std::shared_ptr<imageDisk>, MAX_DISK_IMAGES> imageDiskList = {};
-std::array<std::shared_ptr<imageDisk>, MAX_SWAPPABLE_DISKS> diskSwap  = {};
+static std::array<std::shared_ptr<imageDisk>, MAX_DISK_IMAGES> disk_slots = {};
+static BiosBootDisks boot_disks                                           = {};
 
-unsigned int swapPosition;
+static size_t swap_position = 0;
 
-void updateDPT(void)
+static void update_disk_parameter_tables()
 {
 	uint32_t tmpheads, tmpcyl, tmpsect, tmpsize;
-	if (imageDiskList[2]) {
+	if (disk_slots[2]) {
 		PhysPt dp0physaddr = CALLBACK_PhysPointer(diskparm0);
-		imageDiskList[2]->Get_Geometry(&tmpheads, &tmpcyl, &tmpsect, &tmpsize);
+		disk_slots[2]->Get_Geometry(&tmpheads, &tmpcyl, &tmpsect, &tmpsize);
 		phys_writew(dp0physaddr, (uint16_t)tmpcyl);
 		phys_writeb(dp0physaddr + 0x2, (uint8_t)tmpheads);
 		phys_writew(dp0physaddr + 0x3, 0);
 		phys_writew(dp0physaddr + 0x5, (uint16_t)-1);
 		phys_writeb(dp0physaddr + 0x7, 0);
 		phys_writeb(dp0physaddr + 0x8,
-		            (0xc0 | (((imageDiskList[2]->heads) > 8) << 3)));
+		            (0xc0 | (((disk_slots[2]->heads) > 8) << 3)));
 		phys_writeb(dp0physaddr + 0x9, 0);
 		phys_writeb(dp0physaddr + 0xa, 0);
 		phys_writeb(dp0physaddr + 0xb, 0);
 		phys_writew(dp0physaddr + 0xc, (uint16_t)tmpcyl);
 		phys_writeb(dp0physaddr + 0xe, (uint8_t)tmpsect);
 	}
-	if (imageDiskList[3]) {
+	if (disk_slots[3]) {
 		PhysPt dp1physaddr = CALLBACK_PhysPointer(diskparm1);
-		imageDiskList[3]->Get_Geometry(&tmpheads, &tmpcyl, &tmpsect, &tmpsize);
+		disk_slots[3]->Get_Geometry(&tmpheads, &tmpcyl, &tmpsect, &tmpsize);
 		phys_writew(dp1physaddr, (uint16_t)tmpcyl);
 		phys_writeb(dp1physaddr + 0x2, (uint8_t)tmpheads);
 		phys_writeb(dp1physaddr + 0xe, (uint8_t)tmpsect);
 	}
+}
+
+std::shared_ptr<imageDisk> BIOS_GetDisk(const size_t slot)
+{
+	return slot < disk_slots.size() ? disk_slots[slot] : nullptr;
+}
+
+static void set_disk_slot(const size_t slot, std::shared_ptr<imageDisk> disk)
+{
+	disk_slots[slot] = std::move(disk);
+	if (slot >= 2) {
+		if (!disk_slots[slot]) {
+			const auto table = CALLBACK_PhysPointer(
+			        slot == 2 ? diskparm0 : diskparm1);
+			constexpr auto table_size = 16u;
+			for (auto offset = 0u; offset < table_size; ++offset) {
+				phys_writeb(table + offset, 0);
+			}
+		}
+		update_disk_parameter_tables();
+	}
+}
+
+void BIOS_SetDisk(const size_t slot, std::shared_ptr<imageDisk> disk)
+{
+	assert(slot < disk_slots.size());
+	if (slot < 2 && disk_slots[slot] != disk) {
+		// Prevent a later BOOT swap from restoring an ejected image.
+		boot_disks.fill(nullptr);
+		swap_position = 0;
+	}
+	set_disk_slot(slot, std::move(disk));
 }
 
 void incrementFDD(void)
@@ -114,26 +146,33 @@ static size_t disk_array_prefix_size(const std::array<T, N>& images)
 	return num;
 }
 
-void swapInDisks(unsigned int swap_position)
+static void load_boot_disks(const size_t first_disk)
 {
-	const size_t boot_disks_num = disk_array_prefix_size(diskSwap);
+	const size_t boot_disks_num = disk_array_prefix_size(boot_disks);
 	if (boot_disks_num == 0) {
 		return;
 	}
 
-	assert(swap_position < boot_disks_num);
-	const unsigned int pos_1 = swap_position;
-	const unsigned int pos_2 = (swap_position + 1) % boot_disks_num;
+	assert(first_disk < boot_disks_num);
+	const auto pos_1 = first_disk;
+	const auto pos_2 = (first_disk + 1) % boot_disks_num;
 
-	imageDiskList[0] = diskSwap[pos_1];
-	LOG_MSG("Loaded disk A from swaplist position %u - \"%s\"",
+	set_disk_slot(0, boot_disks[pos_1]);
+	LOG_MSG("Loaded disk A from swaplist position %zu - \"%s\"",
 	        pos_1,
-	        diskSwap[pos_1]->diskname);
+	        boot_disks[pos_1]->diskname);
 
-	imageDiskList[1] = diskSwap[pos_2];
-	LOG_MSG("Loaded disk B from swaplist position %u - \"%s\"",
+	set_disk_slot(1, boot_disks[pos_2]);
+	LOG_MSG("Loaded disk B from swaplist position %zu - \"%s\"",
 	        pos_2,
-	        diskSwap[pos_2]->diskname);
+	        boot_disks[pos_2]->diskname);
+}
+
+void BIOS_SetBootDisks(BiosBootDisks disks)
+{
+	boot_disks    = std::move(disks);
+	swap_position = 0;
+	load_boot_disks(swap_position);
 }
 
 bool getSwapRequest(void)
@@ -143,7 +182,7 @@ bool getSwapRequest(void)
 	return sreq;
 }
 
-void swapInNextDisk(bool pressed)
+static void swap_disks(bool pressed)
 {
 	if (!pressed) {
 		return;
@@ -156,11 +195,11 @@ void swapInNextDisk(bool pressed)
 			Drives[i]->EmptyCache();
 		}
 	}
-	swapPosition++;
-	if (!diskSwap[swapPosition]) {
-		swapPosition = 0;
+	const auto count = disk_array_prefix_size(boot_disks);
+	if (count) {
+		swap_position = (swap_position + 1) % count;
+		load_boot_disks(swap_position);
 	}
-	swapInDisks(swapPosition);
 	swapping_requested = true;
 }
 
@@ -337,13 +376,13 @@ static bool driveInactive(uint8_t driveNum)
 		CALLBACK_SCF(true);
 		return true;
 	}
-	if (!imageDiskList[driveNum]) {
+	if (!disk_slots[driveNum]) {
 		LOG(LOG_BIOS, LOG_ERROR)("Disk %d not active", driveNum);
 		last_status = 0x01;
 		CALLBACK_SCF(true);
 		return true;
 	}
-	if (!imageDiskList[driveNum]->active) {
+	if (!disk_slots[driveNum]->active) {
 		LOG(LOG_BIOS, LOG_ERROR)("Disk %d not active", driveNum);
 		last_status = 0x01;
 		CALLBACK_SCF(true);
@@ -367,7 +406,7 @@ static Bitu INT13_DiskHandler(void)
 	Bitu t;
 	last_drive            = reg_dl;
 	drivenum              = GetDosDriveNumber(reg_dl);
-	const bool any_images = has_image(imageDiskList);
+	const bool any_images = has_image(disk_slots);
 
 	// unconditionally enable the interrupt flag
 	CALLBACK_SIF(true);
@@ -391,9 +430,8 @@ static Bitu INT13_DiskHandler(void)
 			if (is_machine_cga() || is_machine_pcjr()) {
 				/* those bioses call floppy drive reset for
 				 * invalid drive values */
-				if (((imageDiskList[0]) && (imageDiskList[0]->active)) ||
-				    ((imageDiskList[1]) &&
-				     (imageDiskList[1]->active))) {
+				if (((disk_slots[0]) && (disk_slots[0]->active)) ||
+				    ((disk_slots[1]) && (disk_slots[1]->active))) {
 					if (!is_machine_pcjr() && reg_dl < 0x80) {
 						reg_ip++;
 					}
@@ -425,7 +463,7 @@ static Bitu INT13_DiskHandler(void)
 			CALLBACK_SCF(true);
 			return CBRET_NONE;
 		}
-		if (drivenum >= MAX_DISK_IMAGES || !imageDiskList[drivenum]) {
+		if (drivenum >= MAX_DISK_IMAGES || !disk_slots[drivenum]) {
 			if (drivenum >= DOS_DRIVES || !Drives[drivenum] ||
 			    Drives[drivenum]->IsRemovable()) {
 				reg_ah = 0x01;
@@ -462,7 +500,7 @@ static Bitu INT13_DiskHandler(void)
 		segat  = SegValue(es);
 		bufptr = reg_bx;
 		for (Bitu i = 0; i < reg_al; i++) {
-			last_status = imageDiskList[drivenum]->Read_Sector(
+			last_status = disk_slots[drivenum]->Read_Sector(
 			        (uint32_t)reg_dh,
 			        (uint32_t)(reg_ch | ((reg_cl & 0xc0) << 2)),
 			        (uint32_t)((reg_cl & 63) + i),
@@ -490,11 +528,11 @@ static Bitu INT13_DiskHandler(void)
 		}
 		bufptr = reg_bx;
 		for (Bitu i = 0; i < reg_al; i++) {
-			for (t = 0; t < imageDiskList[drivenum]->getSectSize(); t++) {
+			for (t = 0; t < disk_slots[drivenum]->getSectSize(); t++) {
 				sectbuf[t] = real_readb(SegValue(es), bufptr);
 				bufptr++;
 			}
-			last_status = imageDiskList[drivenum]->Write_Sector(
+			last_status = disk_slots[drivenum]->Write_Sector(
 			        (uint32_t)reg_dh,
 			        (uint32_t)(reg_ch | ((reg_cl & 0xc0) << 2)),
 			        (uint32_t)((reg_cl & 63) + i),
@@ -524,7 +562,7 @@ static Bitu INT13_DiskHandler(void)
 		bufptr = reg_bx;
 		for(i=0;i<reg_al;i++) {
 		        last_status =
-		imageDiskList[drivenum]->Read_Sector((uint32_t)reg_dh,
+		disk_slots[drivenum]->Read_Sector((uint32_t)reg_dh,
 		(uint32_t)(reg_ch | ((reg_cl & 0xc0)<< 2)), (uint32_t)((reg_cl &
 		63)+i), sectbuf); if(last_status != 0x00) { LOG_MSG("Error in
 		disk read"); CALLBACK_SCF(true); return CBRET_NONE;
@@ -558,12 +596,9 @@ static Bitu INT13_DiskHandler(void)
 			return CBRET_NONE;
 		}
 		reg_ax = 0x00;
-		reg_bl = imageDiskList[drivenum]->GetBiosType();
+		reg_bl = disk_slots[drivenum]->GetBiosType();
 		uint32_t tmpheads, tmpcyl, tmpsect, tmpsize;
-		imageDiskList[drivenum]->Get_Geometry(&tmpheads,
-		                                      &tmpcyl,
-		                                      &tmpsect,
-		                                      &tmpsize);
+		disk_slots[drivenum]->Get_Geometry(&tmpheads, &tmpcyl, &tmpsect, &tmpsize);
 		if (tmpcyl == 0) {
 			LOG(LOG_BIOS,
 			    LOG_ERROR)("INT13 DrivParm: cylinder count zero!");
@@ -581,18 +616,18 @@ static Bitu INT13_DiskHandler(void)
 		last_status = 0x00;
 		if (reg_dl & 0x80) { // harddisks
 			reg_dl = 0;
-			if (imageDiskList[2]) {
+			if (disk_slots[2]) {
 				reg_dl++;
 			}
-			if (imageDiskList[3]) {
+			if (disk_slots[3]) {
 				reg_dl++;
 			}
 		} else { // floppy disks
 			reg_dl = 0;
-			if (imageDiskList[0]) {
+			if (disk_slots[0]) {
 				reg_dl++;
 			}
-			if (imageDiskList[1]) {
+			if (disk_slots[1]) {
 				reg_dl++;
 			}
 		}
@@ -614,10 +649,10 @@ static Bitu INT13_DiskHandler(void)
 			}
 
 			uint32_t tmpheads, tmpcyl, tmpsect, tmpsize;
-			imageDiskList[drivenum]->Get_Geometry(&tmpheads,
-			                                      &tmpcyl,
-			                                      &tmpsect,
-			                                      &tmpsize);
+			disk_slots[drivenum]->Get_Geometry(&tmpheads,
+			                                   &tmpcyl,
+			                                   &tmpsect,
+			                                   &tmpsize);
 			// Store intermediate calculations in 64-bit to avoid
 			// accidental integer overflow on temporary value:
 			uint64_t largesize = tmpheads;
@@ -686,14 +721,15 @@ void BIOS_SetupDisks(void)
 	RealSetVec(0x13, CALLBACK_RealPointer(call_int13));
 
 	// Clean any the numbered images
-	imageDiskList.fill(nullptr);
+	disk_slots.fill(nullptr);
 
 	// Clear any raw disk images
-	diskSwap.fill(nullptr);
+	boot_disks.fill(nullptr);
+	swap_position      = 0;
+	swapping_requested = false;
 
 	diskparm0    = CALLBACK_Allocate();
 	diskparm1    = CALLBACK_Allocate();
-	swapPosition = 0;
 
 	RealSetVec(0x41, CALLBACK_RealPointer(diskparm0));
 	RealSetVec(0x46, CALLBACK_RealPointer(diskparm1));
@@ -710,7 +746,7 @@ void BIOS_SetupDisks(void)
 	/* Setup the Bios Area */
 	mem_writeb(BIOS_HARDDISK_COUNT, 2);
 
-	MAPPER_AddHandler(swapInNextDisk, SDL_SCANCODE_F4, PRIMARY_MOD, "swapimg", "Swap Image");
+	MAPPER_AddHandler(swap_disks, SDL_SCANCODE_F4, PRIMARY_MOD, "swapimg", "Swap Image");
 	killRead           = false;
 	swapping_requested = false;
 }
