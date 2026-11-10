@@ -13,6 +13,7 @@
 #include "dos/dos.h" /* for Drives[] */
 #include "dos/drives.h"
 #include "gui/mapper.h"
+#include "hardware/floppy_controller.h"
 #include "hardware/memory.h"
 #include "utils/string_utils.h"
 
@@ -215,6 +216,23 @@ uint8_t imageDisk::Read_Sector(uint32_t head, uint32_t cylinder,
 
 uint8_t imageDisk::Read_AbsoluteSector(uint32_t sectnum, void* data)
 {
+	return read_absolute_sector(sectnum, data, false);
+}
+
+bool imageDisk::ReadSectorForController(const uint32_t head, const uint32_t cylinder,
+                                        const uint32_t sector,
+                                        const std::span<uint8_t> data)
+{
+	if (data.size() != sector_size) {
+		return false;
+	}
+	const auto absolute_sector = (cylinder * heads + head) * sectors + sector - 1;
+	return read_absolute_sector(absolute_sector, data.data(), true) == 0;
+}
+
+uint8_t imageDisk::read_absolute_sector(const uint32_t sectnum, void* data,
+                                        const bool controller_read)
+{
 	const auto bytenum = check_cast<cross_off_t>(sectnum) * sector_size;
 
 	if (last_action == WRITE || bytenum != current_fpos) {
@@ -229,7 +247,7 @@ uint8_t imageDisk::Read_AbsoluteSector(uint32_t sectnum, void* data)
 
 	// Only perform delay if we booted from a disk image
 	// Otherwise this would result in delay duplication in the int21 handler
-	if (DOS_IsGuestOsBooted()) {
+	if (!controller_read && DOS_IsGuestOsBooted()) {
 		DiskType type = hardDrive ? DiskType::HardDisk : DiskType::Floppy;
 		DOS_PerformDiskIoDelay(sector_size, type);
 	}
@@ -238,7 +256,7 @@ uint8_t imageDisk::Read_AbsoluteSector(uint32_t sectnum, void* data)
 	current_fpos = bytenum + ret;
 	last_action  = READ;
 
-	return 0x00;
+	return controller_read && ret != sector_size ? 0xff : 0;
 }
 
 uint8_t imageDisk::Write_Sector(uint32_t head, uint32_t cylinder,
@@ -715,6 +733,7 @@ static Bitu INT13_DiskHandler(void)
 
 void BIOS_SetupDisks(void)
 {
+	FLOPPY_Init();
 	/* TODO Start the time correctly */
 	call_int13 = CALLBACK_Allocate();
 	CALLBACK_Setup(call_int13, &INT13_DiskHandler, CB_INT13, "Int 13 Bios disk");

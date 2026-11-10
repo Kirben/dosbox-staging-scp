@@ -6,9 +6,10 @@
 
 #include "dosbox.h"
 
-#include <cstdio>
 #include <array>
+#include <cstdio>
 #include <memory>
+#include <span>
 #include <vector>
 
 #include "dos/dos.h"
@@ -39,8 +40,15 @@ public:
 	uint8_t Read_AbsoluteSector(uint32_t sectnum, void* data) override;
 	uint8_t Write_AbsoluteSector(uint32_t sectnum, void* data) override;
 
-	void Set_Geometry(uint32_t setHeads, uint32_t setCyl, uint32_t setSect, uint32_t setSectSize);
-	void Get_Geometry(uint32_t * getHeads, uint32_t *getCyl, uint32_t *getSect, uint32_t *getSectSize);
+	// The controller schedules its own transfer and requires a full sector.
+	bool ReadSectorForController(const uint32_t head, const uint32_t cylinder,
+	                             const uint32_t sector,
+	                             const std::span<uint8_t> data);
+
+	void Set_Geometry(uint32_t setHeads, uint32_t setCyl, uint32_t setSect,
+	                  uint32_t setSectSize);
+	void Get_Geometry(uint32_t* getHeads, uint32_t* getCyl,
+	                  uint32_t* getSect, uint32_t* getSectSize);
 	uint8_t GetBiosType(void);
 	uint32_t getSectSize(void);
 
@@ -61,8 +69,11 @@ public:
 	uint8_t floppytype;
 
 	uint32_t sector_size;
-	uint32_t heads,cylinders,sectors;
+	uint32_t heads, cylinders, sectors;
+
 private:
+	uint8_t read_absolute_sector(const uint32_t sector, void* data,
+	                             const bool controller_read);
 	cross_off_t current_fpos;
 	enum { NONE,READ,WRITE } last_action;
 };
