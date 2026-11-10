@@ -2125,7 +2125,7 @@ std::shared_ptr<imageDisk> IDEATADevice::getBIOSdisk()
 {
 	if (bios_disk_index >= (2 + MAX_HDD_IMAGES))
 		return nullptr;
-	return imageDiskList[bios_disk_index];
+	return BIOS_GetDisk(bios_disk_index);
 }
 
 CDROM_Interface *IDEATAPICDROMDevice::getMSCDEXDrive()
@@ -2367,7 +2367,7 @@ void IDE_CDROM_DetachAll()
 	}
 }
 
-/* bios_disk_index = index into BIOS INT 13h disk array: imageDisk *imageDiskList[MAX_DISK_IMAGES]; */
+/* bios_disk_index = index into the BIOS INT 13h disk slots */
 void IDE_Hard_Disk_Attach(int8_t index,
                           bool slave,
                           uint8_t bios_disk_index /*not INT13h, the index into DOSBox's BIOS drive emulation*/)
@@ -2386,7 +2386,7 @@ void IDE_Hard_Disk_Attach(int8_t index,
 		return;
 	}
 
-	if (!imageDiskList.at(bios_disk_index)) {
+	if (!BIOS_GetDisk(bios_disk_index)) {
 		LOG_WARNING("IDE: Asked to attach bios disk that does not exist");
 		return;
 	}
@@ -2396,7 +2396,7 @@ void IDE_Hard_Disk_Attach(int8_t index,
 	c->device[slave ? 1 : 0] = (IDEDevice *)dev;
 }
 
-/* bios_disk_index = index into BIOS INT 13h disk array: imageDisk *imageDiskList[MAX_DISK_IMAGES]; */
+/* bios_disk_index = index into the BIOS INT 13h disk slots */
 void IDE_Hard_Disk_Detach(uint8_t bios_disk_index)
 {
 	for (uint8_t index = 0; index < MAX_IDE_CONTROLLERS; index++) {

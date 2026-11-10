@@ -243,15 +243,11 @@ void DriveManager::CycleDisks(int requested_drive, bool notify)
 		current_disk            = (current_disk + 1) % num_disks;
 		const auto new_disk     = drive_info.disks[current_disk];
 		drive_info.current_disk = current_disk;
-		if (drive < MAX_DISK_IMAGES && imageDiskList.at(drive)) {
-			if (new_disk && new_disk->GetType() == DosDriveType::Fat) {
-				const auto fat_drive = std::dynamic_pointer_cast<fatDrive>(
-				        new_disk);
-				imageDiskList[drive] = fat_drive->loadedDisk;
-			}
-			if ((drive == 2 || drive == 3) && imageDiskList[drive] && imageDiskList[drive]->hardDrive) {
-				updateDPT();
-			}
+		if (BIOS_GetDisk(drive) && new_disk &&
+		    new_disk->GetType() == DosDriveType::Fat) {
+			const auto fat_drive = std::dynamic_pointer_cast<fatDrive>(
+			        new_disk);
+			BIOS_SetDisk(drive, fat_drive->loadedDisk);
 		}
 
 		// copy working directory, acquire system resources and finally switch to next drive
