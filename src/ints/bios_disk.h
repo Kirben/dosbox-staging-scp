@@ -14,6 +14,7 @@
 #include "dos/dos.h"
 #include "hardware/memory.h"
 #include "ints/bios.h"
+#include "ints/sector_media.h"
 
 /* The Section handling Bios Disk Access */
 #define BIOS_MAX_DISK 10
@@ -29,12 +30,14 @@ struct DiskGeometry {
 
 const std::vector<DiskGeometry>& BIOS_GetDiskGeometryList();
 
-class imageDisk  {
+class imageDisk final : public SectorMedia {
 public:
-	uint8_t Read_Sector(uint32_t head,uint32_t cylinder,uint32_t sector,void * data);
-	uint8_t Write_Sector(uint32_t head,uint32_t cylinder,uint32_t sector,void * data);
-	uint8_t Read_AbsoluteSector(uint32_t sectnum, void * data);
-	uint8_t Write_AbsoluteSector(uint32_t sectnum, void * data);
+	uint8_t Read_Sector(uint32_t head, uint32_t cylinder, uint32_t sector,
+	                    void* data) override;
+	uint8_t Write_Sector(uint32_t head, uint32_t cylinder, uint32_t sector,
+	                     void* data) override;
+	uint8_t Read_AbsoluteSector(uint32_t sectnum, void* data) override;
+	uint8_t Write_AbsoluteSector(uint32_t sectnum, void* data) override;
 
 	void Set_Geometry(uint32_t setHeads, uint32_t setCyl, uint32_t setSect, uint32_t setSectSize);
 	void Get_Geometry(uint32_t * getHeads, uint32_t *getCyl, uint32_t *getSect, uint32_t *getSectSize);
@@ -45,7 +48,7 @@ public:
 	imageDisk(const imageDisk&) = delete; // prevent copy
 	imageDisk& operator=(const imageDisk&) = delete; // prevent assignment
 
-	~imageDisk()
+	~imageDisk() override
 	{
 		if (diskimg != nullptr)
 			fclose(diskimg);

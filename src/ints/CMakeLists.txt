@@ -3,6 +3,7 @@ target_sources(dosboxcommon PRIVATE
   bios_disk.cpp
   bios_keyboard.cpp
   bios_pci.cpp
+  disk_image_factory.cpp
   ems.cpp
   int10.cpp
   int10_char.cpp
