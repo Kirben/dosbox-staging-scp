@@ -207,6 +207,22 @@ static void swap_disks(bool pressed)
 uint8_t imageDisk::Read_Sector(uint32_t head, uint32_t cylinder,
                                uint32_t sector, void* data)
 {
+	if (track_image) {
+		for (const auto& candidate : track_image->GetTrack(cylinder, head)) {
+			if (candidate.cylinder == cylinder &&
+			    candidate.head == head && candidate.id == sector &&
+			    candidate.data.size() == sector_size &&
+			    !candidate.id_crc_error &&
+			    !candidate.data_crc_error && !candidate.deleted) {
+				std::copy(candidate.data.begin(),
+				          candidate.data.end(),
+				          static_cast<uint8_t*>(data));
+				return 0;
+			}
+		}
+		return 0x04;
+	}
+
 	uint32_t sectnum;
 
 	sectnum = ((cylinder * heads + head) * sectors) + sector - 1L;
@@ -216,6 +232,16 @@ uint8_t imageDisk::Read_Sector(uint32_t head, uint32_t cylinder,
 
 uint8_t imageDisk::Read_AbsoluteSector(uint32_t sectnum, void* data)
 {
+	if (track_image) {
+		if (!sectors || sectnum >= cylinders * heads * sectors) {
+			return 0x04;
+		}
+		const auto track = sectnum / sectors;
+		return Read_Sector(track % heads,
+		                   track / heads,
+		                   sectnum % sectors + 1,
+		                   data);
+	}
 	return read_absolute_sector(sectnum, data, false);
 }
 
@@ -271,6 +297,10 @@ uint8_t imageDisk::Write_Sector(uint32_t head, uint32_t cylinder,
 
 uint8_t imageDisk::Write_AbsoluteSector(uint32_t sectnum, void* data)
 {
+	if (track_image) {
+		return 0x03;
+	}
+
 	const auto bytenum = check_cast<cross_off_t>(sectnum) * sector_size;
 
 	// LOG_MSG("Writing sectors to %ld at bytenum %d", sectnum, bytenum);
@@ -312,9 +342,12 @@ imageDisk::imageDisk(FILE* img_file, const char* img_name, uint32_t img_size_k,
           current_fpos(0),
           last_action(NONE)
 {
-	fseek(diskimg, 0, SEEK_SET);
 	memset(diskname, 0, 512);
 	safe_strcpy(diskname, img_name);
+	if (!diskimg) {
+		return;
+	}
+	fseek(diskimg, 0, SEEK_SET);
 	if (!is_hdd) {
 		bool founddisk = false;
 		for (uint8_t i = 0; i < disk_geometry_list.size(); ++i) {
@@ -338,6 +371,30 @@ imageDisk::imageDisk(FILE* img_file, const char* img_name, uint32_t img_size_k,
 			incrementFDD();
 		}
 	}
+}
+
+imageDisk::imageDisk(std::unique_ptr<HxcMfmImage> image, const std::string& name)
+        : imageDisk(nullptr, name.c_str(), 0, false)
+{
+	heads       = image->heads;
+	cylinders   = image->cylinders;
+	sectors     = image->logical_sectors;
+	track_image = std::move(image);
+	active      = true;
+	for (size_t i = 0; i < disk_geometry_list.size(); ++i) {
+		const auto& geometry = disk_geometry_list[i];
+		if (geometry.cylcount == cylinders &&
+		    geometry.headscyl == heads && geometry.secttrack == sectors) {
+			floppytype = check_cast<uint8_t>(i);
+			break;
+		}
+	}
+	incrementFDD();
+}
+
+const HxcMfmImage* imageDisk::GetTrackImage() const
+{
+	return track_image.get();
 }
 
 void imageDisk::Set_Geometry(uint32_t setHeads, uint32_t setCyl,

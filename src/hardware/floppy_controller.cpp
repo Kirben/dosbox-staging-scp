@@ -43,24 +43,25 @@ struct Drive {
 };
 
 struct Controller {
-	std::array<Drive, 2> drives     = {};
-	std::array<uint8_t, 9> command  = {};
-	std::array<uint8_t, 7> result   = {};
-	std::shared_ptr<imageDisk> disk = {};
-	Phase phase                     = Phase::Command;
-	size_t command_count            = 0;
-	size_t result_count             = 0;
-	size_t result_length            = 0;
-	uint8_t dor                     = 0;
-	uint8_t reset_unit              = 4;
-	uint8_t seek_status             = 0;
-	uint8_t seek_cylinder           = 0;
-	uint8_t cylinder                = 0;
-	uint8_t head                    = 0;
-	uint8_t sector                  = 0;
-	bool irq_pending                = false;
-	bool seek_pending               = false;
-	bool non_dma                    = false;
+	std::array<Drive, 2> drives      = {};
+	std::array<uint8_t, 9> command   = {};
+	std::array<uint8_t, 7> result    = {};
+	std::shared_ptr<imageDisk> disk  = {};
+	const FloppySector* track_sector = nullptr;
+	Phase phase                      = Phase::Command;
+	size_t command_count             = 0;
+	size_t result_count              = 0;
+	size_t result_length             = 0;
+	uint8_t dor                      = 0;
+	uint8_t reset_unit               = 4;
+	uint8_t seek_status              = 0;
+	uint8_t seek_cylinder            = 0;
+	uint8_t cylinder                 = 0;
+	uint8_t head                     = 0;
+	uint8_t sector                   = 0;
+	bool irq_pending                 = false;
+	bool seek_pending                = false;
+	bool non_dma                     = false;
 };
 
 Controller fdc = {};
@@ -100,17 +101,30 @@ void begin_result(const size_t length, const bool interrupt)
 	update_irq();
 }
 
-void finish_data(const uint8_t status_1)
+void finish_data(const uint8_t status_1, const uint8_t status_2 = 0)
 {
 	const auto status_0 = check_cast<uint8_t>(
-	        (status_1 ? 0x40 : 0) | (fdc.head << 2) | selected_unit());
-	fdc.result = {status_0, status_1, 0, fdc.cylinder, fdc.head, fdc.sector, SectorSizeCode};
+	        ((status_1 || status_2) ? 0x40 : 0) | (fdc.head << 2) |
+	        selected_unit());
+	const auto* sector = fdc.track_sector;
+	fdc.result         = {status_0,
+	                      status_1,
+	                      status_2,
+	                      sector ? sector->cylinder : fdc.cylinder,
+	                      sector ? sector->head : fdc.head,
+	                      sector ? sector->id : fdc.sector,
+	                      sector ? sector->size_code
+	                             : static_cast<uint8_t>(SectorSizeCode)};
+	fdc.track_sector   = nullptr;
 	fdc.disk.reset();
 	begin_result(fdc.result.size(), true);
 }
 
 double revolution_ms()
 {
+	if (const auto* track = fdc.disk->GetTrackImage()) {
+		return track->revolution_ms;
+	}
 	// The 1.2 MB 5.25-inch drive spins at 360 RPM.
 	return fdc.disk->GetBiosType() == 2 ? HighDensity525RevolutionMs
 	                                    : StandardRevolutionMs;
@@ -130,7 +144,57 @@ double rotation_ms()
 
 void complete_read_id(uint32_t)
 {
-	finish_data(media_ready(selected_unit()) ? 0 : 0x04);
+	if (!media_ready(selected_unit())) {
+		finish_data(0x04);
+	} else {
+		finish_data(fdc.track_sector && fdc.track_sector->id_crc_error ? 0x20
+		                                                               : 0);
+	}
+}
+
+void transfer_sector(uint32_t);
+
+void missing_sector(uint32_t)
+{
+	finish_data(0x04);
+}
+
+void schedule_track_sector(const HxcMfmImage& image, const bool read_id)
+{
+	const auto track       = image.GetTrack(fdc.cylinder, fdc.head);
+	const auto position_ms = rotation_ms();
+	const auto turn_ms     = image.revolution_ms;
+	auto delay_ms          = turn_ms;
+	fdc.track_sector       = nullptr;
+	for (const auto& candidate : track) {
+		if (!read_id &&
+		    (candidate.cylinder != fdc.command[2] ||
+		     candidate.head != fdc.head || candidate.id != fdc.sector ||
+		     candidate.size_code != fdc.command[5])) {
+			continue;
+		}
+		const auto offset_ms = candidate.revolution_offset * turn_ms;
+		const auto wait_ms = offset_ms > position_ms
+		                           ? offset_ms - position_ms
+		                           : turn_ms + offset_ms - position_ms;
+		if (!fdc.track_sector || wait_ms < delay_ms) {
+			fdc.track_sector = &candidate;
+			delay_ms         = wait_ms;
+		}
+	}
+	const auto event = fdc.track_sector
+	                         ? (read_id ? complete_read_id : transfer_sector)
+	                         : missing_sector;
+	PIC_AddEvent(event, delay_ms);
+}
+
+void schedule_next_sector()
+{
+	if (const auto* track = fdc.disk->GetTrackImage()) {
+		schedule_track_sector(*track, false);
+	} else {
+		PIC_AddEvent(transfer_sector, slot_length_ms());
+	}
 }
 
 void transfer_sector(uint32_t)
@@ -148,27 +212,45 @@ void transfer_sector(uint32_t)
 	}
 
 	std::array<uint8_t, SectorSize> buffer = {};
-	if (!fdc.disk->ReadSectorForController(fdc.head, fdc.cylinder, fdc.sector, buffer)) {
+	std::span<const uint8_t> data          = buffer;
+	if (const auto* sector = fdc.track_sector) {
+		if (sector->id_crc_error) {
+			finish_data(0x20);
+			return;
+		}
+		if (sector->data.empty()) {
+			finish_data(0x01, 0x01);
+			return;
+		}
+		data = sector->data;
+	} else if (!fdc.disk->ReadSectorForController(
+	                   fdc.head, fdc.cylinder, fdc.sector, buffer)) {
 		finish_data(0x04);
 		return;
 	}
 
 	const auto remaining = static_cast<size_t>(dma->curr_count) + 1;
-	const auto count     = std::min(remaining, buffer.size());
+	const auto count     = std::min(remaining, data.size());
 	dma->RaiseRequest();
-	const auto transferred = dma->Write(count, buffer.data());
+	// DMA Write copies from the source buffer without modifying it.
+	const auto transferred = dma->Write(count,
+	                                    const_cast<uint8_t*>(data.data()));
 	dma->ClearRequest();
 	if (transferred != count) {
 		finish_data(0x10);
+	} else if (fdc.track_sector && fdc.track_sector->data_crc_error) {
+		finish_data(0x20, 0x20);
+	} else if (fdc.track_sector && fdc.track_sector->deleted) {
+		finish_data(0, 0x40);
 	} else if (remaining == count) {
 		finish_data(0);
 	} else if (fdc.sector < fdc.command[6]) {
 		++fdc.sector;
-		PIC_AddEvent(transfer_sector, slot_length_ms());
+		schedule_next_sector();
 	} else if ((fdc.command[0] & 0x80) && fdc.head == 0 && fdc.disk->heads > 1) {
 		fdc.head   = 1;
 		fdc.sector = 1;
-		PIC_AddEvent(transfer_sector, slot_length_ms());
+		schedule_next_sector();
 	} else {
 		finish_data(0x80);
 	}
@@ -183,15 +265,28 @@ void start_data(const Command command)
 	fdc.sector   = command == Command::ReadId ? 1 : fdc.command[4];
 
 	if (!media_ready(unit) || fdc.head >= fdc.disk->heads ||
-	    fdc.cylinder >= fdc.disk->cylinders || fdc.disk->sectors == 0 ||
-	    fdc.disk->getSectSize() != SectorSize) {
+	    fdc.cylinder >= fdc.disk->cylinders) {
+		finish_data(0x04);
+		return;
+	}
+
+	fdc.phase = Phase::Execution;
+	if (const auto* track = fdc.disk->GetTrackImage()) {
+		if (command == Command::ReadData &&
+		    (fdc.command[3] != fdc.head || fdc.sector > fdc.command[6])) {
+			finish_data(0x04);
+			return;
+		}
+		schedule_track_sector(*track, command == Command::ReadId);
+		return;
+	}
+	if (fdc.disk->sectors == 0 || fdc.disk->getSectSize() != SectorSize) {
 		finish_data(0x04);
 		return;
 	}
 
 	const auto length_ms   = slot_length_ms();
 	const auto position_ms = rotation_ms();
-	fdc.phase              = Phase::Execution;
 	if (command == Command::ReadId) {
 		const auto next_slot = std::floor(position_ms / length_ms) + 1.0;
 		fdc.sector = check_cast<uint8_t>(
@@ -329,6 +424,7 @@ void reset_controller()
 	PIC_RemoveEvents(complete_seek);
 	PIC_RemoveEvents(complete_read_id);
 	PIC_RemoveEvents(transfer_sector);
+	PIC_RemoveEvents(missing_sector);
 	fdc = {};
 }
 
