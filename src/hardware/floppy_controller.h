@@ -7,6 +7,7 @@
 #include <cstdint>
 #include <span>
 
+class FloppyMedia;
 class imageDisk;
 
 enum class FloppyFormatResult {
@@ -16,8 +17,9 @@ enum class FloppyFormatResult {
 	WriteError
 };
 
-FloppyFormatResult FLOPPY_FormatTrack(imageDisk& disk, uint32_t cylinder,
-                                      uint32_t head, std::span<const uint8_t> ids,
+FloppyFormatResult FLOPPY_FormatTrack(imageDisk& disk, FloppyMedia* media,
+                                      uint32_t cylinder, uint32_t head,
+                                      std::span<const uint8_t> ids,
                                       uint8_t fill, uint8_t requested);
 
 enum class FloppyBiosTransfer { Read, Write, Verify };

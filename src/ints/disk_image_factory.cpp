@@ -6,6 +6,7 @@
 #include <limits>
 
 #include "ints/bios_disk.h"
+#include "ints/floppy_track_image.h"
 #include "misc/cross.h"
 #include "misc/support.h"
 #include "utils/checks.h"
@@ -106,5 +107,8 @@ std::shared_ptr<imageDisk> LoadFloppyTrackDisk(FILE* file, const std::string& pa
 		            error.empty() ? "invalid image" : error.c_str());
 		return {};
 	}
-	return std::make_shared<imageDisk>(std::move(image), path);
+	const auto heads     = image->heads;
+	const auto cylinders = image->cylinders;
+	const auto sectors   = image->logical_sectors;
+	return std::make_shared<imageDisk>(std::move(image), path, heads, cylinders, sectors);
 }
