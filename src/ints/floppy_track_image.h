@@ -52,9 +52,9 @@ public:
 	uint32_t logical_sectors = 0;
 
 private:
-	// Cylinder, head, logical ID, and one-based physical slot (zero for CHS).
-	using OverlayKey    = std::array<uint32_t, 4>;
-	using OverlaySector = std::array<uint8_t, 512>;
+	// Cylinder, head, logical ID, physical slot (zero for CHS), and size code.
+	using OverlayKey    = std::array<uint32_t, 5>;
+	using OverlaySector = std::vector<uint8_t>;
 	using Overlay       = std::map<OverlayKey, OverlaySector>;
 	using TrackAddress  = std::array<uint8_t, 2>;
 	struct TrackFormat {
