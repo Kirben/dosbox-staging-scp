@@ -20,41 +20,7 @@ org 100h
     out 21h,al
 
     mov byte [stage],1
-    mov dx,3f2h
-    xor al,al
-    out dx,al
-    mov al,DOR
-    out dx,al
-    call wait_irq
-    xor bx,bx
-.reset_sense:
-    mov al,8
-    call send
-    call receive
-    mov ah,bl
-    or ah,0c0h
-    cmp al,ah
-    jne finish
-    call receive
-    test al,al
-    jnz finish
-    inc bl
-    cmp bl,4
-    jne .reset_sense
-
-    mov byte [stage],2
-    mov si,recalibrate
-    mov cx,2
-    call command_and_irq
-    mov bl,0
-    call sense_seek
-
-    mov byte [stage],3
-    mov si,seek
-    mov cx,3
-    call command_and_irq
-    mov bl,2
-    call sense_seek
+    call reset_and_seek
 
     mov byte [stage],4
 %ifdef FIRST_ID_AFTER_INDEX
@@ -314,7 +280,7 @@ org 100h
     out 04h,al
     mov al,12h
     out 04h,al
-%ifdef FORMAT_PARTIAL
+%ifdef FORMAT_EARLY_TC
     ; Two complete IDs and one byte of the third before terminal count.
     mov al,8
 %else
@@ -327,6 +293,31 @@ org 100h
     out 0ah,al
     mov si,format_command
     mov cx,6
+%ifdef FORMAT_RESET
+%if FORMAT_RESET < 3
+    call send_command
+%if FORMAT_RESET = 2
+    ; Wait for DMA to consume exactly two CHRN tuples.
+    mov ebp,400000
+.wait_for_two_ids:
+    out 0ch,al
+    in al,04h
+    cmp al,8
+    je .reset_now
+    ja finish
+    dec ebp
+    jnz .wait_for_two_ids
+    jmp finish
+.reset_now:
+%endif
+    cmp byte [interrupts],0
+    jne finish
+    in al,08h
+    test al,4
+    jnz finish
+    jmp format_reset_recovery
+%endif
+%endif
     call command_and_irq
     call read_result
 %ifdef FORMAT_PROTECTED
@@ -357,6 +348,12 @@ org 100h
     jnz finish
 %else
     jz finish
+%endif
+%ifdef FORMAT_RESET
+format_reset_recovery:
+    call reset_and_seek
+    mov byte [stage],13
+    call read_id
 %endif
 %endif
     mov byte [stage],0
@@ -409,6 +406,45 @@ read_turn_marker:
     ret
 %endif
 
+reset_and_seek:
+    mov byte [interrupts],0
+    mov dx,3f2h
+    xor al,al
+    out dx,al
+    mov al,DOR
+    out dx,al
+    call wait_irq
+    xor bx,bx
+.reset_sense:
+    mov al,8
+    call send
+    call receive
+    mov ah,bl
+    or ah,0c0h
+    cmp al,ah
+    jne finish
+    call receive
+    test al,al
+    jnz finish
+    inc bl
+    cmp bl,4
+    jne .reset_sense
+
+    mov byte [stage],2
+    mov si,recalibrate
+    mov cx,2
+    call command_and_irq
+    mov bl,0
+    call sense_seek
+
+    mov byte [stage],3
+    mov si,seek
+    mov cx,3
+    call command_and_irq
+    mov bl,2
+    call sense_seek
+    ret
+
 read_id:
     mov si,id
     mov cx,2
@@ -424,7 +460,7 @@ read_id:
     jne finish
     cmp byte [result+5],1
     jb finish
-%ifdef SCP_FORMAT_READBACK
+%ifdef SCP_FORMAT
     cmp byte [result+5],11
 %else
     cmp byte [result+5],SECTORS
@@ -449,11 +485,17 @@ sense_seek:
     ret
 
 command_and_irq:
+    call send_command
+    jmp wait_irq
+
+send_command:
     mov byte [interrupts],0
 .next:
     lodsb
     call send
     loop .next
+    ret
+
 wait_irq:
     mov dx,0ffffh
 .poll:

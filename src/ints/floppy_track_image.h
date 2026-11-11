@@ -37,6 +37,7 @@ public:
 	                                                 std::string& error);
 
 	double GetCycleMs(const uint32_t cylinder, const uint32_t head) const;
+	double GetFormatCycleMs(const uint32_t cylinder, const uint32_t head) const;
 
 	std::span<const FloppySector> GetTrack(const uint32_t cylinder,
 	                                       const uint32_t head) const;
