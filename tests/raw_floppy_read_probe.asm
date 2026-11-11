@@ -139,11 +139,17 @@ org 100h
     jnz finish
     mov di,1200h
     mov cx,512
+%ifdef FORMAT_READBACK
+    mov al,0e5h
+%else
     mov al,53h
+%endif
     repe scasb
     jne finish
     mov cx,512
+%ifndef FORMAT_READBACK
     mov al,54h
+%endif
     repe scasb
     jne finish
     cmp word [es:di],0
@@ -235,6 +241,54 @@ org 100h
 %endif
 %endif
 
+%ifdef FORMAT_TEST
+    mov byte [stage],11
+    ; Channel 2 transfers four CHRN bytes per sector.
+    mov di,1200h
+    mov si,format_ids
+    mov cx,SECTORS * 4
+    rep movsb
+    mov al,6
+    out 0ah,al
+    out 0ch,al
+    mov al,4ah
+    out 0bh,al
+    xor al,al
+    out 04h,al
+    mov al,12h
+    out 04h,al
+    mov al,SECTORS * 4 - 1
+    out 05h,al
+    xor al,al
+    out 05h,al
+    mov al,2
+    out 0ah,al
+    mov si,format_command
+    mov cx,6
+    call command_and_irq
+    call read_result
+%ifdef FORMAT_PROTECTED
+    cmp word [result],0240h + DRIVE_HEAD
+%elifdef FORMAT_INVALID
+    cmp word [result],0440h + DRIVE_HEAD
+%else
+    cmp word [result],DRIVE_HEAD
+    jne finish
+    cmp word [result+3],0102h
+    jne finish
+    cmp word [result+5],0200h + SECTORS
+%endif
+    jne finish
+    cmp byte [result+2],0
+    jne finish
+    in al,08h
+    test al,4
+%ifdef FORMAT_PROTECTED
+    jnz finish
+%else
+    jz finish
+%endif
+%endif
     mov byte [stage],0
 finish:
     mov al,[saved_imr]
@@ -393,6 +447,20 @@ irq6:
 recalibrate db 7,UNIT
 seek db 0fh,DRIVE_HEAD,2
 id db 4ah,DRIVE_HEAD
+%ifdef FORMAT_TEST
+format_command db 4dh,DRIVE_HEAD,2,SECTORS,54h,0e5h
+format_ids:
+%assign sector 1
+%rep SECTORS - 1
+    db 2,1,sector,2
+%assign sector sector + 1
+%endrep
+%ifdef FORMAT_INVALID
+    db 2,1,SECTORS - 1,2
+%else
+    db 2,1,SECTORS,2
+%endif
+%endif
 %ifdef READBACK
 read_data db 46h,DRIVE_HEAD,2,1,5,2,6,2ah,0ffh
 %else

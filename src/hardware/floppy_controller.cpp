@@ -35,6 +35,7 @@ enum class Command {
 	Recalibrate    = 0x07,
 	SenseInterrupt = 0x08,
 	ReadId         = 0x0a,
+	FormatTrack    = 0x0d,
 	Seek           = 0x0f,
 };
 
@@ -266,13 +267,63 @@ void transfer_sector(uint32_t)
 	}
 }
 
+void format_track(uint32_t)
+{
+	if (!media_ready(selected_unit())) {
+		finish_data(0x04);
+		return;
+	}
+
+	constexpr auto IdSize                 = 4;
+	std::array<uint8_t, IdSize * 255> ids = {};
+	const auto count                      = fdc.command[3] * size_t{IdSize};
+	auto* dma                             = DMA_GetChannel(FloppyDma);
+	if (!dma || dma->is_masked || !dma->is_memory_to_device ||
+	    fdc.non_dma || !(fdc.dor & InterruptEnabled) ||
+	    static_cast<size_t>(dma->curr_count) + 1 < count) {
+		finish_data(0x10);
+		return;
+	}
+
+	dma->RaiseRequest();
+	const auto transferred = dma->Read(count, ids.data());
+	dma->ClearRequest();
+	if (transferred != count) {
+		finish_data(0x10);
+		return;
+	}
+
+	// Raw images only represent a full track with sequential, fixed-size IDs.
+	for (size_t i = 0; i < count; i += IdSize) {
+		if (ids[i] != fdc.cylinder || ids[i + 1] != fdc.head ||
+		    ids[i + 2] != i / IdSize + 1 || ids[i + 3] != SectorSizeCode) {
+			finish_data(0x04);
+			return;
+		}
+	}
+
+	std::array<uint8_t, SectorSize> fill = {};
+	fill.fill(fdc.command[5]);
+	for (unsigned sector = 1; sector <= fdc.command[3]; ++sector) {
+		fdc.sector = check_cast<uint8_t>(sector);
+		if (!fdc.disk->WriteSectorForController(
+		            fdc.head, fdc.cylinder, fdc.sector, fill)) {
+			finish_data(0x20);
+			return;
+		}
+	}
+	finish_data(0);
+}
+
 void start_data(const Command command)
 {
 	const auto unit = selected_unit();
 	fdc.disk        = BIOS_GetDisk(unit);
 	fdc.head        = (fdc.command[1] >> 2) & 1;
 	fdc.cylinder = unit < fdc.drives.size() ? fdc.drives[unit].cylinder : 0;
-	fdc.sector   = command == Command::ReadId ? 1 : fdc.command[4];
+	fdc.sector = (command == Command::ReadId || command == Command::FormatTrack)
+	                   ? 1
+	                   : fdc.command[4];
 
 	if (!media_ready(unit) || fdc.head >= fdc.disk->heads ||
 	    fdc.cylinder >= fdc.disk->cylinders) {
@@ -280,11 +331,22 @@ void start_data(const Command command)
 		return;
 	}
 
-	if (command == Command::WriteData && fdc.disk->IsWriteProtected()) {
+	if ((command == Command::WriteData || command == Command::FormatTrack) &&
+	    fdc.disk->IsWriteProtected()) {
 		finish_data(0x02);
 		return;
 	}
 	fdc.phase = Phase::Execution;
+	if (command == Command::FormatTrack) {
+		if (fdc.command[2] != SectorSizeCode || fdc.command[3] == 0 ||
+		    fdc.command[3] != fdc.disk->sectors ||
+		    fdc.disk->getSectSize() != SectorSize) {
+			finish_data(0x04);
+			return;
+		}
+		PIC_AddEvent(format_track, 2 * rotation_cycle_ms() - rotation_ms());
+		return;
+	}
 	if (const auto* track = fdc.disk->GetTrackImage()) {
 		if (command == Command::ReadData &&
 		    (fdc.command[3] != fdc.head || fdc.sector > fdc.command[6])) {
@@ -371,6 +433,7 @@ void execute_command(const Command command)
 		break;
 	}
 	case Command::ReadId:
+	case Command::FormatTrack:
 	case Command::WriteData:
 	case Command::ReadData: start_data(command); break;
 	default:
@@ -383,6 +446,7 @@ void execute_command(const Command command)
 size_t command_length(const Command command)
 {
 	switch (command) {
+	case Command::FormatTrack: return 6;
 	case Command::WriteData:
 	case Command::ReadData: return 9;
 	case Command::Seek:
@@ -440,6 +504,7 @@ void reset_controller()
 	PIC_RemoveEvents(complete_seek);
 	PIC_RemoveEvents(complete_read_id);
 	PIC_RemoveEvents(transfer_sector);
+	PIC_RemoveEvents(format_track);
 	PIC_RemoveEvents(missing_sector);
 	fdc = {};
 }
