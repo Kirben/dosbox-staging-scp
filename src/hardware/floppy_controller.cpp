@@ -663,7 +663,9 @@ void pio_byte_event(uint32_t)
 	}
 	if (fdc.pio_ready) {
 		const auto command = static_cast<Command>(fdc.command[0] & 0x1f);
-		if (command == Command::FormatTrack && fdc.media) {
+		if (command == Command::ReadTrack) {
+			finish_data(fdc.track_status_1 | 0x10, fdc.track_status_2);
+		} else if (command == Command::FormatTrack && fdc.media) {
 			finish_track_format(0x10);
 		} else {
 			// A write underrun completes the field with zeroes.

@@ -56,7 +56,8 @@ def main():
             run_probe(args.dosbox.resolve(), args.nasm, folder, image, False, watchdog=True)
             print("PCjr watchdog timeout, retrigger, cancellation, and recovery passed")
             return
-        for extension, capture in (("img", disk), ("mfm", encode(disk, deleted_sector=True))):
+        mfm = encode(disk, verify_errors=True, deleted_sector=True)
+        for extension, capture in (("img", disk), ("mfm", mfm)):
             image = folder / f"disk.{extension}"
             image.write_bytes(capture)
             if extension == "mfm":
