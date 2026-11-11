@@ -339,7 +339,7 @@ void transfer_track_sector(uint32_t)
 	auto* dma          = DMA_GetChannel(FloppyDma);
 	if (!fdc.non_dma && (!dma || dma->is_masked || !dma->is_device_to_memory ||
 	                     !(fdc.dor & InterruptEnabled))) {
-		finish_data(0x10);
+		finish_data(fdc.track_status_1 | 0x10, fdc.track_status_2);
 		return;
 	}
 	const auto size = size_t{128} << fdc.command[5];
