@@ -108,16 +108,21 @@ jobs:
         uses: lukka/get-cmake@7bfc9baacbbdcb5e37957ad05c3546b3e222be3c # v4.3.2
 
       - name: Install dependencies
-        run: |
-          export DEBIAN_FRONTEND=noninteractive
-          sudo apt-get update
-          sudo apt-get install -y $(cat packages/ubuntu-22.04-apt.txt)
+        uses: ./.github/actions/retry
+        with:
+          cmd: |
+            export DEBIAN_FRONTEND=noninteractive
+            sudo apt-get -o Acquire::Retries=3 update --error-on=any
+            sudo apt-get -o Acquire::Retries=3 install -y $(cat packages/ubuntu-22.04-apt.txt)
 
       - name: Install floppy guest test dependencies
         if: matrix.conf.floppy_tests
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y python3 nasm
+        uses: ./.github/actions/retry
+        with:
+          cmd: |
+            set -xeu
+            sudo apt-get -o Acquire::Retries=3 update --error-on=any
+            sudo apt-get -o Acquire::Retries=3 install -y python3 nasm
 
       - name: Set up vcpkg
         uses: ./.github/actions/setup-vcpkg
