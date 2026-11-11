@@ -87,8 +87,8 @@ public:
 private:
 	uint8_t write_absolute_sector(const uint32_t sector, const void* data,
 	                              const bool controller_write);
-	bool read_only                                = false;
-	std::shared_ptr<FloppyMedia> floppy_media     = {};
+	bool read_only                            = false;
+	std::shared_ptr<FloppyMedia> floppy_media = {};
 	uint8_t read_absolute_sector(const uint32_t sector, void* data,
 	                             const bool controller_read);
 	cross_off_t current_fpos;

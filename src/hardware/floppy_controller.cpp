@@ -53,34 +53,34 @@ struct Drive {
 };
 
 struct Controller {
-	std::array<Drive, 2> drives      = {};
-	std::array<uint8_t, 9> command   = {};
-	std::array<uint8_t, 7> result    = {};
+	std::array<Drive, 2> drives                        = {};
+	std::array<uint8_t, 9> command                     = {};
+	std::array<uint8_t, 7> result                      = {};
 	std::array<uint8_t, FormatIdSize * 255> format_ids = {};
 	size_t track_offset                                = 0;
 	uint8_t track_status_1                             = 0;
 	uint8_t track_status_2                             = 0;
 	size_t formatted_ids                               = 0;
-	std::shared_ptr<imageDisk> disk  = {};
+	std::shared_ptr<imageDisk> disk                    = {};
 	std::shared_ptr<FloppyMedia> media                 = {};
-	const FloppySector* track_sector = nullptr;
-	Phase phase                      = Phase::Command;
-	size_t command_count             = 0;
-	size_t result_count              = 0;
-	size_t result_length             = 0;
-	uint8_t dor                      = 0;
-	uint8_t reset_unit               = 4;
-	uint8_t seek_status              = 0;
-	uint8_t seek_cylinder            = 0;
-	uint8_t cylinder                 = 0;
-	uint8_t head                     = 0;
-	uint8_t sector                   = 0;
-	bool irq_pending                 = false;
-	bool seek_pending                = false;
-	bool non_dma                     = false;
+	const FloppySector* track_sector                   = nullptr;
+	Phase phase                                        = Phase::Command;
+	size_t command_count                               = 0;
+	size_t result_count                                = 0;
+	size_t result_length                               = 0;
+	uint8_t dor                                        = 0;
+	uint8_t reset_unit                                 = 4;
+	uint8_t seek_status                                = 0;
+	uint8_t seek_cylinder                              = 0;
+	uint8_t cylinder                                   = 0;
+	uint8_t head                                       = 0;
+	uint8_t sector                                     = 0;
+	bool irq_pending                                   = false;
+	bool seek_pending                                  = false;
+	bool non_dma                                       = false;
 };
 
-Controller fdc = {};
+Controller fdc    = {};
 bool irq_asserted = false;
 // The latch belongs to the drive and survives controller resets.
 std::array<bool, 2> disk_changed = {};
@@ -138,10 +138,10 @@ void finish_data(const uint8_t status_1, const uint8_t status_2 = 0,
 	fdc.result         = {status_0,
 	                      status_1,
 	                      status_2,
-	                      sector ? sector->cylinder : fdc.cylinder,
-	                      sector ? sector->head : fdc.head,
-	                      sector ? sector->id : fdc.sector,
-	                      sector ? sector->size_code
+                      sector ? sector->cylinder : fdc.cylinder,
+                      sector ? sector->head : fdc.head,
+                      sector ? sector->id : fdc.sector,
+                      sector ? sector->size_code
 	                             : static_cast<uint8_t>(SectorSizeCode)};
 	fdc.track_sector   = nullptr;
 	fdc.disk.reset();
@@ -210,9 +210,9 @@ void schedule_track_sector(const FloppyMedia& image, const bool read_id)
 			continue;
 		}
 		const auto offset_ms = candidate.cycle_fraction * cycle_ms;
-		const auto wait_ms = offset_ms > position_ms
-		                           ? offset_ms - position_ms
-		                           : cycle_ms + offset_ms - position_ms;
+		const auto wait_ms   = offset_ms > position_ms
+		                             ? offset_ms - position_ms
+		                             : cycle_ms + offset_ms - position_ms;
 		if (!fdc.track_sector || wait_ms < delay_ms) {
 			fdc.track_sector = &candidate;
 			delay_ms         = wait_ms;
@@ -333,7 +333,7 @@ void transfer_sector(uint32_t)
 	}
 
 	const auto writing = command == Command::WriteData;
-	auto* dma = DMA_GetChannel(FloppyDma);
+	auto* dma          = DMA_GetChannel(FloppyDma);
 	if (!dma || dma->is_masked ||
 	    !(writing ? dma->is_memory_to_device : dma->is_device_to_memory) ||
 	    fdc.non_dma || !(fdc.dor & InterruptEnabled)) {
@@ -615,9 +615,9 @@ void start_data(const Command command)
 	}
 
 	const auto target_ms = (fdc.sector - 1) * length_ms;
-	const auto delay_ms = target_ms > position_ms
-	                            ? target_ms - position_ms
-	                            : rotation_cycle_ms() + target_ms - position_ms;
+	const auto delay_ms  = target_ms > position_ms
+	                             ? target_ms - position_ms
+	                             : rotation_cycle_ms() + target_ms - position_ms;
 	PIC_AddEvent(transfer_sector, delay_ms);
 }
 
@@ -629,7 +629,7 @@ void complete_seek(uint32_t)
 		if (drive.cylinder != fdc.seek_cylinder && BIOS_GetDisk(unit)) {
 			FLOPPY_SetDiskChanged(unit, false);
 		}
-		drive.cylinder  = fdc.seek_cylinder;
+		drive.cylinder = fdc.seek_cylinder;
 		fdc.seek_status = check_cast<uint8_t>(0x20u | (fdc.command[1] & 7u));
 	} else {
 		fdc.seek_status = check_cast<uint8_t>(0x68u | (fdc.command[1] & 7u));
@@ -763,8 +763,8 @@ void reset_controller()
 
 void write_dor(io_port_t, const io_val_t value, io_width_t)
 {
-	const auto previous = fdc.dor;
-	const auto unit     = selected_unit();
+	const auto previous       = fdc.dor;
+	const auto unit           = selected_unit();
 	const auto formatting_scp = fdc.phase == Phase::Execution && fdc.disk &&
 	                            fdc.media &&
 	                            (fdc.command[0] & 0x1f) ==
@@ -958,10 +958,10 @@ static FloppyBiosTransferResult bios_transfer_track(
 		return {0x04, 0};
 	}
 
-	const auto writing = operation == FloppyBiosTransfer::Write;
+	const auto writing   = operation == FloppyBiosTransfer::Write;
 	const auto verifying = operation == FloppyBiosTransfer::Verify;
-	const auto opcode = verifying ? uint8_t{0x56}
-	                              : (writing ? uint8_t{0x45} : uint8_t{0x46});
+	const auto opcode    = verifying ? uint8_t{0x56}
+	                                 : (writing ? uint8_t{0x45} : uint8_t{0x46});
 	const std::array<uint8_t, 9> command = {opcode,
 	                                        check_cast<uint8_t>(unit |
 	                                                            (head << 2)),
@@ -972,17 +972,17 @@ static FloppyBiosTransferResult bios_transfer_track(
 	                                        check_cast<uint8_t>(last_sector),
 	                                        gap,
 	                                        0xff};
-	const auto sector_size = 128u << size_code;
-	const auto size        = verifying ? 0u : count * sector_size;
-	const auto result      = bios_command(
+	const auto sector_size               = 128u << size_code;
+	const auto size   = verifying ? 0u : count * sector_size;
+	const auto result = bios_command(
 	        unit, cylinder, head, command, address, size, writing, 3 + count);
 	if (result.error) {
 		return {result.error, 0};
 	}
 
-	const auto st0 = result.status[0];
-	const auto st1 = result.status[1];
-	const auto st2 = result.status[2];
+	const auto st0          = result.status[0];
+	const auto st1          = result.status[1];
+	const auto st2          = result.status[2];
 	const auto failed       = (st0 & 0xc0) || st1 || st2;
 	const auto before_error = std::clamp(result.status[5] - sector,
 	                                     0,
@@ -1055,7 +1055,7 @@ FloppyBiosTransferResult FLOPPY_BiosTransfer(
 		}
 
 		const auto run    = std::min(count - completed,
-		                             end_of_track - current_sector + 1);
+                                          end_of_track - current_sector + 1);
 		const auto result = bios_transfer_track(
 		        operation,
 		        unit,
@@ -1098,7 +1098,7 @@ uint8_t FLOPPY_BiosDmaFormat(const uint8_t unit, const uint32_t cylinder,
 		return transfer.error;
 	}
 	const auto& result = transfer.status;
-	const auto status = result[1];
+	const auto status  = result[1];
 	if (status & 0x02) {
 		return 0x03;
 	}

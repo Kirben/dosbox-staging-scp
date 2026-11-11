@@ -123,7 +123,7 @@ std::vector<FloppySector> FloppyTrackImage::DecodeMfmTrack(
 		                                (id.bit + track_bits - index) %
 		                                track_bits) /
 		                        static_cast<double>(track_bits);
-		sector.id_crc_error   = crc != id_crc;
+		sector.id_crc_error = crc != id_crc;
 
 		const auto data = marks[(i + 1) % marks.size()];
 		if (data.type != IdMark && sector.size_code <= 7) {
@@ -154,8 +154,8 @@ std::vector<FloppySector> FloppyTrackImage::DecodeMfmTrack(
 			// Read Track uses the command's size even when the ID
 			// was damaged.
 			const auto following = marks[(i + 2) % marks.size()].bit;
-			const auto gap   = (following + track_bits - data.bit) %
-			                   track_bits;
+			const auto gap = (following + track_bits - data.bit) %
+			                 track_bits;
 			const auto field = data.bit + MarkBits;
 			auto field_crc   = update_crc(SyncCrc, data.type);
 			for (auto size = size_t{128};
@@ -310,7 +310,7 @@ void FloppyTrackImage::UpdateLogicalGeometry(const uint32_t cylinder,
 	const auto first_missing = std::find(logical_ids.begin() + 1,
 	                                     logical_ids.end(),
 	                                     false);
-	logical_sectors = std::max(logical_sectors,
-	                           static_cast<uint32_t>(first_missing -
-	                                                 logical_ids.begin() - 1));
+	logical_sectors          = std::max(logical_sectors,
+                                   static_cast<uint32_t>(first_missing -
+                                                         logical_ids.begin() - 1));
 }

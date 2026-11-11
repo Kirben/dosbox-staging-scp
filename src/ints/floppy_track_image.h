@@ -72,9 +72,9 @@ private:
 	TrackFormats track_formats   = {};
 
 	struct Track {
-		std::vector<FloppySector> sectors = {};
-		double cycle_ms                   = 200.0;
-		double format_cycle_ms            = 200.0;
+		std::vector<FloppySector> sectors   = {};
+		double cycle_ms                     = 200.0;
+		double format_cycle_ms              = 200.0;
 		std::vector<double> revolution_ends = {1.0};
 	};
 	static std::vector<FloppySector> DecodeMfmTrack(

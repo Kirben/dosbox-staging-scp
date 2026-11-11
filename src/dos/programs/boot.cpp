@@ -268,14 +268,14 @@ void BOOT::Run(void)
 			WriteOut(MSG_Get("PROGRAM_BOOT_IMAGE_OPEN"),
 			         temp_line.c_str());
 			uint32_t rombytesize;
-			bool read_only = false;
+			bool read_only        = false;
 			std::string host_path = {};
 			FILE* usefile         = getFSFile(temp_line.c_str(),
-			                                  &floppysize,
-			                                  &rombytesize,
-			                                  false,
-			                                  &read_only,
-			                                  &host_path);
+                                                  &floppysize,
+                                                  &rombytesize,
+                                                  false,
+                                                  &read_only,
+                                                  &host_path);
 			if (usefile != nullptr) {
 				if (IsFloppyTrackImagePath(temp_line)) {
 					const auto close_file = [](FILE* file) {
@@ -320,9 +320,9 @@ void BOOT::Run(void)
 	}
 
 	const auto boot_from_files = drive == 'A' && boot_disk_count != 0;
-	const auto boot_disk = boot_from_files ? boot_disks.front()
-	                                       : BIOS_GetDisk(drive_index(drive));
-	bootSector bootarea = {};
+	const auto boot_disk       = boot_from_files ? boot_disks.front()
+	                                             : BIOS_GetDisk(drive_index(drive));
+	bootSector bootarea        = {};
 	if (!boot_disk ||
 	    (boot_from_files && rombytesize_1 < sizeof(bootarea.rawdata)) ||
 	    boot_disk->getSectSize() != sizeof(bootarea.rawdata) ||

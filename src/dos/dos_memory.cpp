@@ -508,7 +508,7 @@ void DOS_SetupMemory(void) {
 		                            ? TandyStandardMemorySizeKb
 		                            : ConventionalMemorySizeKb;
 		const auto end      = kilobytes_to_segment(
-		        total_kb - TandyReservedVideoMemoryKb);
+                        total_kb - TandyReservedVideoMemoryKb);
 		const auto start = DOS_MEM_START + mcb_sizes;
 		DOS_MCB free_block(start);
 		free_block.SetPSPSeg(MCB_FREE);

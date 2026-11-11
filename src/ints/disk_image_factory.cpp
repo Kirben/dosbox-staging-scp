@@ -70,11 +70,11 @@ std::shared_ptr<imageDisk> OpenSectorDiskImage(const std::string& path,
 	}
 
 	const auto is_hard_disk = hard_disk.value_or(size_kb > 2880);
-	const auto disk = std::make_shared<imageDisk>(file.get(),
-	                                              path.c_str(),
-	                                              check_cast<uint32_t>(size_kb),
-	                                              is_hard_disk,
-	                                              read_only);
+	const auto disk         = std::make_shared<imageDisk>(file.get(),
+                                                      path.c_str(),
+                                                      check_cast<uint32_t>(size_kb),
+                                                      is_hard_disk,
+                                                      read_only);
 	file.release();
 	return disk;
 }
