@@ -123,7 +123,11 @@ org 100h
     jne finish
     cmp word [result+3],0102h
     jne finish
+%ifdef READBACK
+    cmp word [result+5],0206h
+%else
     cmp word [result+5],0204h
+%endif
     jne finish
 
     mov byte [stage],6
@@ -189,6 +193,46 @@ org 100h
     xor al,bl
     cmp al,3
     jne finish
+%endif
+
+%ifdef WRITE_TEST
+    ; Copy the existing DMA buffer to sectors 5 and 6.
+    mov byte [stage],10
+    mov al,6
+    out 10,al
+    mov al,0
+    out 12,al
+    mov al,74
+    out 11,al
+    mov al,0
+    out 4,al
+    mov al,18
+    out 4,al
+    mov al,255
+    out 5,al
+    mov al,3
+    out 5,al
+    mov al,2
+    out 10,al
+    mov si,write_data
+    mov cx,9
+    call command_and_irq
+    call read_result
+%ifdef WRITE_PROTECTED
+    cmp word [result],0240h + DRIVE_HEAD
+    jne finish
+    in al,08h
+    test al,4
+    jnz finish
+%else
+    cmp word [result],DRIVE_HEAD
+    jne finish
+    cmp word [result+5],0206h
+    jne finish
+    in al,08h
+    test al,4
+    jz finish
+%endif
 %endif
 
     mov byte [stage],0
@@ -349,7 +393,14 @@ irq6:
 recalibrate db 7,UNIT
 seek db 0fh,DRIVE_HEAD,2
 id db 4ah,DRIVE_HEAD
+%ifdef READBACK
+read_data db 46h,DRIVE_HEAD,2,1,5,2,6,2ah,0ffh
+%else
 read_data db 46h,DRIVE_HEAD,2,1,3,2,4,2ah,0ffh
+%endif
+%ifdef WRITE_TEST
+write_data db 45h,DRIVE_HEAD,2,1,5,2,6,2ah,0ffh
+%endif
 file db 'FDC.OUT',0
 stage db 0
 saved_imr db 0

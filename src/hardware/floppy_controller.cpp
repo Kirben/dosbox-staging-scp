@@ -30,6 +30,7 @@ constexpr auto StepMs                     = 3.0;
 enum class Phase { Command, Execution, Result };
 enum class Command {
 	Specify        = 0x03,
+	WriteData      = 0x05,
 	ReadData       = 0x06,
 	Recalibrate    = 0x07,
 	SenseInterrupt = 0x08,
@@ -204,8 +205,11 @@ void transfer_sector(uint32_t)
 		return;
 	}
 
+	const auto writing = (fdc.command[0] & 0x1f) ==
+	                     static_cast<int>(Command::WriteData);
 	auto* dma = DMA_GetChannel(FloppyDma);
-	if (!dma || dma->is_masked || !dma->is_device_to_memory ||
+	if (!dma || dma->is_masked ||
+	    !(writing ? dma->is_memory_to_device : dma->is_device_to_memory) ||
 	    fdc.non_dma || !(fdc.dor & InterruptEnabled)) {
 		finish_data(0x10);
 		return;
@@ -223,8 +227,10 @@ void transfer_sector(uint32_t)
 			return;
 		}
 		data = sector->data;
-	} else if (!fdc.disk->ReadSectorForController(
-	                   fdc.head, fdc.cylinder, fdc.sector, buffer)) {
+	} else if (!writing && !fdc.disk->ReadSectorForController(fdc.head,
+	                                                          fdc.cylinder,
+	                                                          fdc.sector,
+	                                                          buffer)) {
 		finish_data(0x04);
 		return;
 	}
@@ -233,11 +239,15 @@ void transfer_sector(uint32_t)
 	const auto count     = std::min(remaining, data.size());
 	dma->RaiseRequest();
 	// DMA Write copies from the source buffer without modifying it.
-	const auto transferred = dma->Write(count,
-	                                    const_cast<uint8_t*>(data.data()));
+	const auto transferred =
+	        writing ? dma->Read(count, buffer.data())
+	                : dma->Write(count, const_cast<uint8_t*>(data.data()));
 	dma->ClearRequest();
 	if (transferred != count) {
 		finish_data(0x10);
+	} else if (writing && !fdc.disk->WriteSectorForController(
+	                              fdc.head, fdc.cylinder, fdc.sector, buffer)) {
+		finish_data(0x20);
 	} else if (fdc.track_sector && fdc.track_sector->data_crc_error) {
 		finish_data(0x20, 0x20);
 	} else if (fdc.track_sector && fdc.track_sector->deleted) {
@@ -270,6 +280,10 @@ void start_data(const Command command)
 		return;
 	}
 
+	if (command == Command::WriteData && fdc.disk->IsWriteProtected()) {
+		finish_data(0x02);
+		return;
+	}
 	fdc.phase = Phase::Execution;
 	if (const auto* track = fdc.disk->GetTrackImage()) {
 		if (command == Command::ReadData &&
@@ -357,6 +371,7 @@ void execute_command(const Command command)
 		break;
 	}
 	case Command::ReadId:
+	case Command::WriteData:
 	case Command::ReadData: start_data(command); break;
 	default:
 		fdc.result[0] = 0x80;
@@ -368,6 +383,7 @@ void execute_command(const Command command)
 size_t command_length(const Command command)
 {
 	switch (command) {
+	case Command::WriteData:
 	case Command::ReadData: return 9;
 	case Command::Seek:
 	case Command::Specify: return 3;

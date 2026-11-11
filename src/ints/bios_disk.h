@@ -47,6 +47,11 @@ public:
 	                             const uint32_t sector,
 	                             const std::span<uint8_t> data);
 
+	bool IsWriteProtected() const;
+	bool WriteSectorForController(const uint32_t head, const uint32_t cylinder,
+	                              const uint32_t sector,
+	                              const std::span<const uint8_t> data);
+
 	void Set_Geometry(uint32_t setHeads, uint32_t setCyl, uint32_t setSect,
 	                  uint32_t setSectSize);
 	void Get_Geometry(uint32_t* getHeads, uint32_t* getCyl,
@@ -54,7 +59,8 @@ public:
 	uint8_t GetBiosType(void);
 	uint32_t getSectSize(void);
 
-	imageDisk(FILE *img_file, const char *img_name, uint32_t img_size_k, bool is_hdd);
+	imageDisk(FILE* img_file, const char* img_name, uint32_t img_size_k,
+	          bool is_hdd, bool read_only = false);
 	imageDisk(std::unique_ptr<FloppyTrackImage> track_image,
 	          const std::string& name);
 	const FloppyTrackImage* GetTrackImage() const;
@@ -77,6 +83,9 @@ public:
 	uint32_t heads, cylinders, sectors;
 
 private:
+	uint8_t write_absolute_sector(const uint32_t sector, const void* data,
+	                              const bool controller_write);
+	bool read_only                                = false;
 	std::unique_ptr<FloppyTrackImage> track_image = {};
 	uint8_t read_absolute_sector(const uint32_t sector, void* data,
 	                             const bool controller_read);

@@ -10,14 +10,21 @@ import subprocess
 from tempfile import TemporaryDirectory
 
 
-def run_probe(dosbox, nasm, directory, extension, unit, size_kb, sectors, encode=None):
+def run_probe(dosbox, nasm, directory, extension, unit, size_kb, sectors, encode=None,
+              write_mode=None):
     image = directory / f"disk.{extension}"
     data = bytearray(size_kb * 1024)
     for sector in (3, 4):
         offset = ((2 * 2 + 1) * sectors + sector - 1) * 512
         data[offset:offset + 512] = bytes([0x50 + sector]) * 512
     image_bytes = encode(data) if encode else data
-    image.write_bytes(image_bytes)
+    if write_mode != "readback":
+        image.write_bytes(image_bytes)
+    if write_mode in ("write", "readback"):
+        for sector in (5, 6):
+            offset = ((2 * 2 + 1) * sectors + sector - 1) * 512
+            data[offset:offset + 512] = bytes([0x4e + sector]) * 512
+    expected_image = image_bytes if encode else data
 
     source = Path(__file__).with_name("raw_floppy_read_probe.asm")
     options = ["-DREORDERED"] if encode else []
@@ -25,6 +32,14 @@ def run_probe(dosbox, nasm, directory, extension, unit, size_kb, sectors, encode
         options.append("-DSCP_REVOLUTIONS")
     elif extension == "86f":
         options.append("-DFIRST_ID_AFTER_INDEX=2")
+    if write_mode in ("write", "protected"):
+        options.append("-DWRITE_TEST")
+    if write_mode == "protected":
+        options.append("-DWRITE_PROTECTED")
+    if write_mode == "readback":
+        options.append("-DREADBACK")
+    (directory / "FDC.OUT").unlink(missing_ok=True)
+    access = "" if write_mode == "write" else " -ro"
     subprocess.run([nasm, *options, "-f", "bin", f"-DUNIT={unit}",
                     f"-DSECTORS={sectors}", source,
                     "-o", directory / "PROBE.COM"], check=True)
@@ -32,7 +47,7 @@ def run_probe(dosbox, nasm, directory, extension, unit, size_kb, sectors, encode
     config.write_text(
         "[sdl]\noutput=texture\n[mixer]\nnosound=true\n[autoexec]\n"
         f'mount c "{directory}"\n'
-        f'mount {unit} "{image}" -t floppy -fs none -ro\n'
+        f'mount {unit} "{image}" -t floppy -fs none{access}\n'
         "c:\nprobe.com\nexit\n",
         encoding="ascii",
     )
@@ -47,8 +62,11 @@ def run_probe(dosbox, nasm, directory, extension, unit, size_kb, sectors, encode
         stage = report.read_bytes().hex() if report.exists() else "missing"
         raise RuntimeError(f".{extension} {size_kb} KB drive {unit} failed at stage {stage}\n"
                            f"{run.stdout}{run.stderr}")
-    if image.read_bytes() != image_bytes:
-        raise RuntimeError(f".{extension} changed during a read-only test")
+    if image.read_bytes() != expected_image:
+        raise RuntimeError(f".{extension} has unexpected on-disk bytes")
+    if write_mode:
+        print(f".{extension} {size_kb} KB drive {'AB'[unit]} {write_mode}: DMA and IRQ6 passed")
+        return
     print(f".{extension} {size_kb} KB drive {'AB'[unit]}: seek, Read ID, DMA and IRQ6 passed")
 
 
@@ -56,6 +74,7 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--dosbox", required=True, type=Path)
     parser.add_argument("--nasm", default="nasm")
+    parser.add_argument("--write", action="store_true")
     args = parser.parse_args()
     for extension in ("img", "ima"):
         for size_kb, sectors in ((360, 9), (1200, 15)):
@@ -63,6 +82,10 @@ def main():
                 with TemporaryDirectory() as temporary:
                     run_probe(args.dosbox.resolve(), args.nasm, Path(temporary),
                               extension, unit, size_kb, sectors)
+                    if args.write:
+                        for mode in ("protected", "write", "readback"):
+                            run_probe(args.dosbox.resolve(), args.nasm, Path(temporary),
+                                      extension, unit, size_kb, sectors, write_mode=mode)
 
 
 if __name__ == "__main__":
