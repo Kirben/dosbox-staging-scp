@@ -25,6 +25,38 @@ org 100h
     out 0ah,al
     in al,08h
 
+%ifdef TRACK_IMAGE
+    mov byte [stage],13
+    ; A BIOS access to B must leave a pending controller command on A alone.
+    mov si,read_id
+    mov cx,2
+    call send
+    push ds
+    pop es
+    mov bx,bios_buffer
+    mov ax,0201h
+    mov cx,1
+    mov dx,1
+    int 13h
+    jnc report
+    cmp ax,8000h
+    jne report
+    xor bl,bl
+    call check_result
+    mov bx,bios_buffer
+    mov ax,0201h
+    mov cx,1
+    mov dx,1
+    int 13h
+    jc report
+    cmp ax,1
+    jne report
+    cmp byte [bios_buffer],51h
+    jne report
+    mov al,81h
+    out 0f2h,al
+%endif
+
     mov byte [stage],2
     mov si,read_command
     mov cx,9
@@ -352,6 +384,10 @@ report:
     mov ax,4c00h
     int 21h
 
+%ifdef TRACK_IMAGE
+read_id db 4ah,0
+bios_buffer times 512 db 0
+%endif
 read_timed db 46h,0,0,0,1,2,8,2ah,0ffh
 skip_deleted db 66h,0,0,0,3,2,4,2ah,0ffh
 expected_st2 db 0
