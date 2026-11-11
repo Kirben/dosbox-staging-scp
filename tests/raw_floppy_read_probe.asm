@@ -26,6 +26,9 @@ org 100h
 
     mov byte [stage],1
     call reset_and_seek
+%ifdef DUPLICATE_TEST
+    jmp test_duplicate
+%endif
 
     mov byte [stage],4
 %ifdef FIRST_ID_AFTER_INDEX
@@ -438,6 +441,119 @@ read_turn_marker:
     test al,4
     jz finish
     ret
+%endif
+
+%ifdef DUPLICATE_TEST
+test_duplicate:
+    mov byte [stage],14
+    cld
+    mov ax,6000h
+    mov es,ax
+%ifdef DUPLICATE_WRITE
+    call find_duplicate_pair
+    call read_duplicate_sector
+    mov al,65h
+    call check_duplicate_fill
+    call read_duplicate_sector
+    mov al,66h
+    call check_duplicate_fill
+
+    mov byte [stage],15
+    call find_duplicate_pair
+%if UNIT = 1
+    call read_duplicate_sector
+%endif
+    mov di,1200h
+    mov cx,512
+    mov al,0a7h
+    rep stosb
+    mov al,4ah
+    mov si,write_duplicate
+    call transfer_duplicate
+%endif
+    mov byte [stage],16
+    mov bp,2
+.check_revolution:
+    call find_duplicate_pair
+    call read_duplicate_sector
+%if UNIT = 0
+    mov al,0a7h
+%else
+    mov al,65h
+%endif
+    call check_duplicate_fill
+    call read_duplicate_sector
+%if UNIT = 0
+    mov al,66h
+%else
+    mov al,0a7h
+%endif
+    call check_duplicate_fill
+    dec bp
+    jnz .check_revolution
+    mov byte [stage],0
+    jmp finish
+
+find_duplicate_pair:
+    ; Sector 3 immediately precedes the first occurrence of ID 6.
+    mov bx,9
+.next_id:
+    call read_id
+    cmp byte [result+5],3
+    je .found
+    dec bx
+    jnz .next_id
+    jmp finish
+.found:
+    ret
+
+read_duplicate_sector:
+    mov al,46h
+    mov si,read_duplicate
+transfer_duplicate:
+    mov ah,al
+    mov al,6
+    out 0ah,al
+    out 0ch,al
+    mov al,ah
+    out 0bh,al
+    xor al,al
+    out 04h,al
+    mov al,12h
+    out 04h,al
+    mov al,0ffh
+    out 05h,al
+    mov al,1
+    out 05h,al
+    mov al,6
+    out 81h,al
+    mov al,2
+    out 0ah,al
+    mov cx,9
+    call command_and_irq
+    call read_result
+    cmp word [result],DRIVE_HEAD
+    jne finish
+    cmp byte [result+2],0
+    jne finish
+    cmp word [result+3],0102h
+    jne finish
+    cmp word [result+5],0206h
+    jne finish
+    in al,08h
+    test al,4
+    jz finish
+    ret
+
+check_duplicate_fill:
+    mov di,1200h
+    mov cx,512
+    repe scasb
+    jne finish
+    ret
+
+read_duplicate db 46h,DRIVE_HEAD,2,1,6,2,6,2ah,0ffh
+write_duplicate db 45h,DRIVE_HEAD,2,1,6,2,6,2ah,0ffh
 %endif
 
 reset_and_seek:
