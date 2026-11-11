@@ -84,6 +84,18 @@ org 100h
     call read_id
     cmp bl,[result+5]
     jne finish
+%ifdef SCP_FORMAT_READBACK
+    mov bp,SECTORS - 1
+.check_formatted_ids:
+    xor bh,bh
+    mov bl,[result+5]
+    mov bl,[next_id+bx-1]
+    call read_id
+    cmp bl,[result+5]
+    jne finish
+    dec bp
+    jnz .check_formatted_ids
+%endif
 
     mov byte [stage],5
     ; Channel 2, device to memory, physical destination 61200h.
@@ -125,6 +137,8 @@ org 100h
     jne finish
 %ifdef READBACK
     cmp word [result+5],0206h
+%elifdef SCP_FORMAT_READBACK
+    cmp word [result+5],020bh
 %else
     cmp word [result+5],0204h
 %endif
@@ -276,7 +290,11 @@ org 100h
     jne finish
     cmp word [result+3],0102h
     jne finish
+%ifdef SCP_FORMAT
+    cmp word [result+5],020bh
+%else
     cmp word [result+5],0200h + SECTORS
+%endif
 %endif
     jne finish
     cmp byte [result+2],0
@@ -354,7 +372,11 @@ read_id:
     jne finish
     cmp byte [result+5],1
     jb finish
+%ifdef SCP_FORMAT_READBACK
+    cmp byte [result+5],11
+%else
     cmp byte [result+5],SECTORS
+%endif
     ja finish
     ret
 
@@ -450,6 +472,15 @@ id db 4ah,DRIVE_HEAD
 %ifdef FORMAT_TEST
 format_command db 4dh,DRIVE_HEAD,2,SECTORS,54h,0e5h
 format_ids:
+%ifdef SCP_FORMAT
+    db 2,1,6,2, 2,1,3,2, 2,1,10,2, 2,1,4,2
+    db 2,1,1,2, 2,1,2,2, 2,1,5,2, 2,1,7,2
+%ifdef FORMAT_INVALID
+    db 2,1,11,8
+%else
+    db 2,1,11,2
+%endif
+%else
 %assign sector 1
 %rep SECTORS - 1
     db 2,1,sector,2
@@ -461,8 +492,11 @@ format_ids:
     db 2,1,SECTORS,2
 %endif
 %endif
+%endif
 %ifdef READBACK
 read_data db 46h,DRIVE_HEAD,2,1,5,2,6,2ah,0ffh
+%elifdef SCP_FORMAT_READBACK
+read_data db 46h,DRIVE_HEAD,2,1,10,2,11,2ah,0ffh
 %else
 read_data db 46h,DRIVE_HEAD,2,1,3,2,4,2ah,0ffh
 %endif
@@ -475,7 +509,11 @@ saved_imr db 0
 interrupts db 0
 result times 7 db 0
 %ifdef REORDERED
+%ifdef SCP_FORMAT_READBACK
+next_id db 2,5,10,1,7,3,11,0,0,4,6
+%else
 next_id db 2,4,5,3,6,7,8,9,1
+%endif
 %endif
 %ifdef SCP_REVOLUTIONS
 read_marker db 46h,DRIVE_HEAD,2,1,6,2,6,2ah,0ffh

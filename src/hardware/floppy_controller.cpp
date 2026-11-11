@@ -295,6 +295,23 @@ void format_track(uint32_t)
 		return;
 	}
 
+	if (auto* track = fdc.disk->GetTrackImage()) {
+		using Result = FloppyTrackImage::FormatResult;
+		const auto result = track->FormatScpTrack(fdc.cylinder,
+		                                          fdc.head,
+		                                          std::span(ids).first(count),
+		                                          fdc.command[5]);
+		switch (result) {
+		case Result::InvalidLayout: finish_data(0x04); return;
+		case Result::WriteError: finish_data(0x20); return;
+		case Result::Success:
+			fdc.track_sector =
+			        &track->GetTrack(fdc.cylinder, fdc.head).back();
+			finish_data(0);
+			return;
+		}
+	}
+
 	// Raw images only represent a full track with sequential, fixed-size IDs.
 	for (size_t i = 0; i < count; i += IdSize) {
 		if (ids[i] != fdc.cylinder || ids[i + 1] != fdc.head ||
@@ -340,9 +357,11 @@ void start_data(const Command command)
 	}
 	fdc.phase = Phase::Execution;
 	if (command == Command::FormatTrack) {
-		if (fdc.disk->GetTrackImage() || fdc.command[2] != SectorSizeCode ||
-		    fdc.command[3] == 0 || fdc.command[3] != fdc.disk->sectors ||
-		    fdc.disk->getSectSize() != SectorSize) {
+		const auto raw = !fdc.disk->GetTrackImage();
+		if (fdc.command[3] == 0 || fdc.command[2] > 7 ||
+		    (raw && (fdc.command[2] != SectorSizeCode ||
+		             fdc.command[3] != fdc.disk->sectors ||
+		             fdc.disk->getSectSize() != SectorSize))) {
 			finish_data(0x04);
 			return;
 		}

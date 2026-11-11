@@ -24,11 +24,14 @@ struct FluxTurn {
 };
 
 constexpr std::array<uint8_t, 8> OverlayMagic = {'S', 'C', 'P', 'O', 'V', 'L', 1, 0};
+constexpr uint8_t TrackFormatMarker           = 0xff;
+constexpr size_t ChrnSize                     = 4;
 
-auto overlay_header(const uint64_t fingerprint)
+auto overlay_header(const uint64_t fingerprint, const uint8_t version)
 {
 	std::array<uint8_t, 16> header = {};
 	std::copy(OverlayMagic.begin(), OverlayMagic.end(), header.begin());
+	header[6] = version;
 	for (size_t i = 0; i < sizeof(fingerprint); ++i) {
 		header[OverlayMagic.size() + i] = static_cast<uint8_t>(
 		        fingerprint >> (8 * i));
@@ -156,6 +159,8 @@ std::unique_ptr<FloppyTrackImage> FloppyTrackImage::LoadScp(FILE* file,
 			continue;
 		}
 		auto& track = image->tracks[(index / 2) * image->heads + index % 2];
+		track.format_cycle_ms = static_cast<double>(turns.front().duration_ns) /
+		                        1'000'000;
 		track.cycle_ms = 0;
 		for (const auto& turn : turns) {
 			track.cycle_ms += static_cast<double>(turn.duration_ns) /
@@ -274,21 +279,42 @@ bool FloppyTrackImage::LoadScpOverlay()
 	const auto close_file = [](FILE* file) { fclose(file); };
 	const std::unique_ptr<FILE, decltype(close_file)> input(
 	        fopen(overlay_path.c_str(), "rb"), close_file);
-	const auto expected            = overlay_header(capture_fingerprint);
 	std::array<uint8_t, 16> header = {};
 	if (!input ||
 	    fread(header.data(), 1, header.size(), input.get()) != header.size() ||
-	    header != expected) {
+	    (header != overlay_header(capture_fingerprint, 1) &&
+	     header != overlay_header(capture_fingerprint, 2))) {
 		return false;
 	}
 	OverlayKey key  = {};
 	auto bytes_read = fread(key.data(), 1, key.size(), input.get());
 	while (bytes_read == key.size()) {
-		OverlaySector data = {};
-		if (!CanOverlaySector(key) ||
-		    fread(data.data(), 1, data.size(), input.get()) != data.size() ||
-		    !overlay.emplace(key, data).second) {
-			return false;
+		if (header[6] == 2 && key[1] == TrackFormatMarker) {
+			const TrackAddress address = {key[0], key[2]};
+			const auto count           = fgetc(input.get());
+			const auto fill            = fgetc(input.get());
+			if (count <= 0 || fill == EOF || !overlay.empty()) {
+				return false;
+			}
+			TrackFormat format = {std::vector<uint8_t>(
+			                              static_cast<size_t>(count) *
+			                              ChrnSize),
+			                      check_cast<uint8_t>(fill)};
+			if (fread(format.ids.data(), 1, format.ids.size(), input.get()) !=
+			            format.ids.size() ||
+			    !IsValidTrackFormat(address, format.ids) ||
+			    !track_formats.emplace(address, format).second) {
+				return false;
+			}
+			ApplyTrackFormat(address, format);
+		} else {
+			OverlaySector data = {};
+			if (!CanOverlaySector(key) ||
+			    fread(data.data(), 1, data.size(), input.get()) !=
+			            data.size() ||
+			    !overlay.emplace(key, data).second) {
+				return false;
+			}
 		}
 		bytes_read = fread(key.data(), 1, key.size(), input.get());
 	}
@@ -301,16 +327,31 @@ bool FloppyTrackImage::LoadScpOverlay()
 	return true;
 }
 
-bool FloppyTrackImage::SaveScpOverlay(const Overlay& entries) const
+bool FloppyTrackImage::SaveScpOverlay(const Overlay& entries,
+                                      const TrackFormats& formats) const
 {
 	const auto temporary = overlay_path + ".tmp";
 	auto* file           = fopen(temporary.c_str(), "wbx");
 	if (!file) {
 		return false;
 	}
-	const auto header = overlay_header(capture_fingerprint);
+	const auto header = overlay_header(capture_fingerprint,
+	                                   formats.empty() ? 1 : 2);
 	auto success      = fwrite(header.data(), 1, header.size(), file) ==
 	                    header.size();
+	for (const auto& [address, format] : formats) {
+		const std::array record = {address[0],
+		                           TrackFormatMarker,
+		                           address[1],
+		                           check_cast<uint8_t>(format.ids.size() /
+		                                               ChrnSize),
+		                           format.fill};
+		success = success &&
+		          fwrite(record.data(), 1, record.size(), file) ==
+		                  record.size() &&
+		          fwrite(format.ids.data(), 1, format.ids.size(), file) ==
+		                  format.ids.size();
+	}
 	for (const auto& [key, data] : entries) {
 		success = success &&
 		          fwrite(key.data(), 1, key.size(), file) == key.size() &&
@@ -345,10 +386,78 @@ bool FloppyTrackImage::WriteScpSector(const uint32_t cylinder,
 	auto entries  = overlay;
 	auto& updated = entries[key];
 	std::copy(data.begin(), data.end(), updated.begin());
-	if (!SaveScpOverlay(entries)) {
+	if (!SaveScpOverlay(entries, track_formats)) {
 		return false;
 	}
 	ApplyOverlaySector(key, updated);
 	overlay.swap(entries);
 	return true;
+}
+
+bool FloppyTrackImage::IsValidTrackFormat(const TrackAddress& address,
+                                          const std::span<const uint8_t> ids) const
+{
+	if (address[0] >= cylinders || address[1] >= heads || ids.empty() ||
+	    ids.size() % ChrnSize != 0 || ids.size() / ChrnSize > UINT8_MAX) {
+		return false;
+	}
+	// Bound the decoded data that a single formatted track can allocate.
+	constexpr size_t MaxTrackDataBytes = 64 * 1024;
+	size_t data_bytes                  = 0;
+	for (size_t offset = 0; offset < ids.size(); offset += ChrnSize) {
+		const auto size_code = ids[offset + 3];
+		if (size_code > 7) {
+			return false;
+		}
+		data_bytes += size_t{128} << size_code;
+	}
+	return data_bytes <= MaxTrackDataBytes;
+}
+
+void FloppyTrackImage::ApplyTrackFormat(const TrackAddress& address,
+                                        const TrackFormat& format)
+{
+	auto& track = tracks[address[0] * heads + address[1]];
+	track.sectors.clear();
+	track.cycle_ms = track.format_cycle_ms;
+	for (size_t offset = 0; offset < format.ids.size(); offset += ChrnSize) {
+		FloppySector sector   = {};
+		sector.cylinder       = format.ids[offset];
+		sector.head           = format.ids[offset + 1];
+		sector.id             = format.ids[offset + 2];
+		sector.size_code      = format.ids[offset + 3];
+		sector.cycle_fraction = static_cast<double>(offset) /
+		                        static_cast<double>(format.ids.size());
+		sector.data.assign(size_t{128} << sector.size_code, format.fill);
+		track.sectors.push_back(std::move(sector));
+	}
+}
+
+FloppyTrackImage::FormatResult FloppyTrackImage::FormatScpTrack(
+        const uint8_t cylinder, const uint8_t head,
+        const std::span<const uint8_t> ids, const uint8_t fill)
+{
+	if (IsWriteProtected()) {
+		return FormatResult::WriteError;
+	}
+	const TrackAddress address = {cylinder, head};
+	if (!IsValidTrackFormat(address, ids)) {
+		return FormatResult::InvalidLayout;
+	}
+	auto entries = overlay;
+	std::erase_if(entries, [=](const auto& entry) {
+		return entry.first[0] == cylinder && entry.first[1] == head;
+	});
+	auto formats       = track_formats;
+	const auto& format = formats[address] = {
+	        {ids.begin(), ids.end()},
+                fill
+        };
+	if (!SaveScpOverlay(entries, formats)) {
+		return FormatResult::WriteError;
+	}
+	ApplyTrackFormat(address, format);
+	overlay.swap(entries);
+	track_formats.swap(formats);
+	return FormatResult::Success;
 }

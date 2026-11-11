@@ -44,6 +44,10 @@ public:
 	bool WriteScpSector(const uint32_t cylinder, const uint32_t head,
 	                    const uint32_t sector,
 	                    const std::span<const uint8_t> data);
+	enum class FormatResult { Success, InvalidLayout, WriteError };
+	FormatResult FormatScpTrack(const uint8_t cylinder, const uint8_t head,
+	                            const std::span<const uint8_t> ids,
+	                            const uint8_t fill);
 
 	uint32_t cylinders       = 0;
 	uint32_t heads           = 0;
@@ -53,18 +57,29 @@ private:
 	using OverlayKey    = std::array<uint8_t, 3>;
 	using OverlaySector = std::array<uint8_t, 512>;
 	using Overlay       = std::map<OverlayKey, OverlaySector>;
+	using TrackAddress  = std::array<uint8_t, 2>;
+	struct TrackFormat {
+		std::vector<uint8_t> ids = {};
+		uint8_t fill             = 0;
+	};
+	using TrackFormats = std::map<TrackAddress, TrackFormat>;
 	bool LoadScpOverlay();
-	bool SaveScpOverlay(const Overlay& overlay) const;
+	bool SaveScpOverlay(const Overlay& overlay, const TrackFormats& formats) const;
+	bool IsValidTrackFormat(const TrackAddress& address,
+	                        const std::span<const uint8_t> ids) const;
+	void ApplyTrackFormat(const TrackAddress& address, const TrackFormat& format);
 	bool CanOverlaySector(const OverlayKey& key) const;
 	void ApplyOverlaySector(const OverlayKey& key, const OverlaySector& data);
 	std::string overlay_path     = {};
 	uint64_t capture_fingerprint = 0;
 	bool overlay_writable        = false;
 	Overlay overlay              = {};
+	TrackFormats track_formats   = {};
 
 	struct Track {
 		std::vector<FloppySector> sectors = {};
 		double cycle_ms                   = 200.0;
+		double format_cycle_ms            = 200.0;
 	};
 	static std::vector<FloppySector> DecodeMfmTrack(
 	        const std::span<const uint8_t> bitstream,

@@ -64,6 +64,7 @@ public:
 	imageDisk(std::unique_ptr<FloppyTrackImage> track_image,
 	          const std::string& name);
 	const FloppyTrackImage* GetTrackImage() const;
+	FloppyTrackImage* GetTrackImage();
 	imageDisk(const imageDisk&) = delete; // prevent copy
 	imageDisk& operator=(const imageDisk&) = delete; // prevent assignment
 
