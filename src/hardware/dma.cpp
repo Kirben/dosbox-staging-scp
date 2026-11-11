@@ -268,6 +268,7 @@ void DmaController::WriteControllerReg(const io_port_t reg,
 	case 0xb: /* Mode Register */
 		UpdateEMSMapping();
 		chan                      = GetChannel(val & 3);
+		chan->is_memory_to_device = (val & 0x0c) == 0x08;
 		chan->is_device_to_memory = (val & 0x0c) == 0x04;
 		chan->is_autoiniting      = (val & 0x10) > 0;
 		chan->is_incremented      = (val & 0x20) > 0;
@@ -505,6 +506,7 @@ void DmaChannel::Reset()
 	page_num = 0;
 
 	is_incremented             = true;
+	is_memory_to_device        = false;
 	is_device_to_memory        = false;
 	is_autoiniting             = false;
 	is_masked                  = true;

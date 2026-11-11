@@ -26,7 +26,7 @@
 #include "utils/string_utils.h"
 
 FILE* BOOT::getFSFile_mounted(const char* filename, uint32_t* ksize,
-                              uint32_t* bsize, uint8_t* error)
+                              uint32_t* bsize, uint8_t* error, bool* read_only)
 {
 	// if return NULL then put in error the errormessage code if an error
 	// was requested
@@ -73,6 +73,9 @@ FILE* BOOT::getFSFile_mounted(const char* filename, uint32_t* ksize,
 					*error = 1;
 				return nullptr;
 			}
+			if (read_only) {
+				*read_only = true;
+			}
 		}
 
 		return tmpfile;
@@ -82,10 +85,10 @@ FILE* BOOT::getFSFile_mounted(const char* filename, uint32_t* ksize,
 }
 
 FILE* BOOT::getFSFile(const char* filename, uint32_t* ksize, uint32_t* bsize,
-                      bool tryload)
+                      bool tryload, bool* read_only)
 {
 	uint8_t error = tryload ? 1 : 0;
-	FILE *tmpfile = getFSFile_mounted(filename, ksize, bsize, &error);
+	FILE* tmpfile = getFSFile_mounted(filename, ksize, bsize, &error, read_only);
 	if (tmpfile)
 		return tmpfile;
 	// File not found on mounted filesystem. Try regular filesystem
@@ -103,6 +106,9 @@ FILE* BOOT::getFSFile(const char* filename, uint32_t* ksize, uint32_t* bsize,
 			//				fclose(tmpfile);
 			//				if (tryload) error = 2;
 			WriteOut(MSG_Get("PROGRAM_BOOT_WRITE_PROTECTED"));
+			if (read_only) {
+				*read_only = true;
+			}
 			if (!check_fseek(ModuleName, FileDescription, filename, tmpfile, 0L, SEEK_END)) {
 				return nullptr;
 			}
@@ -246,8 +252,12 @@ void BOOT::Run(void)
 			WriteOut(MSG_Get("PROGRAM_BOOT_IMAGE_OPEN"),
 			         temp_line.c_str());
 			uint32_t rombytesize;
-			FILE *usefile = getFSFile(temp_line.c_str(),
-			                          &floppysize, &rombytesize);
+			bool read_only = false;
+			FILE* usefile  = getFSFile(temp_line.c_str(),
+			                           &floppysize,
+			                           &rombytesize,
+			                           false,
+			                           &read_only);
 			if (usefile != nullptr) {
 				if (IsFloppyTrackImagePath(temp_line)) {
 					const auto close_file = [](FILE* file) {
@@ -269,8 +279,12 @@ void BOOT::Run(void)
 					++i;
 					continue;
 				}
-				boot_disks[boot_disk_count++] = std::make_shared<imageDisk>(
-				        usefile, temp_line.c_str(), floppysize, false);
+				boot_disks[boot_disk_count++] =
+				        std::make_shared<imageDisk>(usefile,
+				                                    temp_line.c_str(),
+				                                    floppysize,
+				                                    false,
+				                                    read_only);
 				if (usefile_1 == nullptr) {
 					usefile_1 = usefile;
 					rombytesize_1 = rombytesize;

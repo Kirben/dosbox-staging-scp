@@ -302,7 +302,29 @@ uint8_t imageDisk::Write_Sector(uint32_t head, uint32_t cylinder,
 
 uint8_t imageDisk::Write_AbsoluteSector(uint32_t sectnum, void* data)
 {
-	if (track_image) {
+	return write_absolute_sector(sectnum, data, false);
+}
+
+bool imageDisk::IsWriteProtected() const
+{
+	return read_only || track_image != nullptr;
+}
+
+bool imageDisk::WriteSectorForController(const uint32_t head, const uint32_t cylinder,
+                                         const uint32_t sector,
+                                         const std::span<const uint8_t> data)
+{
+	if (data.size() != sector_size) {
+		return false;
+	}
+	const auto absolute_sector = (cylinder * heads + head) * sectors + sector - 1;
+	return write_absolute_sector(absolute_sector, data.data(), true) == 0;
+}
+
+uint8_t imageDisk::write_absolute_sector(const uint32_t sectnum, const void* data,
+                                         const bool controller_write)
+{
+	if (IsWriteProtected()) {
 		return 0x03;
 	}
 
@@ -322,7 +344,7 @@ uint8_t imageDisk::Write_AbsoluteSector(uint32_t sectnum, void* data)
 
 	// Only perform delay if we booted from a disk image
 	// Otherwise this would result in delay duplication in the int21 handler
-	if (DOS_IsGuestOsBooted()) {
+	if (!controller_write && DOS_IsGuestOsBooted()) {
 		DiskType type = hardDrive ? DiskType::HardDisk : DiskType::Floppy;
 		DOS_PerformDiskIoDelay(sector_size, type);
 	}
@@ -331,11 +353,14 @@ uint8_t imageDisk::Write_AbsoluteSector(uint32_t sectnum, void* data)
 	current_fpos = bytenum + ret;
 	last_action  = WRITE;
 
+	if (controller_write) {
+		return ret == sector_size && fflush(diskimg) == 0 ? 0 : 0x05;
+	}
 	return ((ret > 0) ? 0x00 : 0x05);
 }
 
 imageDisk::imageDisk(FILE* img_file, const char* img_name, uint32_t img_size_k,
-                     bool is_hdd)
+                     bool is_hdd, bool is_read_only)
         : hardDrive(is_hdd),
           active(false),
           diskimg(img_file),
@@ -344,6 +369,7 @@ imageDisk::imageDisk(FILE* img_file, const char* img_name, uint32_t img_size_k,
           heads(0),
           cylinders(0),
           sectors(0),
+          read_only(is_read_only),
           current_fpos(0),
           last_action(NONE)
 {
