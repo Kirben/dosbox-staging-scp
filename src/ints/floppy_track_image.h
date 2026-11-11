@@ -13,6 +13,7 @@
 #include <vector>
 
 #include "ints/floppy_media.h"
+#include "misc/support.h"
 
 class FloppyTrackImage final : public FloppyMedia {
 public:
@@ -80,7 +81,7 @@ private:
 	std::string overlay_path     = {};
 	uint64_t capture_fingerprint = 0;
 	bool overlay_writable        = false;
-	std::unique_ptr<FILE, decltype([](FILE* file) { fclose(file); })> overlay_lock = {};
+	FILE_unique_ptr overlay_lock = {};
 	Overlay overlay              = {};
 	TrackFormats track_formats   = {};
 
