@@ -92,6 +92,7 @@ struct Controller {
 	uint8_t sector                                     = 0;
 	bool irq_pending                                   = false;
 	bool seek_pending                                  = false;
+	bool skipped_deleted                               = false;
 	bool non_dma                                       = false;
 };
 
@@ -159,7 +160,7 @@ void finish_data(const uint8_t status_1, const uint8_t status_2 = 0,
 	const auto* sector = fdc.track_sector;
 	fdc.result         = {status_0,
 	                      status_1,
-	                      status_2,
+	                      check_cast<uint8_t>(status_2 | (fdc.skipped_deleted ? 0x40 : 0)),
                       sector ? sector->cylinder : fdc.cylinder,
                       sector ? sector->head : fdc.head,
                       sector ? sector->id : fdc.sector,
@@ -386,6 +387,20 @@ bool commit_sector_write(const std::span<const uint8_t> data)
 	                                                             data);
 }
 
+void advance_data_sector()
+{
+	if (fdc.sector < fdc.command[6]) {
+		++fdc.sector;
+		schedule_next_sector();
+	} else if ((fdc.command[0] & 0x80) && fdc.head == 0 && fdc.disk->heads > 1) {
+		fdc.head   = 1;
+		fdc.sector = 1;
+		schedule_next_sector();
+	} else {
+		finish_data(0x80);
+	}
+}
+
 void finish_sector_transfer(const std::span<const uint8_t> write_data,
                             const bool terminal_count)
 {
@@ -397,15 +412,8 @@ void finish_sector_transfer(const std::span<const uint8_t> write_data,
 		finish_data(0, 0x40);
 	} else if (terminal_count) {
 		finish_data(0);
-	} else if (fdc.sector < fdc.command[6]) {
-		++fdc.sector;
-		schedule_next_sector();
-	} else if ((fdc.command[0] & 0x80) && fdc.head == 0 && fdc.disk->heads > 1) {
-		fdc.head   = 1;
-		fdc.sector = 1;
-		schedule_next_sector();
 	} else {
-		finish_data(0x80);
+		advance_data_sector();
 	}
 }
 
@@ -441,6 +449,11 @@ void transfer_sector(uint32_t)
 	if (const auto* sector = fdc.track_sector) {
 		if (sector->id_crc_error) {
 			finish_data(0x20);
+			return;
+		}
+		if (!writing && sector->deleted && (fdc.command[0] & 0x20)) {
+			fdc.skipped_deleted = true;
+			advance_data_sector();
 			return;
 		}
 		if (!writing && sector->data.empty()) {
@@ -676,6 +689,7 @@ void acknowledge_pio_byte()
 
 void start_data(const Command command)
 {
+	fdc.skipped_deleted = false;
 	const auto unit = selected_unit();
 	fdc.disk        = BIOS_GetDisk(unit);
 	fdc.media       = BIOS_GetFloppyMedia(unit);

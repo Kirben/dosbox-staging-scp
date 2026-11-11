@@ -28,9 +28,9 @@ def mfm_word(previous, value):
 MFM = tuple(tuple(mfm_word(p, v) for v in range(256)) for p in (0, 1))
 
 
-# pylint: disable-next=R0914
+# pylint: disable-next=R0913,R0917,R0914
 def encode_track(disk, track, duplicate_id=False, verify_errors=False,
-                 malformed_id=False):
+                 malformed_id=False, deleted_sector=False):
     """Build a synthetic MFM track with optional protection cases."""
     cells = bytearray()
     previous = 0
@@ -62,19 +62,20 @@ def encode_track(disk, track, duplicate_id=False, verify_errors=False,
               damaged or (inject and sector == 6))
         append(b"\x4e" * 22)
         offset = (track * 9 + sector - 1) * 512
-        field(b"\xfb" + disk[offset:offset + 512], inject and sector == 4)
+        mark = b"\xf8" if deleted_sector and (track, sector) == (0, 3) else b"\xfb"
+        field(mark + disk[offset:offset + 512], inject and sector == 4)
         append(b"\x4e" * 40)
     append(b"\x4e" * ((12500 - len(cells)) // 2))
     return cells
 
 
-def encode(disk, verify_errors=False, malformed_id=False):
+def encode(disk, verify_errors=False, malformed_id=False, deleted_sector=False):
     """Encode the complete disk as an HxC MFM image."""
     image = bytearray(19 + 80 * 11)
     pack_into("<7sHBHHBI", image, 0, b"HXCMFM", 40, 2, 300, 250, 7, 19)
     for track in range(80):
         cells = encode_track(disk, track, verify_errors=verify_errors,
-                             malformed_id=malformed_id)
+                             malformed_id=malformed_id, deleted_sector=deleted_sector)
         pack_into("<HBII", image, 19 + 11 * track, track // 2, track % 2,
                   len(cells), len(image))
         image.extend(cells)
