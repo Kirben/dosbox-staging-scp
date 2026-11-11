@@ -12,9 +12,14 @@ org 100h
     int 21h
     in al,21h
     mov [saved_mask],al
+%ifndef PCJR_IRQ_TEST
     or al,40h
     out 21h,al
+%endif
     cld
+%ifdef IRQ_RESET_TEST
+    jmp irq_reset_test
+%endif
 %ifdef CROSS_TRACK
     jmp cross_track
 %endif
@@ -373,6 +378,108 @@ cross_transfer:
     jmp si
 %endif
 
+%ifdef IRQ_RESET_TEST
+irq_reset_test:
+%ifndef PCJR_IRQ_TEST
+    ; Leave the controller waiting for the parameters of a Seek command.
+    mov dx,3f2h
+    mov al,0ch | UNIT | (10h << UNIT)
+    out dx,al
+    mov dx,3f5h
+    mov al,0fh
+    out dx,al
+%endif
+    mov byte [interrupts],0
+    xor ax,ax
+    mov dx,UNIT
+    int 13h
+    jc report
+%ifdef PCJR_IRQ_TEST
+    cmp byte [interrupts],0
+    jne report
+%else
+    cmp byte [interrupts],1
+    jne report
+    cmp byte [pic_irq6],1
+    jne report
+    mov ax,40h
+    mov es,ax
+    test byte [es:3eh],80h
+    jz report
+    in al,21h
+    test al,40h
+    jz report
+    ; The BIOS must drain reset status and leave the controller ready.
+    mov dx,3f4h
+    in al,dx
+    cmp al,80h
+    jne report
+    mov dx,3f5h
+    mov al,08h
+    out dx,al
+    in al,dx
+    cmp al,80h
+    jne report
+    inc byte [stage]
+    in al,21h
+    and al,0bfh
+    out 21h,al
+    mov dx,3f2h
+    mov al,0
+    out dx,al
+    mov al,0ch | UNIT | (10h << UNIT)
+    out dx,al
+.wait_irq:
+    cmp byte [interrupts],2
+    je .check_edge
+    hlt
+    jmp .wait_irq
+.check_edge:
+    in al,21h
+    or al,40h
+    out 21h,al
+    mov al,0ch | UNIT | (10h << UNIT)
+    out dx,al
+    mov al,0ah
+    out 20h,al
+    in al,20h
+    test al,40h
+    jnz report
+    mov dx,3f5h
+    mov cx,4
+.drain:
+    mov al,08h
+    out dx,al
+    in al,dx
+    in al,dx
+    loop .drain
+%endif
+    inc byte [stage]
+    mov ax,6000h
+    mov es,ax
+    mov bx,1100h
+    mov ax,0201h
+    mov cx,0203h
+    mov dx,0100h | UNIT
+    int 13h
+    jc report
+    cmp byte [es:1100h],53h
+    jne report
+%ifdef KEYBOARD_TEST
+    inc byte [stage]
+    xor ax,ax
+    int 16h
+    cmp al,'k'
+    jne report
+%ifdef PCJR_IRQ_TEST
+    cmp byte [interrupts],0
+    je report
+%endif
+%endif
+    mov byte [stage],0
+    jmp report
+%endif
+
 report:
     mov al,[saved_mask]
     out 21h,al
@@ -398,12 +505,28 @@ report:
     int 21h
 
 irq6:
+%ifdef IRQ_RESET_TEST
+%ifndef PCJR_IRQ_TEST
+    push ax
+    mov al,0bh
+    out 20h,al
+    in al,20h
+    test al,40h
+    jz .restore
+    inc byte [cs:pic_irq6]
+.restore:
+    mov al,0ah
+    out 20h,al
+    pop ax
+%endif
+%endif
     inc byte [cs:interrupts]
     jmp far [cs:old_irq6]
 
 old_irq6 dd 0
 saved_mask db 0
 interrupts db 0
+pic_irq6 db 0
 sector_count db 0
 stage db 1
 filename db 'BIOS.OUT',0
