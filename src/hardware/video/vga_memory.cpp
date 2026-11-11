@@ -44,8 +44,6 @@
 #define MEM_CHANGED( _MEM ) 
 #endif
 
-#define TANDY_VIDBASE(_X_)  &MemBase[ 0x80000 + (_X_)]
-
 void VGA_MapMMIO(void);
 //Nice one from DosEmu
 inline static uint32_t RasterOp(uint32_t input,uint32_t mask) {
@@ -1019,8 +1017,13 @@ void VGA_SetupHandlers(void) {
 			vga.tandy.draw_base = vga.mem.linear;
 			vga.tandy.mem_base = vga.mem.linear;
 		} else {
-			vga.tandy.draw_base = TANDY_VIDBASE( vga.tandy.draw_bank * 16 * 1024);
-			vga.tandy.mem_base = TANDY_VIDBASE( vga.tandy.mem_bank * 16 * 1024);
+			// The onboard RAM is at the bottom of memory in a 128
+			// KB system.
+			const auto base = MEM_UsesStandardTandyLayout() ? 0 : 0x80000;
+			vga.tandy.draw_base =
+			        &MemBase[base + vga.tandy.draw_bank * 16 * 1024];
+			vga.tandy.mem_base =
+			        &MemBase[base + vga.tandy.mem_bank * 16 * 1024];
 			MEM_SetPageHandler( VGA_PAGE_B8, 8, &vgaph.tandy );
 		}
 		goto range_done;
