@@ -77,6 +77,14 @@ def main():
                     saved = overlay.read_bytes()
                 else:
                     assert overlay.read_bytes() == saved
+            run_probe(dosbox, args.nasm, directory, "scp", unit, 360, 9,
+                      encode_scp, write_mode="format", partial_format=True)
+            interrupted = overlay.read_bytes()
+            assert interrupted != saved
+            run_probe(dosbox, args.nasm, directory, "scp", unit, 360, 9,
+                      encode_scp, write_mode="format-readback", partial_format=True)
+            assert overlay.read_bytes() == interrupted
+            overlay.write_bytes(saved)
             for mode in ("format-protected", "format-invalid", "format",
                          "format-readback"):
                 run_probe(dosbox, args.nasm, directory, "scp", unit, 360, 9,
