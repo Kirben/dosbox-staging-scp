@@ -21,7 +21,9 @@
 #include "dos/drives.h"
 #include "dosbox_test_fixture.h"
 #include "hardware/ide.h"
+#include "hardware/memory.h"
 #include "ints/bios_disk.h"
+#include "ints/int10.h"
 #include "misc/cross.h"
 #include "utils/env_utils.h"
 
@@ -2468,6 +2470,8 @@ TEST_F(MountDiskImageTest, FloppyImageInHomeMountedAsDriveA)
 
 TEST_F(MountDiskImageTest, FloppySwapAndEjectUpdateTheBiosSlot)
 {
+	// The mount status lists multiple paths using the BIOS text width.
+	real_writew(BIOSMEM_SEG, BIOSMEM_NB_COLS, 80);
 	write_floppy_image(P("first.img"), "FIRST");
 	write_floppy_image(P("second.ima"), "SECOND");
 
