@@ -93,3 +93,33 @@ gtest_discover_tests(
   DISCOVERY_MODE PRE_TEST
   DISCOVERY_TIMEOUT 60
 )
+
+# These probes run the native emulator headlessly with synthetic floppy images.
+if(CMAKE_SYSTEM_NAME STREQUAL "Linux" AND NOT CMAKE_CROSSCOMPILING)
+    find_package(Python3 QUIET COMPONENTS Interpreter)
+    find_program(NASM_EXECUTABLE NAMES nasm)
+    if(Python3_Interpreter_FOUND AND NASM_EXECUTABLE)
+        function(add_floppy_guest_test name script)
+            add_test(NAME Guest.${name}
+                COMMAND "${Python3_EXECUTABLE}" -B "${CMAKE_CURRENT_SOURCE_DIR}/${script}"
+                        --dosbox "$<TARGET_FILE:dosbox>" --nasm "${NASM_EXECUTABLE}"
+                        ${ARGN})
+            set_tests_properties(Guest.${name} PROPERTIES LABELS floppy TIMEOUT 300)
+        endfunction()
+
+        add_floppy_guest_test(FloppyFatCache run_fat_floppy_cache_probe.py)
+        add_floppy_guest_test(FloppyDiskChange run_floppy_disk_change_probe.py)
+        add_floppy_guest_test(FloppyBiosRead run_bios_floppy_read_probe.py)
+        add_floppy_guest_test(FloppyBiosWrite run_bios_floppy_read_probe.py --scp-write)
+        add_floppy_guest_test(FloppyBiosVerify run_bios_floppy_read_probe.py --verify)
+        add_floppy_guest_test(FloppyBiosCrossTrack run_bios_floppy_read_probe.py --cross-track)
+        add_floppy_guest_test(FloppyIrqReset run_bios_floppy_read_probe.py --irq-reset)
+        add_floppy_guest_test(FloppyReadTrack run_bios_floppy_read_probe.py --read-track)
+        add_floppy_guest_test(FloppyRawController run_raw_floppy_read_probe.py --write --format)
+        add_floppy_guest_test(FloppyRawBiosFormat run_raw_floppy_read_probe.py --bios-format)
+        add_floppy_guest_test(FloppyScpAttachment run_scp_attachment_probe.py)
+        add_floppy_guest_test(FloppyScpBiosFormat run_scp_attachment_probe.py --bios-format)
+        add_floppy_guest_test(FloppyMfmAttachment run_hxc_mfm_probe.py)
+        add_floppy_guest_test(Floppy86fAttachment run_86f_attachment_probe.py)
+    endif()
+endif()
