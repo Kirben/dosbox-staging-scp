@@ -142,6 +142,27 @@ org 100h
     call read_sector
     mov bl,80h
     call check_result
+
+    mov byte [stage],14
+    ; Track 2/1 has a bad CRC in its third data field. Overrun the fourth.
+    mov si,seek_crc_track
+    mov cx,3
+    call send
+.wait_seek:
+    in al,MSR
+    cmp al,80h
+    jne .wait_seek
+    mov si,read_crc_track
+    mov cx,9
+    call send
+    xor bl,bl
+    call read_sector
+    call read_sector
+    call read_sector
+    mov bl,30h
+    mov byte [expected_st2],20h
+    call check_result
+    mov byte [expected_st2],0
 %else
     mov byte [stage],12
     mov si,read_timed
@@ -386,6 +407,8 @@ report:
 
 %ifdef TRACK_IMAGE
 read_id db 4ah,0
+seek_crc_track db 0fh,4,2
+read_crc_track db 42h,4,2,1,1,2,9,2ah,0ffh
 bios_buffer times 512 db 0
 %endif
 read_timed db 46h,0,0,0,1,2,8,2ah,0ffh
