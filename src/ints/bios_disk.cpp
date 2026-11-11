@@ -627,22 +627,87 @@ struct DiskServiceResult {
 	std::optional<uint32_t> fixed_disk_sectors = {};
 };
 
+static FloppyBiosTransferResult bios_track_sector_transfer(
+        const DiskServiceRequest& request, const uint8_t unit,
+        const FloppyBiosTransfer operation)
+{
+	const auto& disk = *disk_slots[unit].sector;
+	if (!request.count) {
+		return {0x01, 0};
+	}
+	if (operation == FloppyBiosTransfer::Write && disk.IsWriteProtected()) {
+		return {0x03, 0};
+	}
+
+	std::array<uint8_t, 512> data = {};
+	auto cylinder                 = uint32_t{request.cylinder};
+	auto head                     = uint32_t{request.head};
+	auto sector                   = uint32_t{request.sector};
+	auto offset                   = RealOffset(request.buffer);
+	const auto segment            = RealSegment(request.buffer);
+	// Protection tracks can contain IDs beyond the logical geometry.
+	const auto cross_tracks = sector <= disk.sectors;
+	for (uint8_t completed = 0; completed < request.count; ++completed) {
+		if (cylinder >= disk.cylinders || head >= disk.heads ||
+		    !sector || sector > UINT8_MAX) {
+			return {0x04, completed};
+		}
+		FLOPPY_BiosPosition(unit, check_cast<uint8_t>(cylinder));
+		if (operation == FloppyBiosTransfer::Write) {
+			for (auto& byte : data) {
+				byte = real_readb(segment, offset++);
+			}
+			const auto status = disk_slots[unit].sector->Write_Sector(
+			        head, cylinder, sector, data.data());
+			if (status) {
+				return {status, completed};
+			}
+		} else {
+			const auto status = disk_slots[unit].sector->Read_Sector(
+			        head, cylinder, sector, data.data());
+			if (status) {
+				return {status, completed};
+			}
+			if (operation == FloppyBiosTransfer::Read) {
+				for (const auto byte : data) {
+					real_writeb(segment, offset++, byte);
+				}
+			}
+		}
+		if (++sector > disk.sectors && cross_tracks) {
+			sector = 1;
+			if (++head == disk.heads) {
+				head = 0;
+				++cylinder;
+			}
+		}
+	}
+	FLOPPY_SetDiskChanged(unit, false);
+	return {0, request.count};
+}
+
 static DiskServiceResult bios_floppy_transfer(const DiskServiceRequest& request,
                                               const uint8_t drivenum,
                                               const FloppyBiosTransfer operation)
 {
 	auto transfer = FloppyBiosTransferResult{0x04, 0};
 	if (operation != FloppyBiosTransfer::Read || !killRead) {
-		const auto parameters = RealToPhysical(RealGetVec(0x1e));
-		transfer              = FLOPPY_BiosTransfer(operation,
-                                               drivenum,
-                                               request.cylinder,
-                                               request.head,
-                                               request.sector,
-                                               mem_readb(parameters + 3),
-                                               request.count,
-                                               mem_readb(parameters + 5),
-                                               RealToPhysical(request.buffer));
+		if (is_machine_pcjr_or_tandy()) {
+			transfer = bios_track_sector_transfer(request,
+			                                      drivenum,
+			                                      operation);
+		} else {
+			const auto parameters = RealToPhysical(RealGetVec(0x1e));
+			transfer = FLOPPY_BiosTransfer(operation,
+			                               drivenum,
+			                               request.cylinder,
+			                               request.head,
+			                               request.sector,
+			                               mem_readb(parameters + 3),
+			                               request.count,
+			                               mem_readb(parameters + 5),
+			                               RealToPhysical(request.buffer));
+		}
 	}
 	if (operation == FloppyBiosTransfer::Read) {
 		killRead = false;
@@ -734,17 +799,12 @@ static DiskServiceResult run_disk_service(const DiskServiceRequest& request)
 			return {.status = 0xff, .carry = true};
 		}
 
-		if (!is_machine_pcjr_or_tandy() && disk_slots[unit].floppy) {
+		if (disk_slots[unit].floppy) {
 			return bios_floppy_transfer(request,
 			                            unit,
 			                            FloppyBiosTransfer::Read);
 		}
 
-		if (unit < 2 && disk_slots[unit].floppy) {
-			FLOPPY_BiosPosition(unit,
-			                    check_cast<uint8_t>(request.cylinder &
-			                                        0xff));
-		}
 		const auto segat = RealSegment(request.buffer);
 		bufptr           = RealOffset(request.buffer);
 		for (uint32_t i = 0; i < request.count; ++i) {
@@ -774,9 +834,7 @@ static DiskServiceResult run_disk_service(const DiskServiceRequest& request)
 		if (drive_inactive(unit)) {
 			return {.status = 0xff, .carry = true};
 		}
-		if (const auto& track = disk_slots[unit].floppy;
-		    track && track->SupportsTrackWrites() &&
-		    !is_machine_pcjr_or_tandy()) {
+		if (disk_slots[unit].floppy) {
 			return bios_floppy_transfer(request,
 			                            unit,
 			                            FloppyBiosTransfer::Write);
@@ -814,27 +872,10 @@ static DiskServiceResult run_disk_service(const DiskServiceRequest& request)
 			return {.status = last_status, .carry = true};
 		}
 
-		if (!is_machine_pcjr_or_tandy() && disk_slots[unit].floppy) {
+		if (disk_slots[unit].floppy) {
 			return bios_floppy_transfer(request,
 			                            unit,
 			                            FloppyBiosTransfer::Verify);
-		}
-		if (disk_slots[unit].floppy) {
-			const auto first_sector = static_cast<uint32_t>(request.sector);
-			for (uint8_t verified = 0; verified < request.count;
-			     ++verified) {
-				last_status = disk_slots[unit].sector->Read_Sector(
-				        request.head,
-				        request.cylinder,
-				        first_sector + verified,
-				        sectbuf.data());
-				if (last_status) {
-					result.status    = last_status;
-					result.completed = verified;
-					result.carry     = true;
-					return result;
-				}
-			}
 		}
 		result.status = 0x00;
 		result.carry  = false;
