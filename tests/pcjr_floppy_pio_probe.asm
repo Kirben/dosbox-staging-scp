@@ -110,6 +110,30 @@ org 100h
     call read_sector
     mov bl,80h
     call check_result
+%else
+    mov byte [stage],12
+    mov si,read_timed
+    mov cx,9
+    call send
+    ; At 300 RPM, eight sectors span about 172 ms from first to last byte.
+    ; A full slot plus the byte time for each sector takes over 280 ms.
+    mov ax,40h
+    mov es,ax
+    call wait_for_read_byte
+    mov bp,[es:6ch]
+    mov cx,8 * DATA_SIZE
+.next_timed_byte:
+    call wait_for_read_byte
+    in al,DATA
+    loop .next_timed_byte
+    mov ax,[es:6ch]
+    sub ax,bp
+    cmp ax,3
+    jb report
+    cmp ax,4
+    ja report
+    mov bl,80h
+    call check_result
 %endif
 %endif
 
@@ -128,16 +152,20 @@ send:
 read_sector:
     mov cx,DATA_SIZE
 .next:
+    call wait_for_read_byte
+    in al,DATA
+    cmp al,bl
+    jne report
+    loop .next
+    ret
+
+wait_for_read_byte:
     in al,MSR
     and al,0f0h
     cmp al,0d0h
     je report
     cmp al,0f0h
-    jne .next
-    in al,DATA
-    cmp al,bl
-    jne report
-    loop .next
+    jne wait_for_read_byte
     ret
 
 write_sector:
@@ -324,6 +352,7 @@ report:
     mov ax,4c00h
     int 21h
 
+read_timed db 46h,0,0,0,1,2,8,2ah,0ffh
 skip_deleted db 66h,0,0,0,3,2,4,2ah,0ffh
 expected_st2 db 0
 specify db 03h,0dfh,1
