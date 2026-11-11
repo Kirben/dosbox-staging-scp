@@ -24,10 +24,10 @@ struct FluxTurn {
 };
 
 constexpr std::array<uint8_t, 8> OverlayMagic = {'S', 'C', 'P', 'O', 'V', 'L', 1, 0};
-constexpr uint8_t TrackFormatMarker           = 0xff;
-constexpr uint8_t PartialFormatMarker         = 0xfe;
-constexpr uint8_t PhysicalWriteMarker         = 0xfd;
-constexpr size_t ChrnSize                     = 4;
+constexpr uint8_t TrackFormatMarker   = 0xff;
+constexpr uint8_t PartialFormatMarker = 0xfe;
+constexpr uint8_t PhysicalWriteMarker = 0xfd;
+constexpr size_t ChrnSize             = 4;
 
 auto overlay_header(const uint64_t fingerprint, const uint8_t version)
 {
@@ -397,7 +397,7 @@ bool FloppyTrackImage::SaveScpOverlay(const Overlay& entries,
 	}
 	const auto header = overlay_header(capture_fingerprint, 4);
 	auto success      = fwrite(header.data(), 1, header.size(), file) ==
-	                    header.size();
+	               header.size();
 	const auto write_sectors = [&](const Overlay& writes) {
 		for (const auto& [key, data] : writes) {
 			const auto [cylinder, head, id, slot] = key;
@@ -438,7 +438,7 @@ bool FloppyTrackImage::SaveScpOverlay(const Overlay& entries,
 			                           address[1],
 			                           count,
 			                           format.fill};
-			success = success &&
+			success                 = success &&
 			          fwrite(record.data(), 1, record.size(), file) ==
 			                  record.size() &&
 			          (!partial || fputc(format.requested, file) != EOF) &&
@@ -568,7 +568,7 @@ FloppyTrackImage::Overlay FloppyTrackImage::TakeTrackWrites(Overlay& entries,
 void FloppyTrackImage::ApplyTrackFormat(const TrackAddress& address,
                                         const TrackFormat& format)
 {
-	auto& track = tracks[address[0] * heads + address[1]];
+	auto& track        = tracks[address[0] * heads + address[1]];
 	const auto count   = format.ids.size() / ChrnSize;
 	const auto partial = count < format.requested;
 	if (!partial) {
@@ -593,13 +593,13 @@ void FloppyTrackImage::ApplyTrackFormat(const TrackAddress& address,
 			});
 		}
 		for (size_t i = 0; i < count; ++i) {
-			const auto offset   = i * ChrnSize;
-			FloppySector sector = {};
-			sector.cylinder     = format.ids[offset];
-			sector.head         = format.ids[offset + 1];
-			sector.id           = format.ids[offset + 2];
-			sector.size_code    = format.ids[offset + 3];
-			sector.revolution   = revolution;
+			const auto offset     = i * ChrnSize;
+			FloppySector sector   = {};
+			sector.cylinder       = format.ids[offset];
+			sector.head           = format.ids[offset + 1];
+			sector.id             = format.ids[offset + 2];
+			sector.size_code      = format.ids[offset + 3];
+			sector.revolution     = revolution;
 			sector.cycle_fraction = start +
 			                        duration * static_cast<double>(i) /
 			                                format.requested;
@@ -629,7 +629,7 @@ FloppyTrackImage::FormatResult FloppyTrackImage::FormatTrack(
 	if (count > requested || !IsValidTrackFormat(address, ids)) {
 		return FormatResult::InvalidLayout;
 	}
-	auto entries = overlay;
+	auto entries  = overlay;
 	auto prior    = TakeTrackWrites(entries, address);
 	auto formats  = track_formats;
 	auto& history = formats[address];

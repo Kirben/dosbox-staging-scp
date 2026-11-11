@@ -366,7 +366,27 @@ mount A floppy.img -t floppy
 
 The `-t floppy` option is required because `.img` and `.ima` files are
 mounted as hard disk images by default. Supported floppy image formats:
-`.img`, `.ima` (raw sector images).
+`.img`, `.ima` (raw sector images). Track image formats include SuperCard
+Pro (`.scp`), HxC MFM (`.mfm`), and 86Box (`.86f`).
+
+#### Writing to floppy images
+
+| Image format | Where writes go |
+| --- | --- |
+| Raw sector images, including `.img` and `.ima` | The image file itself. Controller formatting is limited to layouts the raw format can represent. |
+| SuperCard Pro (`.scp`) | A persistent `.overlay` file beside the capture. |
+| HxC MFM (`.mfm`) and 86Box (`.86f`) | These formats mount read-only. |
+
+Use `-ro` to write-protect a mounted floppy. For a writable SCP mount,
+DOSBox Staging saves sector writes and track formatting in a sidecar named
+after the full capture filename. For example, changes to `disk.scp` go into
+`disk.scp.overlay`. The original flux capture stays intact.
+
+When you reopen the capture, DOSBox Staging loads the sidecar automatically,
+including on a read-only mount. The sidecar is tied to the original capture's
+contents. Keep both files together when moving or backing up a disk. To open
+the original capture without the saved changes, close DOSBox Staging and move
+the sidecar out of the capture's directory before mounting it again.
 
 #### Floppy disk formats
 
