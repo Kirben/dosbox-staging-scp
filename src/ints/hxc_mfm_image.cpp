@@ -134,6 +134,99 @@ bool FloppySector::SampleWeakData(const uint64_t turn,
 	return crc != ((high << 8) | low);
 }
 
+bool FloppySector::ReadTrackData(const size_t size, const uint64_t turn,
+                                 std::vector<uint8_t>& sampled, bool& bad_crc) const
+{
+	if (!mfm_track || !size || size > 16384) {
+		return false;
+	}
+	const MfmBitstream track = {mfm_track->cells, mfm_track->bit_count};
+	FloppySector field       = {};
+	field.data.resize(size);
+	field.deleted   = deleted;
+	field.weak_seed = weak_seed;
+	if (!mfm_track->weak_cells.empty()) {
+		field.weak_mask.resize(size + 2);
+	}
+	auto crc    = update_crc(SyncCrc, deleted ? 0xf8 : 0xfb);
+	auto offset = data_bit;
+	for (size_t i = 0; i < size + 2; ++i) {
+		// A capture's index splice need not preserve byte alignment.
+		// Missing-clock A1/C2 sync bytes re-establish the byte boundary.
+		for (size_t shift = 0; shift < 16; ++shift) {
+			const auto word = read_word(track, offset + shift);
+			if ((word == 0x4489 || word == 0x5224) &&
+			    read_word(track, offset + shift + 16) == word &&
+			    read_word(track, offset + shift + 32) == word) {
+				offset += shift;
+				break;
+			}
+		}
+		const auto byte = read_byte(track, offset);
+		if (i < size) {
+			field.data[i] = byte;
+			crc           = update_crc(crc, byte);
+		} else {
+			field.recorded_crc = static_cast<uint16_t>(
+			        (field.recorded_crc << 8) | byte);
+		}
+		for (size_t bit = 0; !field.weak_mask.empty() && bit < 8; ++bit) {
+			const auto cell = (offset + 2 * bit + 1) % track.bit_count;
+			if (mfm_track->weak_cells[cell]) {
+				field.weak_mask[i] |= check_cast<uint8_t>(0x80u >> bit);
+			}
+		}
+		offset += 16;
+	}
+	if (std::ranges::any_of(field.weak_mask,
+	                        [](const auto mask) { return mask != 0; })) {
+		bad_crc = field.SampleWeakData(turn, sampled);
+	} else {
+		bad_crc = crc != field.recorded_crc;
+		sampled = std::move(field.data);
+	}
+	return true;
+}
+
+void FloppySector::UpdateTrackData()
+{
+	if (!mfm_track) {
+		return;
+	}
+	auto& track   = *mfm_track;
+	auto position = (data_bit + track.bit_count - 16) % track.bit_count;
+	const auto write_bit = [&](const bool value) {
+		const auto mask = check_cast<uint8_t>(0x80u >> (position % 8));
+		auto& byte      = track.cells[position / 8];
+		byte            = check_cast<uint8_t>(
+                        value ? byte | mask : byte & static_cast<uint8_t>(~mask));
+		if (!track.weak_cells.empty()) {
+			track.weak_cells[position] = false;
+		}
+		position = (position + 1) % track.bit_count;
+	};
+	bool previous = true; // Last data bit of the preceding A1 sync byte.
+	const auto append = [&](const uint8_t byte) {
+		for (int bit = 7; bit >= 0; --bit) {
+			const auto value = ((byte >> bit) & 1) != 0;
+			write_bit(!(previous || value));
+			write_bit(value);
+			previous = value;
+		}
+	};
+	const auto mark = deleted ? uint8_t{0xf8} : uint8_t{0xfb};
+	auto crc        = update_crc(SyncCrc, mark);
+	append(mark);
+	for (const auto byte : data) {
+		append(byte);
+		crc = update_crc(crc, byte);
+	}
+	append(check_cast<uint8_t>(crc >> 8));
+	append(static_cast<uint8_t>(crc));
+	const MfmBitstream cells = {track.cells, track.bit_count};
+	write_bit(!(previous || bit_at(cells, position + 1)));
+}
+
 std::vector<FloppySector> FloppyTrackImage::DecodeMfmTrack(
         const std::span<const uint8_t> bytes, const size_t bit_count,
         const size_t index, const bool detect_weak)
@@ -149,9 +242,13 @@ std::vector<FloppySector> FloppyTrackImage::DecodeMfmTrack(
 	if (!track_bits || track_bits > bytes.size() * 8 || index >= track_bits) {
 		return {};
 	}
-	const MfmBitstream track       = {bytes, track_bits};
-	const auto weak_cells          = detect_weak ? find_weak_cells(track)
+	const MfmBitstream track = {bytes, track_bits};
+	auto captured            = std::make_shared<FloppyMfmTrack>();
+	captured->cells.assign(bytes.begin(), bytes.end());
+	captured->bit_count            = track_bits;
+	captured->weak_cells           = detect_weak ? find_weak_cells(track)
 	                                             : std::vector<bool>{};
+	const auto& weak_cells         = captured->weak_cells;
 	std::vector<AddressMark> marks = {};
 	auto word                      = read_word(track, 0);
 	for (size_t bit = 0; bit < track_bits; ++bit) {
@@ -197,7 +294,12 @@ std::vector<FloppySector> FloppyTrackImage::DecodeMfmTrack(
 			// Once a data mark is found, the controller consumes
 			// the entire field, including embedded address marks
 			// and index crossings.
-			const auto field = data.bit + MarkBits;
+			const auto field       = data.bit + MarkBits;
+			sector.mfm_track       = captured;
+			sector.data_bit        = field % track_bits;
+			sector.data_delay_bits = (field + track_bits - id.bit) %
+			                         track_bits;
+			sector.weak_seed = data.bit;
 			sector.deleted   = data.type == DeletedMark;
 			sector.data.resize(size);
 			crc = update_crc(SyncCrc, data.type);
