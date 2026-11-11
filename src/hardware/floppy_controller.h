@@ -19,14 +19,14 @@ FloppyFormatResult FLOPPY_FormatTrack(imageDisk& disk, uint32_t cylinder,
                                       uint32_t head, std::span<const uint8_t> ids,
                                       uint8_t fill, uint8_t requested);
 
-enum class FloppyBiosTransfer { Read, Write };
+enum class FloppyBiosTransfer { Read, Write, Verify };
 
 struct FloppyBiosTransferResult {
 	uint8_t status  = 0;
 	uint8_t sectors = 0;
 };
 
-FloppyBiosTransferResult FLOPPY_BiosDmaTransfer(
+FloppyBiosTransferResult FLOPPY_BiosTransfer(
         const FloppyBiosTransfer operation, const uint8_t unit,
         const uint32_t cylinder, const uint8_t head, const uint8_t sector,
         const uint8_t size_code, const uint8_t count, const uint8_t gap,

@@ -15,6 +15,27 @@ org 100h
     or al,40h
     out 21h,al
     cld
+%ifdef VERIFY_TEST
+    mov cx,0202h
+    mov dx,0002h
+    call check_verify
+    inc byte [stage]
+    mov cx,0203h
+    mov dx,1001h
+    call check_verify
+    inc byte [stage]
+    mov cx,0205h
+    mov dx,1001h
+    call check_verify
+    inc byte [stage]
+    mov cx,0207h
+    mov dx,0401h
+    call check_verify
+    inc byte [stage]
+    mov cx,0208h
+    mov dx,0400h
+    call check_verify
+%else
 
     mov bx,1100h
     mov byte [sector_count],1
@@ -36,9 +57,57 @@ org 100h
     inc byte [stage]
     call check_transfer
 %endif
+%endif
     mov byte [stage],0
     jmp report
 
+%ifdef VERIFY_TEST
+; CX contains CHS, DX the expected BIOS AX. Use a buffer crossing a DMA page.
+check_verify:
+    push dx
+    mov ax,6010h
+    mov es,ax
+    mov bx,0fb01h
+    mov di,bx
+    push cx
+    mov cx,1024
+    mov al,0a5h
+    rep stosb
+    pop cx
+    in al,08h
+    mov byte [interrupts],0
+    mov ax,0402h
+    mov dx,0100h | UNIT
+    int 13h
+    pushf
+    pop si
+    pop dx
+    cmp ax,dx
+    jne report
+    test dh,dh
+    jz .success
+    test si,1
+    jz report
+    jmp .check_result
+.success:
+    test si,1
+    jnz report
+.check_result:
+    cmp byte [interrupts],1
+    jne report
+    in al,08h
+    test al,04h
+    jnz report
+    mov di,0fb01h
+    mov cx,1024
+    mov al,0a5h
+    repe scasb
+    jne report
+    in al,21h
+    test al,40h
+    jz report
+    ret
+%else
 check_transfer:
     mov ax,6010h
     mov es,ax
@@ -185,6 +254,8 @@ check_transfer:
     test al,40h
     jz report
     ret
+
+%endif
 
 report:
     mov al,[saved_mask]

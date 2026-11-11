@@ -17,7 +17,7 @@ BIT_STRINGS = tuple(f"{value:08b}" for value in range(256))
 TRANSITION = re.compile("1")
 
 
-def encode_scp(disk, different_turns=False, duplicate_id=False):
+def encode_scp(disk, different_turns=False, duplicate_id=False, verify_errors=False):
     image = bytearray(0x2b0)
     image[:3] = b"SCP"
     image[3:9] = bytes((0x10, 0x31, 2, 0, 79, 1))
@@ -32,7 +32,7 @@ def encode_scp(disk, different_turns=False, duplicate_id=False):
                 turn_disk[start:start + 512] = bytes((0x61 + turn,)) * 512
             else:
                 turn_disk = disk
-            cells = encode_track(turn_disk, track, duplicate_id)
+            cells = encode_track(turn_disk, track, duplicate_id, verify_errors)
             bits = "".join(BIT_STRINGS[value] for value in cells)
             flux = bytearray()
             for match in TRANSITION.finditer(bits):

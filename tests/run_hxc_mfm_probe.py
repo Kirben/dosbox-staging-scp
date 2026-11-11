@@ -27,7 +27,7 @@ def mfm_word(previous, value):
 MFM = tuple(tuple(mfm_word(p, v) for v in range(256)) for p in (0, 1))
 
 
-def encode_track(disk, track, duplicate_id=False):
+def encode_track(disk, track, duplicate_id=False, verify_errors=False):
     cells = bytearray()
     previous = 0
 
@@ -37,31 +37,35 @@ def encode_track(disk, track, duplicate_id=False):
             cells.extend(MFM[previous][byte])
             previous = byte & 1
 
-    def field(data):
+    def field(data, bad_crc=False):
         nonlocal previous
         append(bytes(12))
         cells.extend(b"\x44\x89" * 3)
         previous = 1
-        append(data + pack(">H", crc_hqx(b"\xa1" * 3 + data, 0xffff)))
+        crc = crc_hqx(b"\xa1" * 3 + data, 0xffff) ^ int(bad_crc)
+        append(data + pack(">H", crc))
 
     append(b"\x4e" * 80)
     order = (1, 2, 4, 3, 5, 6, 7, 8, 9) if track == 5 else range(1, 10)
     for sector in order:
+        inject = verify_errors and track == 5
+        if inject and sector == 8:
+            continue
         sector_id = 6 if duplicate_id and track == 5 and sector == 5 else sector
-        field(bytes((0xfe, track // 2, track % 2, sector_id, 2)))
+        field(bytes((0xfe, track // 2, track % 2, sector_id, 2)), inject and sector == 6)
         append(b"\x4e" * 22)
         offset = (track * 9 + sector - 1) * 512
-        field(b"\xfb" + disk[offset:offset + 512])
+        field(b"\xfb" + disk[offset:offset + 512], inject and sector == 4)
         append(b"\x4e" * 40)
     append(b"\x4e" * ((12500 - len(cells)) // 2))
     return cells
 
 
-def encode(disk):
+def encode(disk, verify_errors=False):
     image = bytearray(19 + 80 * 11)
     pack_into("<7sHBHHBI", image, 0, b"HXCMFM", 40, 2, 300, 250, 7, 19)
     for track in range(80):
-        cells = encode_track(disk, track)
+        cells = encode_track(disk, track, verify_errors=verify_errors)
         pack_into("<HBII", image, 19 + 11 * track, track // 2, track % 2,
                   len(cells), len(image))
         image.extend(cells)

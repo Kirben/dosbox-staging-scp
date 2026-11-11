@@ -4,6 +4,7 @@
 
 #include <algorithm>
 #include <array>
+#include <cassert>
 #include <cmath>
 #include <memory>
 
@@ -35,6 +36,7 @@ enum class Command {
 	Specify        = 0x03,
 	WriteData      = 0x05,
 	ReadData       = 0x06,
+	Verify         = 0x16,
 	Recalibrate    = 0x07,
 	SenseInterrupt = 0x08,
 	ReadId         = 0x0a,
@@ -204,6 +206,26 @@ void schedule_next_sector()
 	}
 }
 
+void verify_sector()
+{
+	const auto* sector = fdc.track_sector;
+	assert(sector);
+	if (sector->id_crc_error) {
+		finish_data(0x20);
+	} else if (sector->data.empty()) {
+		finish_data(0x01, 0x01);
+	} else if (sector->data_crc_error) {
+		finish_data(0x20, 0x20);
+	} else if (sector->deleted) {
+		finish_data(0, 0x40);
+	} else if (fdc.sector == fdc.command[6]) {
+		finish_data(0);
+	} else {
+		++fdc.sector;
+		schedule_next_sector();
+	}
+}
+
 void transfer_sector(uint32_t)
 {
 	if (!media_ready(selected_unit())) {
@@ -211,8 +233,13 @@ void transfer_sector(uint32_t)
 		return;
 	}
 
-	const auto writing = (fdc.command[0] & 0x1f) ==
-	                     static_cast<int>(Command::WriteData);
+	const auto command = static_cast<Command>(fdc.command[0] & 0x1f);
+	if (command == Command::Verify) {
+		verify_sector();
+		return;
+	}
+
+	const auto writing = command == Command::WriteData;
 	auto* dma = DMA_GetChannel(FloppyDma);
 	if (!dma || dma->is_masked ||
 	    !(writing ? dma->is_memory_to_device : dma->is_device_to_memory) ||
@@ -408,6 +435,13 @@ void start_data(const Command command)
 		finish_data(0x02);
 		return;
 	}
+	// Support the single-track, end-of-track form used by the BIOS.
+	if (command == Command::Verify &&
+	    (!fdc.disk->GetTrackImage() || (fdc.command[0] & 0xa0) ||
+	     (fdc.command[1] & 0x80))) {
+		finish_data(0x04);
+		return;
+	}
 	fdc.phase = Phase::Execution;
 	if (command == Command::FormatTrack) {
 		const auto raw = !fdc.disk->GetTrackImage();
@@ -519,7 +553,8 @@ void execute_command(const Command command)
 	case Command::ReadId:
 	case Command::FormatTrack:
 	case Command::WriteData:
-	case Command::ReadData: start_data(command); break;
+	case Command::ReadData:
+	case Command::Verify: start_data(command); break;
 	default:
 		fdc.result[0] = 0x80;
 		begin_result(1, false);
@@ -532,7 +567,8 @@ size_t command_length(const Command command)
 	switch (command) {
 	case Command::FormatTrack: return 6;
 	case Command::WriteData:
-	case Command::ReadData: return 9;
+	case Command::ReadData:
+	case Command::Verify: return 9;
 	case Command::Seek:
 	case Command::Specify: return 3;
 	case Command::Recalibrate:
@@ -684,13 +720,13 @@ FloppyFormatResult FLOPPY_FormatTrack(imageDisk& disk, const uint32_t cylinder,
 
 namespace {
 
-struct BiosDmaResult {
+struct BiosCommandResult {
 	std::array<uint8_t, 7> status = {};
 	uint32_t transferred          = 0;
 	uint8_t error                 = 0;
 };
 
-BiosDmaResult bios_dma_command(const uint8_t unit, const uint32_t cylinder,
+BiosCommandResult bios_command(const uint8_t unit, const uint32_t cylinder,
                                const uint8_t head,
                                const std::span<const uint8_t> command,
                                const uint32_t address, const uint32_t size,
@@ -705,24 +741,25 @@ BiosDmaResult bios_dma_command(const uint8_t unit, const uint32_t cylinder,
 	    cylinder >= disk->cylinders || head > 1 || head >= disk->heads) {
 		return {.error = 0x04};
 	}
-	auto* dma         = DMA_GetChannel(FloppyDma);
-	const auto offset = static_cast<uint16_t>(address);
-	if (!dma || size > 0x10000u - offset) {
-		return {.error = 0x09};
-	}
-
 	constexpr auto MaskChannel = 0x04 | FloppyDma;
-	const auto dma_count       = check_cast<uint16_t>(size - 1);
-	IO_WriteB(0x0a, MaskChannel);
-	dma->has_reached_terminal_count = false;
-	IO_WriteB(0x0c, 0);
-	IO_WriteB(0x04, static_cast<uint8_t>(offset));
-	IO_WriteB(0x04, check_cast<uint8_t>(offset >> 8));
-	IO_WriteB(0x05, static_cast<uint8_t>(dma_count));
-	IO_WriteB(0x05, check_cast<uint8_t>(dma_count >> 8));
-	IO_WriteB(0x81, check_cast<uint8_t>(address >> 16));
-	IO_WriteB(0x0b, (writing ? 0x48 : 0x44) | FloppyDma);
-	IO_WriteB(0x0a, FloppyDma);
+	auto* dma                  = size ? DMA_GetChannel(FloppyDma) : nullptr;
+	if (size) {
+		const auto offset = static_cast<uint16_t>(address);
+		if (!dma || size > 0x10000u - offset) {
+			return {.error = 0x09};
+		}
+		const auto dma_count = check_cast<uint16_t>(size - 1);
+		IO_WriteB(0x0a, MaskChannel);
+		dma->has_reached_terminal_count = false;
+		IO_WriteB(0x0c, 0);
+		IO_WriteB(0x04, static_cast<uint8_t>(offset));
+		IO_WriteB(0x04, check_cast<uint8_t>(offset >> 8));
+		IO_WriteB(0x05, static_cast<uint8_t>(dma_count));
+		IO_WriteB(0x05, check_cast<uint8_t>(dma_count >> 8));
+		IO_WriteB(0x81, check_cast<uint8_t>(address >> 16));
+		IO_WriteB(0x0b, (writing ? 0x48 : 0x44) | FloppyDma);
+		IO_WriteB(0x0a, FloppyDma);
+	}
 
 	// The BIOS selects and positions the drive before issuing the command.
 	auto& drive    = fdc.drives[unit];
@@ -754,7 +791,9 @@ BiosDmaResult bios_dma_command(const uint8_t unit, const uint32_t cylinder,
 		shutdown = CALLBACK_Idle();
 	}
 	PIC_SetIRQMask(FloppyIrq, (mask & (1u << FloppyIrq)) != 0);
-	IO_WriteB(0x0a, MaskChannel);
+	if (dma) {
+		IO_WriteB(0x0a, MaskChannel);
+	}
 
 	if (shutdown || fdc.phase != Phase::Result || fdc.result_count ||
 	    fdc.result_length != fdc.result.size()) {
@@ -763,22 +802,24 @@ BiosDmaResult bios_dma_command(const uint8_t unit, const uint32_t cylinder,
 		return {.error = 0x80};
 	}
 
-	BiosDmaResult result = {};
+	BiosCommandResult result = {};
 	for (auto& byte : result.status) {
 		byte = check_cast<uint8_t>(read_data(0x3f5, io_width_t::byte));
 	}
-	const auto remaining = static_cast<uint32_t>(dma->curr_count) + 1;
-	if (dma->has_reached_terminal_count ||
-	    (remaining == 0x10000u && size < remaining)) {
-		result.transferred = size;
-	} else if (remaining <= size) {
-		result.transferred = size - remaining;
+	if (dma) {
+		const auto remaining = static_cast<uint32_t>(dma->curr_count) + 1;
+		if (dma->has_reached_terminal_count ||
+		    (remaining == 0x10000u && size < remaining)) {
+			result.transferred = size;
+		} else if (remaining <= size) {
+			result.transferred = size - remaining;
+		}
 	}
 	return result;
 }
 } // namespace
 
-FloppyBiosTransferResult FLOPPY_BiosDmaTransfer(
+FloppyBiosTransferResult FLOPPY_BiosTransfer(
         const FloppyBiosTransfer operation, const uint8_t unit,
         const uint32_t cylinder, const uint8_t head, const uint8_t sector,
         const uint8_t size_code, const uint8_t count, const uint8_t gap,
@@ -791,8 +832,10 @@ FloppyBiosTransferResult FLOPPY_BiosDmaTransfer(
 	}
 
 	const auto writing = operation == FloppyBiosTransfer::Write;
-	const std::array<uint8_t, 9> command = {writing ? uint8_t{0x45}
-	                                                : uint8_t{0x46},
+	const auto verifying = operation == FloppyBiosTransfer::Verify;
+	const auto opcode = verifying ? uint8_t{0x56}
+	                              : (writing ? uint8_t{0x45} : uint8_t{0x46});
+	const std::array<uint8_t, 9> command = {opcode,
 	                                        check_cast<uint8_t>(unit |
 	                                                            (head << 2)),
 	                                        check_cast<uint8_t>(cylinder),
@@ -803,8 +846,8 @@ FloppyBiosTransferResult FLOPPY_BiosDmaTransfer(
 	                                        gap,
 	                                        0xff};
 	const auto sector_size = 128u << size_code;
-	const auto size        = count * sector_size;
-	const auto result      = bios_dma_command(
+	const auto size        = verifying ? 0u : count * sector_size;
+	const auto result      = bios_command(
 	        unit, cylinder, head, command, address, size, writing, 3 + count);
 	if (result.error) {
 		return {result.error, 0};
@@ -813,15 +856,20 @@ FloppyBiosTransferResult FLOPPY_BiosDmaTransfer(
 	const auto st0 = result.status[0];
 	const auto st1 = result.status[1];
 	const auto st2 = result.status[2];
+	const auto failed       = (st0 & 0xc0) || st1 || st2;
+	const auto before_error = std::clamp(result.status[5] - sector,
+	                                     0,
+	                                     static_cast<int>(count));
 	auto completed = check_cast<uint8_t>(result.transferred / sector_size);
-	// Data CRC and deleted-mark errors are reported after DMA transfers the
-	// sector.
-	if (writing && ((st0 & 0xc0) || st1 || st2)) {
+	if (verifying) {
+		completed = failed ? check_cast<uint8_t>(before_error) : count;
+	} else if (writing && failed) {
 		// DMA can finish before the overlay commits the current sector.
-		const auto before_error = std::max(0, result.status[5] - sector);
 		completed = check_cast<uint8_t>(
 		        std::min<int>(completed, before_error));
 	} else if ((st2 & 0x60) && completed) {
+		// Read Data reports CRC and deleted marks after transferring
+		// the sector.
 		--completed;
 	}
 	if (st1 & 0x02) {
@@ -833,7 +881,7 @@ FloppyBiosTransferResult FLOPPY_BiosDmaTransfer(
 	if (st1 & 0x20) {
 		return {writing ? uint8_t{0x20} : uint8_t{0x10}, completed};
 	}
-	if ((st0 & 0xc0) || st1 || st2) {
+	if (failed) {
 		return {0x04, completed};
 	}
 	return {result.transferred == size ? uint8_t{0} : uint8_t{0x08}, completed};
@@ -850,7 +898,7 @@ uint8_t FLOPPY_BiosDmaFormat(const uint8_t unit, const uint32_t cylinder,
 	const std::array<uint8_t, 6> command = {
 	        0x4d, check_cast<uint8_t>(unit | (head << 2)), size_code, count, gap, fill};
 	const auto size     = check_cast<uint32_t>(count * FormatIdSize);
-	const auto transfer = bios_dma_command(
+	const auto transfer = bios_command(
 	        unit, cylinder, head, command, address, size, true, 3);
 	if (transfer.error) {
 		return transfer.error;
