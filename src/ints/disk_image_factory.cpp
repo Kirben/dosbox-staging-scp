@@ -16,7 +16,7 @@ CHECK_NARROWING();
 
 namespace {
 
-enum class TrackFormat { None, HxcMfm, Scp, F86 };
+enum class TrackFormat { None, HxcMfm, Scp, F86, TransCopy };
 
 TrackFormat track_format(const std::string_view path)
 {
@@ -33,6 +33,9 @@ TrackFormat track_format(const std::string_view path)
 	}
 	if (iequals(extension, ".86f")) {
 		return TrackFormat::F86;
+	}
+	if (iequals(extension, ".tc")) {
+		return TrackFormat::TransCopy;
 	}
 	return TrackFormat::None;
 }
@@ -98,6 +101,9 @@ std::shared_ptr<imageDisk> LoadFloppyTrackDisk(FILE* file, const std::string& pa
 		break;
 	case TrackFormat::F86:
 		image = FloppyTrackImage::Load86f(file, path, read_only, error);
+		break;
+	case TrackFormat::TransCopy:
+		image = FloppyTrackImage::LoadTransCopy(file, error);
 		break;
 	case TrackFormat::None: return {};
 	}

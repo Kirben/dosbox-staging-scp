@@ -19,4 +19,5 @@ target_sources(dosboxcommon PRIVATE
   int10_vesa.cpp
   int10_video_state.cpp
   int10_vptable.cpp
+  transcopy_track_image.cpp
   xms.cpp)
