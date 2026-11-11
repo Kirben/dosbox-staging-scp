@@ -42,6 +42,8 @@ def run_probe(dosbox, nasm, directory, extension, unit, size_kb, sectors, encode
         options.append("-DSCP_REVOLUTIONS")
     elif extension == "86f" and write_mode != "format-readback":
         options.append("-DFIRST_ID_AFTER_INDEX=2")
+    elif extension == "tc":
+        options.extend(("-DFIRST_ID_AFTER_INDEX=9", "-DTC_STEPPED"))
     if write_mode in ("write", "protected"):
         options.append("-DWRITE_TEST")
     if write_mode == "protected":

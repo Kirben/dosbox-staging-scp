@@ -93,7 +93,7 @@ def launch(dosbox, directory, name, commands):
     return args, env
 
 
-def check_fat(dosbox, directory, encode_image=encode, extension="mfm"):
+def check_fat(dosbox, directory, encode_image=encode, extension="mfm", *, writable=True):
     """Read the fixture's marker file through DOS FAT."""
     disk = bytearray(360 * 1024)
     disk[:11] = b"\xeb\x3c\x90MSDOS5.0"
@@ -110,7 +110,7 @@ def check_fat(dosbox, directory, encode_image=encode, extension="mfm"):
     image.write_bytes(original)
     args, env = launch(dosbox, directory, "fat", [
         f'mount c "{directory}"', "c:",
-        f'mount a "{image}" -ro',
+        f'mount a "{image}"' + (" -ro" if writable else ""),
         "copy a:\\check.dat copied.dat", "copy copied.dat a:\\new.dat",
         "if exist a:\\new.dat echo FAILED > BAD.TXT", "exit",
     ])
@@ -121,6 +121,9 @@ def check_fat(dosbox, directory, encode_image=encode, extension="mfm"):
     assert "bad.txt" not in files or not files["bad.txt"].read_bytes()
     assert image.read_bytes() == original
     print(f".{extension} automatic FAT MOUNT, file read and write rejection passed")
+    if not writable:
+        assert not image.with_suffix(f".{extension}.overlay").exists()
+        return
     for name, commands in (
         ("fat-write", ["copy copied.dat a:\\new.dat"]),
         ("fat-readback", ["copy a:\\new.dat replay.dat"]),
@@ -137,8 +140,8 @@ def check_fat(dosbox, directory, encode_image=encode, extension="mfm"):
     print(f".{extension} DOS FAT file and allocation changes survived restart")
 
 
-# pylint: disable-next=R0914
-def check_boot(dosbox, nasm, directory, encode_image=encode, extension="mfm"):
+# pylint: disable-next=R0913,R0914
+def check_boot(dosbox, nasm, directory, encode_image=encode, extension="mfm", *, writable=True):
     """Boot the fixture and check DMA and subsequent BIOS I/O."""
     track_image = extension not in ("img", "ima")
     source = directory / "boot.asm"
@@ -187,12 +190,22 @@ org 7c00h
     mov cx,2
     xor dh,dh
     int 13h
+    %ifdef READ_ONLY
+    jnc done
+    cmp ax,0300h
+    jne done
+    %else
     jc done
+    %endif
     ; Reading the written sector also flushes buffered raw-image writes.
     mov ax,0201h
     int 13h
     jc done
+    %ifdef READ_ONLY
+    cmp word [8000h],1234h
+    %else
     cmp word [8000h],5678h
+    %endif
     jne done
     ; Report success to a separate writable BIOS hard disk.
     mov word [8000h],0a712h
@@ -214,6 +227,8 @@ dw 0aa55h
 """, encoding="ascii")
     output = directory / "boot.bin"
     options = ["-DTRACK_IMAGE"] if track_image else []
+    if not writable:
+        options.append("-DREAD_ONLY")
     subprocess.run([nasm, *options, "-f", "bin", source, "-o", output], check=True)
     disk = bytearray(360 * 1024)
     disk[:512] = output.read_bytes()
@@ -255,7 +270,7 @@ dw 0aa55h
                     raise
         if track_image:
             assert image.read_bytes() == original
-            assert overlay.is_file()
+            assert overlay.is_file() == writable
         else:
             expected = bytearray(original)
             expected[512:514] = b"\x78\x56"

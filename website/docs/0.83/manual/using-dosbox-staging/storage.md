@@ -370,7 +370,7 @@ Supported floppy image formats: `.img`, `.ima`, `.dsk` (raw sector images),
 `.vfd` (Virtual Floppy Disk), `.flp` (raw floppy image), and numeric
 extensions matching standard floppy sizes: `.360`, `.720`, `.1200`, `.1440`.
 Track image formats include SuperCard Pro (`.scp`), HxC MFM (`.mfm`),
-and 86Box (`.86f`).
+86Box (`.86f`), and IBM MFM TransCopy (`.tc`).
 
 Files with `.vfd`, `.flp`, or numeric extensions are always auto-detected as
 floppy images, so `-t floppy` is not needed. For `.img`, `.ima`, and `.dsk`
@@ -385,6 +385,7 @@ matching images are mounted as floppy drives; all others as hard disk images.
 | Raw sector images, including `.img` and `.ima` | The image file itself. Controller formatting is limited to layouts the raw format can represent. |
 | SuperCard Pro (`.scp`) | A persistent `.overlay` file beside the capture. |
 | HxC MFM (`.mfm`) and 86Box (`.86f`) | A persistent `.overlay` file beside the image. 86F captures marked write-protected or containing physical holes mount read-only. |
+| TransCopy (`.tc`) | Read-only. |
 
 Use `-ro` to write-protect a mounted floppy. For a writable track image,
 DOSBox Staging saves 256-, 512-, and 1,024-byte sector writes and track
