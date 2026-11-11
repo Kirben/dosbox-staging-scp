@@ -346,8 +346,12 @@ void transfer_sector(uint32_t)
 		return;
 	}
 
-	std::array<uint8_t, SectorSize> buffer = {};
-	std::span<const uint8_t> data          = buffer;
+	std::array<uint8_t, 1024> buffer = {};
+	const auto write_size            = fdc.track_sector && writing
+	                                         ? size_t{128} << fdc.track_sector->size_code
+	                                         : SectorSize;
+	const auto transfer_buffer       = std::span(buffer).first(write_size);
+	std::span<const uint8_t> data    = transfer_buffer;
 	if (const auto* sector = fdc.track_sector) {
 		if (sector->id_crc_error) {
 			finish_data(0x20);
@@ -363,7 +367,7 @@ void transfer_sector(uint32_t)
 	} else if (!writing && !fdc.disk->ReadSectorForController(fdc.head,
 	                                                          fdc.cylinder,
 	                                                          fdc.sector,
-	                                                          buffer)) {
+	                                                          transfer_buffer)) {
 		finish_data(0x04);
 		return;
 	}
@@ -383,10 +387,12 @@ void transfer_sector(uint32_t)
 	                     ? fdc.media->WriteSector(fdc.cylinder,
 	                                              fdc.head,
 	                                              fdc.sector,
-	                                              buffer,
+	                                              transfer_buffer,
 	                                              fdc.track_sector)
-	                     : fdc.disk->WriteSectorForController(
-	                               fdc.head, fdc.cylinder, fdc.sector, buffer))) {
+	                     : fdc.disk->WriteSectorForController(fdc.head,
+	                                                          fdc.cylinder,
+	                                                          fdc.sector,
+	                                                          transfer_buffer))) {
 		finish_data(0x20);
 	} else if (fdc.track_sector && fdc.track_sector->data_crc_error) {
 		finish_data(0x20, 0x20);
@@ -610,7 +616,7 @@ void start_data(const Command command)
 		if (command != Command::ReadId &&
 		    (fdc.command[3] != fdc.head || fdc.sector > fdc.command[6] ||
 		     (command == Command::WriteData &&
-		      fdc.command[5] != SectorSizeCode))) {
+		      !IsFloppyOverlaySizeCode(fdc.command[5])))) {
 			finish_data(0x04);
 			return;
 		}
