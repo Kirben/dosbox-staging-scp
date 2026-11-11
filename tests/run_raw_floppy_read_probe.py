@@ -11,7 +11,7 @@ from tempfile import TemporaryDirectory
 
 
 def run_probe(dosbox, nasm, directory, extension, unit, size_kb, sectors, encode=None,
-              write_mode=None, partial_format=False):
+              write_mode=None, partial_format=False, format_reset=None):
     image = directory / f"disk.{extension}"
     data = bytearray(size_kb * 1024)
     for sector in (3, 4):
@@ -49,6 +49,10 @@ def run_probe(dosbox, nasm, directory, extension, unit, size_kb, sectors, encode
         options.append("-DSCP_FORMAT")
         if partial_format:
             options.append("-DFORMAT_PARTIAL")
+            if not format_reset:
+                options.append("-DFORMAT_EARLY_TC")
+        if format_reset:
+            options.append(f"-DFORMAT_RESET={format_reset}")
         if write_mode == "format-readback":
             options.append("-DSCP_FORMAT_READBACK")
     (directory / "FDC.OUT").unlink(missing_ok=True)
@@ -79,6 +83,9 @@ def run_probe(dosbox, nasm, directory, extension, unit, size_kb, sectors, encode
         raise RuntimeError(f".{extension} has unexpected on-disk bytes")
     if write_mode:
         mode = f"partial-{write_mode}" if partial_format else write_mode
+        if format_reset:
+            phase = {1: "before", 2: "during", 3: "after"}[format_reset]
+            mode = f"{mode}, reset {phase}"
         print(f".{extension} {size_kb} KB drive {'AB'[unit]} {mode}: DMA and IRQ6 passed")
         return
     print(f".{extension} {size_kb} KB drive {'AB'[unit]}: seek, Read ID, DMA and IRQ6 passed")

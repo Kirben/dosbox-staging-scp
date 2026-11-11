@@ -27,6 +27,8 @@ constexpr auto StandardRevolutionMs       = 200.0;
 constexpr auto HighDensity525RevolutionMs = 1000.0 / 6;
 constexpr auto StepMs                     = 3.0;
 
+constexpr size_t FormatIdSize = 4;
+
 enum class Phase { Command, Execution, Result };
 enum class Command {
 	Specify        = 0x03,
@@ -48,6 +50,8 @@ struct Controller {
 	std::array<Drive, 2> drives      = {};
 	std::array<uint8_t, 9> command   = {};
 	std::array<uint8_t, 7> result    = {};
+	std::array<uint8_t, FormatIdSize * 255> format_ids = {};
+	size_t formatted_ids                               = 0;
 	std::shared_ptr<imageDisk> disk  = {};
 	const FloppySector* track_sector = nullptr;
 	Phase phase                      = Phase::Command;
@@ -269,66 +273,104 @@ void transfer_sector(uint32_t)
 	}
 }
 
-void format_track(uint32_t)
+bool format_dma_ready(const DmaChannel* dma)
+{
+	return dma && !dma->is_masked && dma->is_memory_to_device &&
+	       !fdc.non_dma && (fdc.dor & InterruptEnabled);
+}
+
+uint8_t commit_scp_format()
+{
+	using Result = FloppyTrackImage::FormatResult;
+	const auto ids = std::span(fdc.format_ids).first(fdc.formatted_ids * FormatIdSize);
+	const auto result = fdc.disk->GetTrackImage()->FormatScpTrack(
+	        fdc.cylinder, fdc.head, ids, fdc.command[5], fdc.command[3]);
+	switch (result) {
+	case Result::Success: return 0;
+	case Result::InvalidLayout: return 0x04;
+	case Result::WriteError: return 0x20;
+	}
+	return 0x20;
+}
+
+void finish_scp_format(const uint8_t status)
+{
+	if (!fdc.formatted_ids) {
+		finish_data(status);
+		return;
+	}
+	const auto result         = commit_scp_format();
+	const auto offset         = (fdc.formatted_ids - 1) * FormatIdSize;
+	const auto& ids           = fdc.format_ids;
+	const FloppySector sector = {ids[offset],
+	                             ids[offset + 1],
+	                             ids[offset + 2],
+	                             ids[offset + 3]};
+	fdc.track_sector          = &sector;
+	finish_data(result ? result : status);
+}
+
+double scp_format_slot_ms()
+{
+	return fdc.disk->GetTrackImage()->GetFormatCycleMs(fdc.cylinder, fdc.head) /
+	       fdc.command[3];
+}
+
+void format_scp_sector(uint32_t)
 {
 	if (!media_ready(selected_unit())) {
 		finish_data(0x04);
 		return;
 	}
-
-	constexpr auto IdSize                 = 4;
-	std::array<uint8_t, IdSize * 255> ids = {};
-	const auto count                      = fdc.command[3] * size_t{IdSize};
-	auto* dma                             = DMA_GetChannel(FloppyDma);
-	auto* track                           = fdc.disk->GetTrackImage();
-	if (!dma || dma->is_masked || !dma->is_memory_to_device ||
-	    fdc.non_dma || !(fdc.dor & InterruptEnabled)) {
-		finish_data(0x10);
+	auto* dma = DMA_GetChannel(FloppyDma);
+	if (!format_dma_ready(dma)) {
+		finish_scp_format(0x10);
 		return;
 	}
+	const auto remaining = static_cast<size_t>(dma->curr_count) + 1;
+	const auto count     = std::min(FormatIdSize, remaining);
+	auto* id = fdc.format_ids.data() + fdc.formatted_ids * FormatIdSize;
+	dma->RaiseRequest();
+	const auto transferred = dma->Read(count, id);
+	dma->ClearRequest();
+	if (transferred != FormatIdSize) {
+		finish_scp_format(0x10);
+	} else if (++fdc.formatted_ids == fdc.command[3]) {
+		finish_scp_format(0);
+	} else if (remaining == FormatIdSize) {
+		finish_scp_format(0x10);
+	} else {
+		PIC_AddEvent(format_scp_sector, scp_format_slot_ms());
+	}
+}
 
-	const auto available = std::min(count,
-	                                static_cast<size_t>(dma->curr_count) + 1);
-	if (!track && available < count) {
+void format_raw_track(uint32_t)
+{
+	if (!media_ready(selected_unit())) {
+		finish_data(0x04);
+		return;
+	}
+	std::array<uint8_t, FormatIdSize * 255> ids = {};
+	const auto count = fdc.command[3] * FormatIdSize;
+	auto* dma        = DMA_GetChannel(FloppyDma);
+	if (!format_dma_ready(dma) ||
+	    static_cast<size_t>(dma->curr_count) + 1 < count) {
 		finish_data(0x10);
 		return;
 	}
 	dma->RaiseRequest();
-	const auto transferred = dma->Read(available, ids.data());
+	const auto transferred = dma->Read(count, ids.data());
 	dma->ClearRequest();
-	const auto completed = transferred - transferred % IdSize;
-	if (completed == 0 || (!track && completed != count)) {
+	if (transferred != count) {
 		finish_data(0x10);
 		return;
 	}
 
-	if (track) {
-		using Result = FloppyTrackImage::FormatResult;
-		const auto result = track->FormatScpTrack(fdc.cylinder,
-		                                          fdc.head,
-		                                          std::span(ids).first(completed),
-		                                          fdc.command[5],
-		                                          fdc.command[3]);
-		switch (result) {
-		case Result::InvalidLayout: finish_data(0x04); return;
-		case Result::WriteError: finish_data(0x20); return;
-		case Result::Success: {
-			const auto last           = completed - IdSize;
-			const FloppySector sector = {ids[last],
-			                             ids[last + 1],
-			                             ids[last + 2],
-			                             ids[last + 3]};
-			fdc.track_sector          = &sector;
-			finish_data(completed == count ? 0 : 0x10);
-			return;
-		}
-		}
-	}
-
 	// Raw images only represent a full track with sequential, fixed-size IDs.
-	for (size_t i = 0; i < count; i += IdSize) {
+	for (size_t i = 0; i < count; i += FormatIdSize) {
 		if (ids[i] != fdc.cylinder || ids[i + 1] != fdc.head ||
-		    ids[i + 2] != i / IdSize + 1 || ids[i + 3] != SectorSizeCode) {
+		    ids[i + 2] != i / FormatIdSize + 1 ||
+		    ids[i + 3] != SectorSizeCode) {
 			finish_data(0x04);
 			return;
 		}
@@ -378,7 +420,15 @@ void start_data(const Command command)
 			finish_data(0x04);
 			return;
 		}
-		PIC_AddEvent(format_track, 2 * rotation_cycle_ms() - rotation_ms());
+		fdc.formatted_ids   = 0;
+		const auto to_index = rotation_cycle_ms() - rotation_ms();
+		if (raw) {
+			PIC_AddEvent(format_raw_track,
+			             to_index + rotation_cycle_ms());
+		} else {
+			PIC_AddEvent(format_scp_sector,
+			             to_index + scp_format_slot_ms());
+		}
 		return;
 	}
 	if (const auto* track = fdc.disk->GetTrackImage()) {
@@ -540,7 +590,8 @@ void reset_controller()
 	PIC_RemoveEvents(complete_seek);
 	PIC_RemoveEvents(complete_read_id);
 	PIC_RemoveEvents(transfer_sector);
-	PIC_RemoveEvents(format_track);
+	PIC_RemoveEvents(format_raw_track);
+	PIC_RemoveEvents(format_scp_sector);
 	PIC_RemoveEvents(missing_sector);
 	fdc = {};
 }
@@ -549,6 +600,11 @@ void write_dor(io_port_t, const io_val_t value, io_width_t)
 {
 	const auto previous = fdc.dor;
 	if (!(value & ResetReleased)) {
+		if (fdc.phase == Phase::Execution && fdc.formatted_ids &&
+		    (fdc.command[0] & 0x1f) == static_cast<int>(Command::FormatTrack) &&
+		    media_ready(selected_unit()) && commit_scp_format()) {
+			LOG_WARNING("FDC: Could not save SCP format interrupted by reset");
+		}
 		reset_controller();
 	}
 	fdc.dor = check_cast<uint8_t>(value);

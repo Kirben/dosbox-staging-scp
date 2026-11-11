@@ -235,6 +235,12 @@ std::unique_ptr<FloppyTrackImage> FloppyTrackImage::LoadScp(FILE* file,
 	return image;
 }
 
+double FloppyTrackImage::GetFormatCycleMs(const uint32_t cylinder,
+                                          const uint32_t head) const
+{
+	return tracks.at(cylinder * heads + head).format_cycle_ms;
+}
+
 bool FloppyTrackImage::IsWriteProtected() const
 {
 	return !overlay_writable;
