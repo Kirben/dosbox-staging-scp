@@ -91,13 +91,13 @@ std::shared_ptr<imageDisk> LoadFloppyTrackDisk(FILE* file, const std::string& pa
 	std::unique_ptr<FloppyTrackImage> image = {};
 	switch (track_format(path)) {
 	case TrackFormat::HxcMfm:
-		image = FloppyTrackImage::LoadHxcMfm(file);
+		image = FloppyTrackImage::LoadHxcMfm(file, path, read_only, error);
 		break;
 	case TrackFormat::Scp:
 		image = FloppyTrackImage::LoadScp(file, path, read_only, error);
 		break;
 	case TrackFormat::F86:
-		image = FloppyTrackImage::Load86f(file, error);
+		image = FloppyTrackImage::Load86f(file, path, read_only, error);
 		break;
 	case TrackFormat::None: return {};
 	}

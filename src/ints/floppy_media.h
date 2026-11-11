@@ -8,6 +8,16 @@
 #include <span>
 #include <vector>
 
+// FNV-1a binds a sidecar to the exact source image.
+inline uint64_t FloppyImageFingerprint(const std::span<const uint8_t> bytes)
+{
+	auto fingerprint = uint64_t{14695981039346656037ull};
+	for (const auto byte : bytes) {
+		fingerprint = (fingerprint ^ byte) * 1099511628211ull;
+	}
+	return fingerprint;
+}
+
 struct FloppySector {
 	uint8_t cylinder                   = 0;
 	uint8_t head                       = 0;

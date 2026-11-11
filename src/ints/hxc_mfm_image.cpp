@@ -196,7 +196,8 @@ std::vector<FloppySector> FloppyTrackImage::DecodeMfmTrack(
 	return sectors;
 }
 
-std::unique_ptr<FloppyTrackImage> FloppyTrackImage::LoadHxcMfm(FILE* file)
+std::unique_ptr<FloppyTrackImage> FloppyTrackImage::LoadHxcMfm(
+        FILE* file, const std::string& path, const bool read_only, std::string& error)
 {
 	constexpr size_t HeaderSize   = 19;
 	constexpr size_t EntrySize    = 11;
@@ -268,12 +269,16 @@ std::unique_ptr<FloppyTrackImage> FloppyTrackImage::LoadHxcMfm(FILE* file)
 		extents.emplace_hint(next, offset, offset + length);
 		auto& decoded    = image->tracks[track];
 		decoded.cycle_ms = turn_ms;
+		decoded.format_cycle_ms = turn_ms;
 		decoded.sectors = DecodeMfmTrack(input.subspan(offset, length));
 		image->UpdateLogicalGeometry(cylinder, head, decoded.sectors);
 	}
 	if (std::ranges::all_of(image->tracks, [](const auto& track) {
 		    return track.sectors.empty();
 	    })) {
+		return {};
+	}
+	if (!image->OpenOverlay(path, read_only, FloppyImageFingerprint(bytes), error)) {
 		return {};
 	}
 	return image;

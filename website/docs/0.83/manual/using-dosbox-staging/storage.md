@@ -384,15 +384,16 @@ matching images are mounted as floppy drives; all others as hard disk images.
 | --- | --- |
 | Raw sector images, including `.img` and `.ima` | The image file itself. Controller formatting is limited to layouts the raw format can represent. |
 | SuperCard Pro (`.scp`) | A persistent `.overlay` file beside the capture. |
-| HxC MFM (`.mfm`) and 86Box (`.86f`) | These formats mount read-only. |
+| HxC MFM (`.mfm`) and 86Box (`.86f`) | A persistent `.overlay` file beside the image. 86F captures marked write-protected or containing physical holes mount read-only. |
 
-Use `-ro` to write-protect a mounted floppy. For a writable SCP mount,
-DOSBox Staging saves sector writes and track formatting in a sidecar named
-after the full capture filename. For example, changes to `disk.scp` go into
-`disk.scp.overlay`. The original flux capture stays intact.
+Use `-ro` to write-protect a mounted floppy. For a writable track image,
+DOSBox Staging saves 512-byte sector writes and track formatting in a sidecar named
+after the full image filename. For example, changes to `disk.scp` go into
+`disk.scp.overlay`, and changes to `disk.mfm` go into `disk.mfm.overlay`.
+The original image stays intact.
 
-When you reopen the capture, DOSBox Staging loads the sidecar automatically,
-including on a read-only mount. The sidecar is tied to the original capture's
+When you reopen the image, DOSBox Staging loads the sidecar automatically,
+including on a read-only mount. The sidecar is tied to the original image's
 contents. Keep both files together when moving or backing up a disk. To open
 the original capture without the saved changes, close DOSBox Staging and move
 the sidecar out of the capture's directory before mounting it again.

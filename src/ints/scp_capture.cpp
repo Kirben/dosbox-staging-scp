@@ -7,6 +7,7 @@
 #include <string_view>
 #include <utility>
 
+#include "ints/floppy_media.h"
 #include "utils/checks.h"
 
 CHECK_NARROWING();
@@ -136,18 +137,14 @@ bool ScpCapture::Parse(const std::vector<uint8_t>& d, std::string& error)
 		return fail("writable SCP captures must have one revolution");
 	}
 	uint32_t sum = 0;
-	// FNV-1a binds a sidecar to the exact source, including the SCP header.
-	fingerprint = 14695981039346656037ull;
-	for (size_t i = 0; i < d.size(); ++i) {
-		fingerprint = (fingerprint ^ d[i]) * 1099511628211ull;
-		if (i >= 16) {
-			sum += d[i];
-		}
+	for (const auto byte : std::span(d).subspan(16)) {
+		sum += byte;
 	}
 	const auto checksum = little(d, 12);
 	if (!(header.WritableSource() && checksum == 0) && sum != checksum) {
 		return fail("SCP checksum mismatch");
 	}
+	fingerprint           = FloppyImageFingerprint(d);
 	const bool has_footer = (header.flags & 0x20) != 0;
 	const size_t data_end = has_footer ? d.size() - 48 : d.size();
 	if (has_footer && (header.creator_version != 0 || data_end < TableEnd ||

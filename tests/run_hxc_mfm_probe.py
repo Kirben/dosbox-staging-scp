@@ -109,7 +109,7 @@ def check_fat(dosbox, directory, encode_image=encode, extension="mfm"):
     image.write_bytes(original)
     args, env = launch(dosbox, directory, "fat", [
         f'mount c "{directory}"', "c:",
-        f'mount a "{image}"' + (" -ro" if extension == "scp" else ""),
+        f'mount a "{image}" -ro',
         "copy a:\\check.dat copied.dat", "copy copied.dat a:\\new.dat",
         "if exist a:\\new.dat echo FAILED > BAD.TXT", "exit",
     ])
@@ -120,21 +120,20 @@ def check_fat(dosbox, directory, encode_image=encode, extension="mfm"):
     assert "bad.txt" not in files or not files["bad.txt"].read_bytes()
     assert image.read_bytes() == original
     print(f".{extension} automatic FAT MOUNT, file read and write rejection passed")
-    if extension == "scp":
-        for name, commands in (
-            ("fat-write", ["copy copied.dat a:\\new.dat"]),
-            ("fat-readback", ["copy a:\\new.dat replay.dat"]),
-        ):
-            access = " -ro" if name == "fat-readback" else ""
-            args, env = launch(dosbox, directory, name, [
-                f'mount c "{directory}"', "c:", f'mount a "{image}"{access}',
-                *commands, "exit",
-            ])
-            subprocess.run(args, cwd=directory, env=env, timeout=30, check=True,
-                           capture_output=True)
-        assert (directory / "REPLAY.DAT").read_bytes() == b"\x31" * 512
-        assert image.read_bytes() == original
-        print(".scp DOS FAT file and allocation changes survived restart")
+    for name, commands in (
+        ("fat-write", ["copy copied.dat a:\\new.dat"]),
+        ("fat-readback", ["copy a:\\new.dat replay.dat"]),
+    ):
+        access = " -ro" if name == "fat-readback" else ""
+        args, env = launch(dosbox, directory, name, [
+            f'mount c "{directory}"', "c:", f'mount a "{image}"{access}',
+            *commands, "exit",
+        ])
+        subprocess.run(args, cwd=directory, env=env, timeout=30, check=True,
+                       capture_output=True)
+    assert (directory / "REPLAY.DAT").read_bytes() == b"\x31" * 512
+    assert image.read_bytes() == original
+    print(f".{extension} DOS FAT file and allocation changes survived restart")
 
 
 # pylint: disable-next=R0914
@@ -173,7 +172,7 @@ org 7c00h
     mov cx,2
     xor dh,dh
     int 13h
-    {write_result} done
+    jc done
     ; Report success to a separate writable BIOS hard disk.
     mov word [8000h],0a712h
     mov ax,0301h
@@ -191,7 +190,7 @@ done:
     jmp done
 times 510-($-$$) db 0
 dw 0aa55h
-""".format(write_result="jc" if extension == "scp" else "jnc"), encoding="ascii")
+""", encoding="ascii")
     output = directory / "boot.bin"
     subprocess.run([nasm, "-f", "bin", source, "-o", output], check=True)
     disk = bytearray(360 * 1024)
@@ -209,8 +208,7 @@ dw 0aa55h
     if extension == "scp":
         boot_cases.append(("dos-path", [f'mount c "{directory}"', "boot c:\\boot.scp"]))
     for name, commands in boot_cases:
-        if extension == "scp":
-            overlay.unlink(missing_ok=True)
+        overlay.unlink(missing_ok=True)
         marker.write_bytes(bytes(4 * 16 * 63 * 512))
         mount_marker = f'mount 2 "{marker}" -t hdd -fs none -chs 4,16,63'
         args, env = launch(dosbox, directory, name, [mount_marker, *commands])
@@ -233,9 +231,15 @@ dw 0aa55h
                     process.kill()
                     raise
         assert image.read_bytes() == original
-        if extension == "scp":
-            assert overlay.is_file()
+        assert overlay.is_file()
     print(f".{extension} BOOT, INT 13h read, verify and write status passed")
+
+
+def check_overlay_format(dosbox, nasm, directory, extension, encoder):
+    """Format a track, then read its new sector layout after a restart."""
+    for mode in ("format-protected", "format", "format-readback"):
+        run_probe(dosbox, nasm, directory, extension, 0, 360, 9, encoder,
+                  write_mode=mode)
 
 
 def main():
@@ -250,6 +254,7 @@ def main():
         run_probe(dosbox, args.nasm, directory, "mfm", 0, 360, 9, encode)
         check_fat(dosbox, directory)
         check_boot(dosbox, args.nasm, directory)
+        check_overlay_format(dosbox, args.nasm, directory, "mfm", encode)
 
 
 if __name__ == "__main__":

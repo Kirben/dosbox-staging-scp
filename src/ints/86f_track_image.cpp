@@ -23,6 +23,8 @@ uint16_t le16(const std::span<const uint8_t> bytes, const size_t offset)
 } // namespace
 
 std::unique_ptr<FloppyTrackImage> FloppyTrackImage::Load86f(FILE* file,
+                                                            const std::string& path,
+                                                            const bool read_only,
                                                             std::string& error)
 {
 	error.clear();
@@ -59,6 +61,8 @@ std::unique_ptr<FloppyTrackImage> FloppyTrackImage::Load86f(FILE* file,
 		return fail("unsupported 86F disk flags");
 	}
 	const bool has_surface    = flags & 1;
+	constexpr auto write_protect_flag = 0x10;
+	auto capture_read_only            = bool(flags & write_protect_flag);
 	const size_t capacity     = (flags >> 1) & 3;
 	const size_t num_heads    = (flags & 8) ? 2 : 1;
 	const size_t shift        = (flags >> 5) & 3;
@@ -91,6 +95,7 @@ std::unique_ptr<FloppyTrackImage> FloppyTrackImage::Load86f(FILE* file,
 	const auto speed_den   = speedup ? SpeedFactors[shift] : 1000;
 	struct TrackRecord {
 		std::span<const uint8_t> record = {};
+		size_t array_bytes              = 0;
 		size_t cells                    = 0;
 		size_t index                    = 0;
 		uint32_t rate                   = 0;
@@ -142,6 +147,7 @@ std::unique_ptr<FloppyTrackImage> FloppyTrackImage::Load86f(FILE* file,
 		}
 		ranges.emplace_hint(next, pos, pos + length);
 		entries_by_track[entry] = {std::span(bytes).subspan(pos, length),
+		                           array_bytes,
 		                           static_cast<size_t>(cells),
 		                           index,
 		                           rate};
@@ -180,12 +186,29 @@ std::unique_ptr<FloppyTrackImage> FloppyTrackImage::Load86f(FILE* file,
 			const auto used_bytes = ((track.cells + 15) / 16) * 2;
 			std::vector<uint8_t> data(used_bytes);
 			for (size_t i = 0; i < used_bytes; ++i) {
-				data[i] = payload[little_endian ? i ^ 1u : i];
+				const auto source = little_endian ? i ^ 1u : i;
+				data[i]           = payload[source];
+				const auto first_bit = i * 8;
+				if (has_surface && !capture_read_only &&
+				    first_bit < track.cells) {
+					// A marked zero is a physical hole that
+					// a sector overlay cannot reproduce
+					// through a write or format.
+					const auto bits = std::min(size_t{8},
+					                           track.cells - first_bit);
+					const auto mask = static_cast<uint8_t>(
+					        0xffu << (8 - bits));
+					const auto surface =
+					        payload[track.array_bytes + source];
+					capture_read_only = (surface & ~data[i] &
+					                     mask) != 0;
+				}
 			}
 			const auto logical_cylinder = cylinder / step;
 			auto& decoded = image->tracks[logical_cylinder * num_heads + head];
 			decoded.cycle_ms = static_cast<double>(track.cells) /
 			                   (2 * track.rate);
+			decoded.format_cycle_ms = decoded.cycle_ms;
 			decoded.sectors = DecodeMfmTrack(data, track.cells, track.index);
 			image->UpdateLogicalGeometry(static_cast<uint32_t>(
 			                                     logical_cylinder),
@@ -196,6 +219,12 @@ std::unique_ptr<FloppyTrackImage> FloppyTrackImage::Load86f(FILE* file,
 	}
 	if (!found_ids) {
 		return fail("no IBM MFM sector IDs found");
+	}
+	if (!image->OpenOverlay(path,
+	                        read_only || capture_read_only,
+	                        FloppyImageFingerprint(bytes),
+	                        error)) {
+		return {};
 	}
 	return image;
 }
