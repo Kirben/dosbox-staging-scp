@@ -291,7 +291,7 @@ uint8_t imageDisk::Read_AbsoluteSector(uint32_t sectnum, void* data)
 		                   sectnum % sectors + 1,
 		                   data);
 	}
-	return read_absolute_sector(sectnum, data, false);
+	return read_absolute_sector(sectnum, data, RawReadMode::Normal);
 }
 
 bool imageDisk::ReadSectorForController(const uint32_t head, const uint32_t cylinder,
@@ -302,11 +302,19 @@ bool imageDisk::ReadSectorForController(const uint32_t head, const uint32_t cyli
 		return false;
 	}
 	const auto absolute_sector = (cylinder * heads + head) * sectors + sector - 1;
-	return read_absolute_sector(absolute_sector, data.data(), true) == 0;
+	return read_absolute_sector(absolute_sector,
+	                            data.data(),
+	                            RawReadMode::Controller) == 0;
+}
+
+bool imageDisk::VerifyRawSector(const uint32_t sector, const std::span<uint8_t> scratch)
+{
+	return scratch.size() == sector_size &&
+	       read_absolute_sector(sector, scratch.data(), RawReadMode::Verify) == 0;
 }
 
 uint8_t imageDisk::read_absolute_sector(const uint32_t sectnum, void* data,
-                                        const bool controller_read)
+                                        const RawReadMode mode)
 {
 	const auto bytenum = check_cast<cross_off_t>(sectnum) * sector_size;
 
@@ -322,7 +330,7 @@ uint8_t imageDisk::read_absolute_sector(const uint32_t sectnum, void* data,
 
 	// Only perform delay if we booted from a disk image
 	// Otherwise this would result in delay duplication in the int21 handler
-	if (!controller_read && DOS_IsGuestOsBooted()) {
+	if (mode != RawReadMode::Controller && DOS_IsGuestOsBooted()) {
 		DiskType type = hardDrive ? DiskType::HardDisk : DiskType::Floppy;
 		DOS_PerformDiskIoDelay(sector_size, type);
 	}
@@ -331,7 +339,7 @@ uint8_t imageDisk::read_absolute_sector(const uint32_t sectnum, void* data,
 	current_fpos = bytenum + ret;
 	last_action  = READ;
 
-	return controller_read && ret != sector_size ? 0xff : 0;
+	return mode != RawReadMode::Normal && ret != sector_size ? 0xff : 0;
 }
 
 uint8_t imageDisk::Write_Sector(uint32_t head, uint32_t cylinder,
@@ -715,6 +723,35 @@ static FloppyBiosTransferResult bios_track_sector_transfer(
 	return {0, request.count};
 }
 
+static DiskServiceResult report_floppy_transfer(const FloppyBiosTransferResult transfer)
+{
+	last_status = transfer.status;
+	mem_writeb(BIOS_DISK_STATUS, transfer.status);
+	return {.status    = transfer.status,
+	        .carry     = transfer.status != 0,
+	        .completed = transfer.sectors};
+}
+
+static FloppyBiosTransferResult verify_raw_floppy(imageDisk& disk,
+                                                  const DiskServiceRequest& request)
+{
+	if (request.cylinder >= disk.cylinders || request.head >= disk.heads ||
+	    !request.sector || request.sector > disk.sectors) {
+		return {0x04, 0};
+	}
+
+	auto sector = (request.cylinder * disk.heads + request.head) * disk.sectors +
+	              request.sector - 1;
+	const auto end = disk.cylinders * disk.heads * disk.sectors;
+	std::array<uint8_t, 512> scratch = {};
+	for (uint8_t completed = 0; completed < request.count; ++completed, ++sector) {
+		if (sector >= end || !disk.VerifyRawSector(sector, scratch)) {
+			return {0x04, completed};
+		}
+	}
+	return {0, request.count};
+}
+
 static DiskServiceResult bios_floppy_transfer(const DiskServiceRequest& request,
                                               const uint8_t drivenum,
                                               const FloppyBiosTransfer operation)
@@ -741,11 +778,7 @@ static DiskServiceResult bios_floppy_transfer(const DiskServiceRequest& request,
 	if (operation == FloppyBiosTransfer::Read) {
 		killRead = false;
 	}
-	last_status = transfer.status;
-	mem_writeb(BIOS_DISK_STATUS, transfer.status);
-	return {.status    = transfer.status,
-	        .carry     = transfer.status != 0,
-	        .completed = transfer.sectors};
+	return report_floppy_transfer(transfer);
 }
 
 static DiskServiceResult run_disk_service(const DiskServiceRequest& request)
@@ -895,16 +928,24 @@ static DiskServiceResult run_disk_service(const DiskServiceRequest& request)
 		break;
 	case 0x04: /* Verify sectors */
 		if (request.count == 0) {
-			return {.status = 0x01, .carry = true};
+			return unit < 2 ? report_floppy_transfer({0x01, 0})
+			                : DiskServiceResult{.status = 0x01,
+			                                    .carry  = true};
 		}
 		if (drive_inactive(unit)) {
-			return {.status = last_status, .carry = true};
+			return unit < 2 ? report_floppy_transfer({last_status, 0})
+			                : DiskServiceResult{.status = last_status,
+			                                    .carry = true};
 		}
 
 		if (disk_slots[unit].floppy) {
 			return bios_floppy_transfer(request,
 			                            unit,
 			                            FloppyBiosTransfer::Verify);
+		}
+		if (unit < 2) {
+			return report_floppy_transfer(
+			        verify_raw_floppy(*disk_slots[unit].sector, request));
 		}
 		result.status = 0x00;
 		result.carry  = false;
