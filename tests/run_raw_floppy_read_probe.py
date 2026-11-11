@@ -23,6 +23,8 @@ def run_probe(dosbox, nasm, directory, extension, unit, size_kb, sectors, encode
     options = ["-DREORDERED"] if encode else []
     if extension == "scp":
         options.append("-DSCP_REVOLUTIONS")
+    elif extension == "86f":
+        options.append("-DFIRST_ID_AFTER_INDEX=2")
     subprocess.run([nasm, *options, "-f", "bin", f"-DUNIT={unit}",
                     f"-DSECTORS={sectors}", source,
                     "-o", directory / "PROBE.COM"], check=True)

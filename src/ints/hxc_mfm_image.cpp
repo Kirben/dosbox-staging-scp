@@ -21,13 +21,20 @@ uint32_t read_le(const std::span<const uint8_t> bytes)
 	return value;
 }
 
-uint8_t bit_at(const std::span<const uint8_t> track, const size_t bit)
+struct MfmBitstream {
+	std::span<const uint8_t> bytes = {};
+	size_t bit_count               = 0;
+};
+
+uint8_t bit_at(const MfmBitstream track, size_t bit)
 {
-	return static_cast<uint8_t>(
-	        (track[(bit / 8) % track.size()] >> (7 - bit % 8)) & 1);
+	if (bit >= track.bit_count) {
+		bit %= track.bit_count;
+	}
+	return static_cast<uint8_t>((track.bytes[bit / 8] >> (7 - bit % 8)) & 1);
 }
 
-uint16_t read_word(const std::span<const uint8_t> track, const size_t bit)
+uint16_t read_word(const MfmBitstream track, const size_t bit)
 {
 	uint16_t word = 0;
 	for (size_t i = 0; i < 16; ++i) {
@@ -36,7 +43,7 @@ uint16_t read_word(const std::span<const uint8_t> track, const size_t bit)
 	return word;
 }
 
-uint8_t read_byte(const std::span<const uint8_t> track, const size_t bit)
+uint8_t read_byte(const MfmBitstream track, const size_t bit)
 {
 	uint8_t byte = 0;
 	for (size_t i = 1; i < 16; i += 2) {
@@ -62,7 +69,9 @@ struct AddressMark {
 
 } // namespace
 
-std::vector<FloppySector> FloppyTrackImage::DecodeMfmTrack(const std::span<const uint8_t> track)
+std::vector<FloppySector> FloppyTrackImage::DecodeMfmTrack(
+        const std::span<const uint8_t> bytes, const size_t bit_count,
+        const size_t index)
 {
 	constexpr auto SyncWord    = 0x4489;
 	constexpr auto IdMark      = 0xfe;
@@ -72,7 +81,11 @@ std::vector<FloppySector> FloppyTrackImage::DecodeMfmTrack(const std::span<const
 	constexpr auto ByteBits    = 16u;
 	constexpr auto SyncCrc = uint16_t{0xcdb4}; // CRC after three A1 bytes
 
-	const auto track_bits          = track.size() * 8;
+	const auto track_bits = bit_count ? bit_count : bytes.size() * 8;
+	if (!track_bits || track_bits > bytes.size() * 8 || index >= track_bits) {
+		return {};
+	}
+	const MfmBitstream track       = {bytes, track_bits};
 	std::vector<AddressMark> marks = {};
 	auto word                      = read_word(track, 0);
 	for (size_t bit = 0; bit < track_bits; ++bit) {
@@ -106,7 +119,9 @@ std::vector<FloppySector> FloppyTrackImage::DecodeMfmTrack(const std::span<const
 		sector.head           = chrn[1];
 		sector.id             = chrn[2];
 		sector.size_code      = chrn[3];
-		sector.cycle_fraction = static_cast<double>(id.bit) /
+		sector.cycle_fraction = static_cast<double>(
+		                                (id.bit + track_bits - index) %
+		                                track_bits) /
 		                        static_cast<double>(track_bits);
 		sector.id_crc_error   = crc != id_crc;
 
