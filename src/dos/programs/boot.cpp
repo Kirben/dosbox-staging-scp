@@ -26,7 +26,8 @@
 #include "utils/string_utils.h"
 
 FILE* BOOT::getFSFile_mounted(const char* filename, uint32_t* ksize,
-                              uint32_t* bsize, uint8_t* error, bool* read_only)
+                              uint32_t* bsize, uint8_t* error, bool* read_only,
+                              std::string* host_path)
 {
 	// if return NULL then put in error the errormessage code if an error
 	// was requested
@@ -46,7 +47,8 @@ FILE* BOOT::getFSFile_mounted(const char* filename, uint32_t* ksize,
 			return nullptr;
 		}
 
-		tmpfile = ldp->GetHostFilePtr(fullname, "rb");
+		const auto path = ldp->MapDosToHostFilename(fullname);
+		tmpfile         = fopen(path.c_str(), "rb");
 		if (tmpfile == nullptr) {
 			if (!tryload)
 				*error = 1;
@@ -60,6 +62,15 @@ FILE* BOOT::getFSFile_mounted(const char* filename, uint32_t* ksize,
 
 		*ksize = (ftell(tmpfile) / 1024);
 		*bsize = ftell(tmpfile);
+		if (IsFloppyTrackImagePath(filename)) {
+			if (read_only) {
+				*read_only = ldp->IsReadOnly();
+			}
+			if (host_path) {
+				*host_path = path;
+			}
+			return tmpfile;
+		}
 		fclose(tmpfile);
 
 		tmpfile = ldp->GetHostFilePtr(fullname, "rb+");
@@ -85,15 +96,20 @@ FILE* BOOT::getFSFile_mounted(const char* filename, uint32_t* ksize,
 }
 
 FILE* BOOT::getFSFile(const char* filename, uint32_t* ksize, uint32_t* bsize,
-                      bool tryload, bool* read_only)
+                      bool tryload, bool* read_only, std::string* host_path)
 {
 	uint8_t error = tryload ? 1 : 0;
-	FILE* tmpfile = getFSFile_mounted(filename, ksize, bsize, &error, read_only);
+	FILE* tmpfile = getFSFile_mounted(
+	        filename, ksize, bsize, &error, read_only, host_path);
 	if (tmpfile)
 		return tmpfile;
 	// File not found on mounted filesystem. Try regular filesystem
 	const auto filename_s = resolve_home(filename).string();
-	tmpfile = fopen(filename_s.c_str(), "rb+");
+	const auto track_image = IsFloppyTrackImagePath(filename);
+	tmpfile = fopen(filename_s.c_str(), track_image ? "rb" : "rb+");
+	if (track_image && host_path) {
+		*host_path = filename_s;
+	}
 
 	// Used for logging in check_fseek()
 	constexpr auto ModuleName = "BOOT";
@@ -253,11 +269,13 @@ void BOOT::Run(void)
 			         temp_line.c_str());
 			uint32_t rombytesize;
 			bool read_only = false;
-			FILE* usefile  = getFSFile(temp_line.c_str(),
-			                           &floppysize,
-			                           &rombytesize,
-			                           false,
-			                           &read_only);
+			std::string host_path = {};
+			FILE* usefile         = getFSFile(temp_line.c_str(),
+			                                  &floppysize,
+			                                  &rombytesize,
+			                                  false,
+			                                  &read_only,
+			                                  &host_path);
 			if (usefile != nullptr) {
 				if (IsFloppyTrackImagePath(temp_line)) {
 					const auto close_file = [](FILE* file) {
@@ -266,7 +284,7 @@ void BOOT::Run(void)
 					const std::unique_ptr<FILE, decltype(close_file)>
 					        image_file(usefile, close_file);
 					auto disk = LoadFloppyTrackDisk(
-					        image_file.get(), temp_line);
+					        image_file.get(), host_path, read_only);
 					if (!disk) {
 						WriteOut(MSG_Get("PROGRAM_BOOT_IMAGE_NOT_OPEN"),
 						         temp_line.c_str());

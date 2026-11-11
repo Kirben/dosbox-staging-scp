@@ -17,6 +17,7 @@ std::shared_ptr<imageDisk> OpenSectorDiskImage(
         const std::optional<bool> hard_disk = std::nullopt);
 
 bool IsFloppyTrackImagePath(const std::string_view path);
-std::shared_ptr<imageDisk> LoadFloppyTrackDisk(FILE* file, const std::string& path);
+std::shared_ptr<imageDisk> LoadFloppyTrackDisk(FILE* file, const std::string& path,
+                                               const bool read_only);
 
 #endif

@@ -31,7 +31,7 @@ def run_probe(dosbox, nasm, directory, extension, unit, size_kb, sectors, encode
 
     source = Path(__file__).with_name("raw_floppy_read_probe.asm")
     options = ["-DREORDERED"] if encode else []
-    if extension == "scp":
+    if extension == "scp" and not write_mode:
         options.append("-DSCP_REVOLUTIONS")
     elif extension == "86f":
         options.append("-DFIRST_ID_AFTER_INDEX=2")

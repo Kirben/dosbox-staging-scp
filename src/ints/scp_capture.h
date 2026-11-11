@@ -68,6 +68,7 @@ public:
 	};
 	bool Load(FILE* file, std::string& error);
 	Header header                                = {};
+	uint64_t fingerprint                         = 0;
 	std::array<std::optional<Track>, 168> tracks = {};
 	std::optional<Footer> footer                 = {};
 	std::string legacy_timestamp                 = {};

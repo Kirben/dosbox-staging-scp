@@ -24,10 +24,12 @@ private:
 	static void AddMessages();
 
 	FILE* getFSFile_mounted(const char* filename, uint32_t* ksize,
-	                        uint32_t* bsize, uint8_t* error, bool* read_only);
+	                        uint32_t* bsize, uint8_t* error,
+	                        bool* read_only, std::string* host_path);
 
 	FILE* getFSFile(const char* filename, uint32_t* ksize, uint32_t* bsize,
-	                bool tryload = false, bool* read_only = nullptr);
+	                bool tryload = false, bool* read_only = nullptr,
+	                std::string* host_path = nullptr);
 
 	void printError();
 

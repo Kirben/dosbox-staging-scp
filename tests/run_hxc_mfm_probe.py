@@ -92,7 +92,8 @@ def check_fat(dosbox, directory, encode_image=encode, extension="mfm"):
     original = encode_image(disk)
     image.write_bytes(original)
     args, env = launch(dosbox, directory, "fat", [
-        f'mount c "{directory}"', "c:", f'mount a "{image}"',
+        f'mount c "{directory}"', "c:",
+        f'mount a "{image}"' + (" -ro" if extension == "scp" else ""),
         "copy a:\\check.dat copied.dat", "copy copied.dat a:\\new.dat",
         "if exist a:\\new.dat echo FAILED > BAD.TXT", "exit",
     ])
@@ -103,6 +104,21 @@ def check_fat(dosbox, directory, encode_image=encode, extension="mfm"):
     assert "bad.txt" not in files or not files["bad.txt"].read_bytes()
     assert image.read_bytes() == original
     print(f".{extension} automatic FAT MOUNT, file read and write rejection passed")
+    if extension == "scp":
+        for name, commands in (
+            ("fat-write", ["copy copied.dat a:\\new.dat"]),
+            ("fat-readback", ["copy a:\\new.dat replay.dat"]),
+        ):
+            access = " -ro" if name == "fat-readback" else ""
+            args, env = launch(dosbox, directory, name, [
+                f'mount c "{directory}"', "c:", f'mount a "{image}"{access}',
+                *commands, "exit",
+            ])
+            subprocess.run(args, cwd=directory, env=env, timeout=30, check=True,
+                           capture_output=True)
+        assert (directory / "REPLAY.DAT").read_bytes() == b"\x31" * 512
+        assert image.read_bytes() == original
+        print(".scp DOS FAT file and allocation changes survived restart")
 
 
 def check_boot(dosbox, nasm, directory, encode_image=encode, extension="mfm"):
@@ -134,11 +150,12 @@ org 7c00h
     jne done
     cmp word [8000h],1234h
     jne done
+    mov word [8000h],5678h
     mov ax,0301h
     mov cx,2
     xor dh,dh
     int 13h
-    jnc done
+    {write_result} done
     ; Report success to a separate writable BIOS hard disk.
     mov word [8000h],0a712h
     mov ax,0301h
@@ -156,7 +173,7 @@ done:
     jmp done
 times 510-($-$$) db 0
 dw 0aa55h
-""", encoding="ascii")
+""".format(write_result="jc" if extension == "scp" else "jnc"), encoding="ascii")
     output = directory / "boot.bin"
     subprocess.run([nasm, "-f", "bin", source, "-o", output], check=True)
     disk = bytearray(360 * 1024)
@@ -166,10 +183,16 @@ dw 0aa55h
     original = encode_image(disk)
     image.write_bytes(original)
     marker = directory / "marker.img"
-    for name, commands in (
+    boot_cases = [
         ("direct", [f'boot "{image}"']),
         ("mounted", [f'mount 0 "{image}" -t floppy -fs none', "boot -l a"]),
-    ):
+    ]
+    overlay = image.with_suffix(f".{extension}.overlay")
+    if extension == "scp":
+        boot_cases.append(("dos-path", [f'mount c "{directory}"', "boot c:\\boot.scp"]))
+    for name, commands in boot_cases:
+        if extension == "scp":
+            overlay.unlink(missing_ok=True)
         marker.write_bytes(bytes(4 * 16 * 63 * 512))
         mount_marker = f'mount 2 "{marker}" -t hdd -fs none -chs 4,16,63'
         args, env = launch(dosbox, directory, name, [mount_marker, *commands])
@@ -188,7 +211,9 @@ dw 0aa55h
                     process.terminate()
                 process.wait(timeout=10)
         assert image.read_bytes() == original
-    print(f".{extension} direct and pre-mounted BOOT, INT 13h read, verify and write rejection passed")
+        if extension == "scp":
+            assert overlay.is_file()
+    print(f".{extension} BOOT, INT 13h read, verify and write status passed")
 
 
 def main():

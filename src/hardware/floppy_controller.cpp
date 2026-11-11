@@ -223,11 +223,13 @@ void transfer_sector(uint32_t)
 			finish_data(0x20);
 			return;
 		}
-		if (sector->data.empty()) {
+		if (!writing && sector->data.empty()) {
 			finish_data(0x01, 0x01);
 			return;
 		}
-		data = sector->data;
+		if (!writing) {
+			data = sector->data;
+		}
 	} else if (!writing && !fdc.disk->ReadSectorForController(fdc.head,
 	                                                          fdc.cylinder,
 	                                                          fdc.sector,
@@ -338,8 +340,8 @@ void start_data(const Command command)
 	}
 	fdc.phase = Phase::Execution;
 	if (command == Command::FormatTrack) {
-		if (fdc.command[2] != SectorSizeCode || fdc.command[3] == 0 ||
-		    fdc.command[3] != fdc.disk->sectors ||
+		if (fdc.disk->GetTrackImage() || fdc.command[2] != SectorSizeCode ||
+		    fdc.command[3] == 0 || fdc.command[3] != fdc.disk->sectors ||
 		    fdc.disk->getSectSize() != SectorSize) {
 			finish_data(0x04);
 			return;
@@ -348,8 +350,10 @@ void start_data(const Command command)
 		return;
 	}
 	if (const auto* track = fdc.disk->GetTrackImage()) {
-		if (command == Command::ReadData &&
-		    (fdc.command[3] != fdc.head || fdc.sector > fdc.command[6])) {
+		if (command != Command::ReadId &&
+		    (fdc.command[3] != fdc.head || fdc.sector > fdc.command[6] ||
+		     (command == Command::WriteData &&
+		      fdc.command[5] != SectorSizeCode))) {
 			finish_data(0x04);
 			return;
 		}

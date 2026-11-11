@@ -293,6 +293,15 @@ uint8_t imageDisk::read_absolute_sector(const uint32_t sectnum, void* data,
 uint8_t imageDisk::Write_Sector(uint32_t head, uint32_t cylinder,
                                 uint32_t sector, void* data)
 {
+	if (track_image) {
+		if (IsWriteProtected()) {
+			return 0x03;
+		}
+		const std::span bytes(static_cast<const uint8_t*>(data), sector_size);
+		return track_image->WriteScpSector(cylinder, head, sector, bytes)
+		             ? 0
+		             : 0x05;
+	}
 	uint32_t sectnum;
 
 	sectnum = ((cylinder * heads + head) * sectors) + sector - 1L;
@@ -302,12 +311,22 @@ uint8_t imageDisk::Write_Sector(uint32_t head, uint32_t cylinder,
 
 uint8_t imageDisk::Write_AbsoluteSector(uint32_t sectnum, void* data)
 {
+	if (track_image) {
+		if (!sectors || sectnum >= cylinders * heads * sectors) {
+			return 0x04;
+		}
+		const auto track = sectnum / sectors;
+		return Write_Sector(track % heads,
+		                    track / heads,
+		                    sectnum % sectors + 1,
+		                    data);
+	}
 	return write_absolute_sector(sectnum, data, false);
 }
 
 bool imageDisk::IsWriteProtected() const
 {
-	return read_only || track_image != nullptr;
+	return read_only || (track_image && track_image->IsWriteProtected());
 }
 
 bool imageDisk::WriteSectorForController(const uint32_t head, const uint32_t cylinder,
@@ -316,6 +335,9 @@ bool imageDisk::WriteSectorForController(const uint32_t head, const uint32_t cyl
 {
 	if (data.size() != sector_size) {
 		return false;
+	}
+	if (track_image) {
+		return track_image->WriteScpSector(cylinder, head, sector, data);
 	}
 	const auto absolute_sector = (cylinder * heads + head) * sectors + sector - 1;
 	return write_absolute_sector(absolute_sector, data.data(), true) == 0;
