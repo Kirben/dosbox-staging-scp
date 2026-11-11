@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: GPL-2.0-or-later
 
-"""Verify read-only SCP mounts and recorded revolutions through the FDC."""
+"""Verify SCP mounts, recorded revolutions, and persistent overlay writes."""
 
 import argparse
 from pathlib import Path
@@ -65,6 +65,18 @@ def main():
         run_probe(dosbox, args.nasm, directory, "scp", 0, 360, 9,
                   lambda disk: encode_scp(disk, different_turns=True))
         print(".scp successive reads returned different recorded revolutions")
+        for unit in (0, 1):
+            overlay = directory / "disk.scp.overlay"
+            overlay.unlink(missing_ok=True)
+            for mode in ("protected", "write", "readback"):
+                run_probe(dosbox, args.nasm, directory, "scp", unit, 360, 9,
+                          encode_scp, write_mode=mode)
+                if mode == "protected":
+                    assert not overlay.exists()
+                elif mode == "write":
+                    saved = overlay.read_bytes()
+                else:
+                    assert overlay.read_bytes() == saved
         check_fat(dosbox, directory, encode_scp, "scp")
         check_boot(dosbox, args.nasm, directory, encode_scp, "scp")
 
