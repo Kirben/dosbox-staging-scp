@@ -59,7 +59,9 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--dosbox", type=Path, required=True)
     parser.add_argument("--nasm", default="nasm")
-    parser.add_argument("--scp-write", action="store_true")
+    modes = parser.add_mutually_exclusive_group()
+    modes.add_argument("--scp-write", action="store_true")
+    modes.add_argument("--verify", action="store_true")
     args = parser.parse_args()
     dosbox = args.dosbox.resolve()
 
@@ -75,14 +77,21 @@ def main():
     formats = {"img": None, "ima": None, "scp": encode_scp,
                "mfm": encode, "86f": encode_86f}
     for extension, encoder in formats.items():
-        image_bytes = encoder(disk) if encoder else disk
+        if args.verify and encoder is None:
+            continue
+        image_bytes = encoder(disk, verify_errors=args.verify) if encoder else disk
         for unit, letter in enumerate("ab"):
             with TemporaryDirectory() as temp:
                 directory = Path(temp)
                 image = directory / f"disk.{extension}"
                 image.write_bytes(image_bytes)
                 options = ["-DTRACK_IMAGE"] if encoder else []
+                if args.verify:
+                    options.append("-DVERIFY_TEST")
                 run_probe(dosbox, args.nasm, directory, image, unit, options)
+                if args.verify:
+                    print(f".{extension} drive {letter.upper()}: Verify status, count, IRQ6 and buffer passed")
+                    continue
                 mode = "DMA boundary and IRQ6" if encoder else "legacy sector path"
                 print(f".{extension} drive {letter.upper()}: data and {mode} passed")
 
