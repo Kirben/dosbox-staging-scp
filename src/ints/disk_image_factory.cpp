@@ -103,7 +103,7 @@ std::shared_ptr<imageDisk> LoadFloppyTrackDisk(FILE* file, const std::string& pa
 		image = FloppyTrackImage::Load86f(file, path, read_only, error);
 		break;
 	case TrackFormat::TransCopy:
-		image = FloppyTrackImage::LoadTransCopy(file, error);
+		image = FloppyTrackImage::LoadTransCopy(file, path, read_only, error);
 		break;
 	case TrackFormat::None: return {};
 	}

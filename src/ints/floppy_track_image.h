@@ -29,8 +29,9 @@ public:
 	                                                 const std::string& path,
 	                                                 const bool read_only,
 	                                                 std::string& error);
-	static std::unique_ptr<FloppyTrackImage> LoadTransCopy(FILE* file,
-	                                                       std::string& error);
+	static std::unique_ptr<FloppyTrackImage> LoadTransCopy(
+	        FILE* file, const std::string& path, const bool read_only,
+	        std::string& error);
 
 	double GetCycleMs(const uint32_t cylinder, const uint32_t head) const override;
 	std::span<const double> GetRevolutionEnds(uint32_t cylinder,

@@ -330,6 +330,7 @@ void FloppyTrackImage::ApplyOverlaySector(const OverlayKey& key,
 		sector.data.assign(data.begin(), data.end());
 		sector.data_crc_error = false;
 		sector.deleted        = false;
+		sector.weak_mask.clear();
 	};
 	if (slot) {
 		apply(sectors[slot - 1]);
