@@ -27,7 +27,7 @@ def mfm_word(previous, value):
 MFM = tuple(tuple(mfm_word(p, v) for v in range(256)) for p in (0, 1))
 
 
-def encode_track(disk, track):
+def encode_track(disk, track, duplicate_id=False):
     cells = bytearray()
     previous = 0
 
@@ -47,7 +47,8 @@ def encode_track(disk, track):
     append(b"\x4e" * 80)
     order = (1, 2, 4, 3, 5, 6, 7, 8, 9) if track == 5 else range(1, 10)
     for sector in order:
-        field(bytes((0xfe, track // 2, track % 2, sector, 2)))
+        sector_id = 6 if duplicate_id and track == 5 and sector == 5 else sector
+        field(bytes((0xfe, track // 2, track % 2, sector_id, 2)))
         append(b"\x4e" * 22)
         offset = (track * 9 + sector - 1) * 512
         field(b"\xfb" + disk[offset:offset + 512])

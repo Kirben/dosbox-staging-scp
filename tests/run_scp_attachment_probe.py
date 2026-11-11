@@ -17,7 +17,7 @@ BIT_STRINGS = tuple(f"{value:08b}" for value in range(256))
 TRANSITION = re.compile("1")
 
 
-def encode_scp(disk, different_turns=False):
+def encode_scp(disk, different_turns=False, duplicate_id=False):
     image = bytearray(0x2b0)
     image[:3] = b"SCP"
     image[3:9] = bytes((0x10, 0x31, 2, 0, 79, 1))
@@ -32,7 +32,7 @@ def encode_scp(disk, different_turns=False):
                 turn_disk[start:start + 512] = bytes((0x61 + turn,)) * 512
             else:
                 turn_disk = disk
-            cells = encode_track(turn_disk, track)
+            cells = encode_track(turn_disk, track, duplicate_id)
             bits = "".join(BIT_STRINGS[value] for value in cells)
             flux = bytearray()
             for match in TRANSITION.finditer(bits):
@@ -115,6 +115,19 @@ def main():
                       encode_scp, write_mode="format-readback")
         check_fat(dosbox, directory, encode_scp, "scp")
         check_boot(dosbox, args.nasm, directory, encode_scp, "scp")
+        with TemporaryDirectory(dir=directory) as duplicate_temp:
+            duplicate_dir = Path(duplicate_temp)
+            overlay = duplicate_dir / "disk.scp.overlay"
+            for unit in (0, 1):
+                overlay.unlink(missing_ok=True)
+                for mode in ("duplicate-write", "duplicate-readback"):
+                    run_probe(dosbox, args.nasm, duplicate_dir, "scp", unit, 360, 9,
+                              lambda disk: encode_scp(disk, duplicate_id=True),
+                              write_mode=mode)
+                    if mode == "duplicate-write":
+                        duplicate_overlay = overlay.read_bytes()
+                    else:
+                        assert overlay.read_bytes() == duplicate_overlay
 
 
 if __name__ == "__main__":

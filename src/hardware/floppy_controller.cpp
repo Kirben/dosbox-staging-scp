@@ -252,8 +252,12 @@ void transfer_sector(uint32_t)
 	dma->ClearRequest();
 	if (transferred != count) {
 		finish_data(0x10);
-	} else if (writing && !fdc.disk->WriteSectorForController(
-	                              fdc.head, fdc.cylinder, fdc.sector, buffer)) {
+	} else if (writing &&
+	           !(fdc.track_sector
+	                     ? fdc.disk->GetTrackImage()->WriteScpSector(
+	                               fdc.cylinder, fdc.head, fdc.sector, buffer, fdc.track_sector)
+	                     : fdc.disk->WriteSectorForController(
+	                               fdc.head, fdc.cylinder, fdc.sector, buffer))) {
 		finish_data(0x20);
 	} else if (fdc.track_sector && fdc.track_sector->data_crc_error) {
 		finish_data(0x20, 0x20);

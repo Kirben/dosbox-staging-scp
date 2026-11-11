@@ -44,7 +44,8 @@ public:
 	bool IsWriteProtected() const;
 	bool WriteScpSector(const uint32_t cylinder, const uint32_t head,
 	                    const uint32_t sector,
-	                    const std::span<const uint8_t> data);
+	                    const std::span<const uint8_t> data,
+	                    const FloppySector* selected = nullptr);
 	enum class FormatResult { Success, InvalidLayout, WriteError };
 	FormatResult FormatScpTrack(const uint8_t cylinder, const uint8_t head,
 	                            const std::span<const uint8_t> ids,
@@ -55,7 +56,8 @@ public:
 	uint32_t logical_sectors = 0;
 
 private:
-	using OverlayKey    = std::array<uint8_t, 3>;
+	// Cylinder, head, logical ID, and one-based physical slot (zero for CHS).
+	using OverlayKey    = std::array<uint32_t, 4>;
 	using OverlaySector = std::array<uint8_t, 512>;
 	using Overlay       = std::map<OverlayKey, OverlaySector>;
 	using TrackAddress  = std::array<uint8_t, 2>;

@@ -333,11 +333,8 @@ bool imageDisk::WriteSectorForController(const uint32_t head, const uint32_t cyl
                                          const uint32_t sector,
                                          const std::span<const uint8_t> data)
 {
-	if (data.size() != sector_size) {
+	if (data.size() != sector_size || track_image) {
 		return false;
-	}
-	if (track_image) {
-		return track_image->WriteScpSector(cylinder, head, sector, data);
 	}
 	const auto absolute_sector = (cylinder * heads + head) * sectors + sector - 1;
 	return write_absolute_sector(absolute_sector, data.data(), true) == 0;
