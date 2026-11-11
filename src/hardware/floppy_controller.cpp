@@ -7,6 +7,7 @@
 #include <cmath>
 #include <memory>
 
+#include "cpu/callback.h"
 #include "hardware/dma.h"
 #include "hardware/pic.h"
 #include "hardware/port.h"
@@ -679,6 +680,101 @@ FloppyFormatResult FLOPPY_FormatTrack(imageDisk& disk, const uint32_t cylinder,
 		}
 	}
 	return Result::Success;
+}
+
+uint8_t FLOPPY_BiosDmaFormat(const uint8_t unit, const uint32_t cylinder,
+                             const uint8_t head, const uint8_t size_code,
+                             const uint8_t count, const uint8_t gap,
+                             const uint8_t fill, const uint32_t address)
+{
+	if (fdc.phase != Phase::Command || fdc.command_count || fdc.irq_pending) {
+		return 0x80;
+	}
+	const auto disk = BIOS_GetDisk(unit);
+	if (unit >= fdc.drives.size() || !disk || !disk->active || disk->hardDrive ||
+	    cylinder > UINT8_MAX || cylinder >= disk->cylinders || head > 1 ||
+	    head >= disk->heads || !count || size_code > 7) {
+		return 0x04;
+	}
+	auto* dma         = DMA_GetChannel(FloppyDma);
+	const auto size   = count * FormatIdSize;
+	const auto offset = static_cast<uint16_t>(address);
+	if (!dma || size > 0x10000u - offset) {
+		return 0x09;
+	}
+
+	constexpr auto MaskChannel = 0x04 | FloppyDma;
+	const auto dma_count       = check_cast<uint16_t>(size - 1);
+	IO_WriteB(0x0a, MaskChannel);
+	dma->has_reached_terminal_count = false;
+	IO_WriteB(0x0c, 0);
+	IO_WriteB(0x04, static_cast<uint8_t>(offset));
+	IO_WriteB(0x04, check_cast<uint8_t>(offset >> 8));
+	IO_WriteB(0x05, static_cast<uint8_t>(dma_count));
+	IO_WriteB(0x05, check_cast<uint8_t>(dma_count >> 8));
+	IO_WriteB(0x81, check_cast<uint8_t>(address >> 16));
+	IO_WriteB(0x0b, 0x48 | FloppyDma);
+	IO_WriteB(0x0a, FloppyDma);
+
+	// The BIOS selects and positions the drive before sending Format Track.
+	auto& drive    = fdc.drives[unit];
+	drive.cylinder = check_cast<uint8_t>(cylinder);
+	if (!motor_on(unit)) {
+		drive.motor_started_ms = PIC_FullIndex();
+	}
+	fdc.dor = check_cast<uint8_t>((fdc.dor & 0xf0) | (0x10u << unit) |
+	                              ResetReleased | InterruptEnabled | unit);
+	fdc.non_dma = false;
+
+	const auto* track   = disk->GetTrackImage();
+	const auto cycle_ms = track ? track->GetCycleMs(cylinder, head)
+	                            : StandardRevolutionMs;
+	const auto deadline = PIC_FullIndex() + 3 * cycle_ms;
+	const auto mask     = IO_ReadB(0x21);
+	PIC_SetIRQMask(FloppyIrq, false);
+	mem_writeb(BIOS_DRIVE_ACTIVE, mem_readb(BIOS_DRIVE_ACTIVE) & 0x7f);
+	const std::array<uint8_t, 6> command = {
+	        0x4d, check_cast<uint8_t>(unit | (head << 2)), size_code, count, gap, fill};
+	for (const auto byte : command) {
+		write_data(0x3f5, byte, io_width_t::byte);
+	}
+
+	bool shutdown = false;
+	while (fdc.phase == Phase::Execution && PIC_FullIndex() < deadline &&
+	       !shutdown) {
+		shutdown = CALLBACK_Idle();
+	}
+	if (!shutdown && fdc.phase == Phase::Result && fdc.irq_pending) {
+		shutdown = CALLBACK_Idle();
+	}
+	PIC_SetIRQMask(FloppyIrq, (mask & (1u << FloppyIrq)) != 0);
+	IO_WriteB(0x0a, MaskChannel);
+
+	if (shutdown || fdc.phase != Phase::Result || fdc.result_count ||
+	    fdc.result_length != fdc.result.size()) {
+		reset_controller();
+		update_irq();
+		return 0x80;
+	}
+
+	std::array<uint8_t, 7> result = {};
+	for (auto& byte : result) {
+		byte = check_cast<uint8_t>(read_data(0x3f5, io_width_t::byte));
+	}
+	const auto status = result[1];
+	if (status & 0x02) {
+		return 0x03;
+	}
+	if (status & 0x10) {
+		return 0x08;
+	}
+	if (status & 0x20) {
+		return 0x20;
+	}
+	if ((result[0] & 0xc0) || status || result[2]) {
+		return 0x04;
+	}
+	return dma->curr_count == 0xffff ? 0 : 0x08;
 }
 
 void FLOPPY_Init()
