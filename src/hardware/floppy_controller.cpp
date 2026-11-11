@@ -599,10 +599,14 @@ void reset_controller()
 void write_dor(io_port_t, const io_val_t value, io_width_t)
 {
 	const auto previous = fdc.dor;
+	const auto unit     = selected_unit();
+	const auto formatting_scp = fdc.phase == Phase::Execution && fdc.disk &&
+	                            fdc.disk->GetTrackImage() &&
+	                            (fdc.command[0] & 0x1f) ==
+	                                    static_cast<int>(Command::FormatTrack) &&
+	                            media_ready(unit);
 	if (!(value & ResetReleased)) {
-		if (fdc.phase == Phase::Execution && fdc.formatted_ids &&
-		    (fdc.command[0] & 0x1f) == static_cast<int>(Command::FormatTrack) &&
-		    media_ready(selected_unit()) && commit_scp_format()) {
+		if (formatting_scp && fdc.formatted_ids && commit_scp_format()) {
 			LOG_WARNING("FDC: Could not save SCP format interrupted by reset");
 		}
 		reset_controller();
@@ -617,6 +621,11 @@ void write_dor(io_port_t, const io_val_t value, io_width_t)
 	if ((value & ResetReleased) && !(previous & ResetReleased)) {
 		fdc.reset_unit  = 0;
 		fdc.irq_pending = true;
+	}
+	if ((value & ResetReleased) && formatting_scp && !motor_on(unit)) {
+		PIC_RemoveEvents(format_scp_sector);
+		finish_scp_format(0x04);
+		return;
 	}
 	update_irq();
 }

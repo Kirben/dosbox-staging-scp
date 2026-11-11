@@ -10,6 +10,11 @@ org 100h
 %endif
 %define DRIVE_HEAD (4 + UNIT)
 %define DOR (0x0c | UNIT | (0x10 << UNIT))
+%ifdef FORMAT_RESET
+%define FORMAT_INTERRUPT FORMAT_RESET
+%elifdef FORMAT_MOTOR
+%define FORMAT_INTERRUPT FORMAT_MOTOR
+%endif
 
     mov ax,250eh
     mov dx,irq6
@@ -293,29 +298,29 @@ org 100h
     out 0ah,al
     mov si,format_command
     mov cx,6
-%ifdef FORMAT_RESET
-%if FORMAT_RESET < 3
+%ifdef FORMAT_INTERRUPT
+%if FORMAT_INTERRUPT < 3
     call send_command
-%if FORMAT_RESET = 2
+%if FORMAT_INTERRUPT = 2
     ; Wait for DMA to consume exactly two CHRN tuples.
     mov ebp,400000
 .wait_for_two_ids:
     out 0ch,al
     in al,04h
     cmp al,8
-    je .reset_now
+    je .interrupt_now
     ja finish
     dec ebp
     jnz .wait_for_two_ids
     jmp finish
-.reset_now:
+.interrupt_now:
 %endif
     cmp byte [interrupts],0
     jne finish
     in al,08h
     test al,4
     jnz finish
-    jmp format_reset_recovery
+    jmp format_interrupt_recovery
 %endif
 %endif
     call command_and_irq
@@ -349,9 +354,38 @@ org 100h
 %else
     jz finish
 %endif
+%ifdef FORMAT_INTERRUPT
+format_interrupt_recovery:
 %ifdef FORMAT_RESET
-format_reset_recovery:
     call reset_and_seek
+%else
+    mov dx,3f2h
+    mov al,0ch | UNIT
+    mov byte [interrupts],0
+    out dx,al
+%if FORMAT_MOTOR < 3
+    ; Motor loss completes the command even before the next sector event.
+    mov dx,3f4h
+    in al,dx
+    cmp al,0d0h
+    jne finish
+    call wait_irq
+    call read_result
+    cmp word [result],0440h + DRIVE_HEAD
+    jne finish
+    cmp byte [result+2],0
+    jne finish
+%if FORMAT_MOTOR = 2
+    cmp word [result+3],0102h
+    jne finish
+    cmp word [result+5],020bh
+    jne finish
+%endif
+%endif
+    mov dx,3f2h
+    mov al,DOR
+    out dx,al
+%endif
     mov byte [stage],13
     call read_id
 %endif

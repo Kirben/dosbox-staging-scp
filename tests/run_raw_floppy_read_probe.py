@@ -11,7 +11,8 @@ from tempfile import TemporaryDirectory
 
 
 def run_probe(dosbox, nasm, directory, extension, unit, size_kb, sectors, encode=None,
-              write_mode=None, partial_format=False, format_reset=None):
+              write_mode=None, partial_format=False, format_reset=None,
+              format_motor=None):
     image = directory / f"disk.{extension}"
     data = bytearray(size_kb * 1024)
     for sector in (3, 4):
@@ -49,10 +50,12 @@ def run_probe(dosbox, nasm, directory, extension, unit, size_kb, sectors, encode
         options.append("-DSCP_FORMAT")
         if partial_format:
             options.append("-DFORMAT_PARTIAL")
-            if not format_reset:
+            if not (format_reset or format_motor):
                 options.append("-DFORMAT_EARLY_TC")
         if format_reset:
             options.append(f"-DFORMAT_RESET={format_reset}")
+        if format_motor:
+            options.append(f"-DFORMAT_MOTOR={format_motor}")
         if write_mode == "format-readback":
             options.append("-DSCP_FORMAT_READBACK")
     (directory / "FDC.OUT").unlink(missing_ok=True)
@@ -86,6 +89,9 @@ def run_probe(dosbox, nasm, directory, extension, unit, size_kb, sectors, encode
         if format_reset:
             phase = {1: "before", 2: "during", 3: "after"}[format_reset]
             mode = f"{mode}, reset {phase}"
+        if format_motor:
+            phase = {1: "before", 2: "during", 3: "after"}[format_motor]
+            mode = f"{mode}, motor off {phase}"
         print(f".{extension} {size_kb} KB drive {'AB'[unit]} {mode}: DMA and IRQ6 passed")
         return
     print(f".{extension} {size_kb} KB drive {'AB'[unit]}: seek, Read ID, DMA and IRQ6 passed")
