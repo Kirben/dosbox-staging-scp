@@ -68,6 +68,7 @@ jobs:
             cc:  gcc
             cxx: g++
             max_warnings: 0
+            floppy_tests: true
 
           - name: Clang 15, Ubuntu 22.04
             os: ubuntu-22.04
@@ -111,6 +112,12 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y $(cat packages/ubuntu-22.04-apt.txt)
 
+      - name: Install floppy guest test dependencies
+        if: matrix.conf.floppy_tests
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y python3 nasm
+
       - name: Set up vcpkg
         uses: ./.github/actions/setup-vcpkg
         with:
@@ -132,7 +139,12 @@ jobs:
       - name: Run tests
         run: |
           set -xo pipefail
-          ctest --preset ${{ matrix.conf.cmake_preset }} 2>&1 | tee tests.log
+          ctest --preset ${{ matrix.conf.cmake_preset }} -LE '^floppy$' 2>&1 | tee tests.log
+
+      - name: Run floppy guest tests
+        if: matrix.conf.floppy_tests
+        run: |
+          ctest --preset ${{ matrix.conf.cmake_preset }} -L '^floppy$' --output-on-failure --no-tests=error
 
       - name: Summarize warnings
         env:
