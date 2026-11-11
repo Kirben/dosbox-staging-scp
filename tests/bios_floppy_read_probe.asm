@@ -18,38 +18,85 @@ org 100h
 
     mov bx,1100h
     mov byte [sector_count],1
-    call check_read
+    call check_transfer
     inc byte [stage]
     mov bx,0fb00h
     mov byte [sector_count],2
-    call check_read
+    call check_transfer
     inc byte [stage]
+%ifndef WRITE_READBACK
     mov bx,0fb01h
-    call check_read
+    call check_transfer
+%endif
+%ifdef WRITE_READBACK
+    inc byte [stage]
+    mov bx,1100h
+    mov byte [sector_count],1
+    call check_transfer
+    inc byte [stage]
+    call check_transfer
+%endif
     mov byte [stage],0
     jmp report
 
-check_read:
+check_transfer:
     mov ax,6010h
     mov es,ax
     mov di,bx
     mov cx,1024
     mov al,0a5h
     rep stosb
+%ifdef WRITE_TEST
+    cmp byte [stage],3
+    je .buffer_ready
+    mov di,bx
+    mov cx,512
+    mov al,73h
+    cmp byte [stage],1
+    jne .fill_first
+    mov al,75h
+.fill_first:
+    rep stosb
+    cmp byte [sector_count],2
+    jne .buffer_ready
+    mov cx,512
+    mov al,74h
+    rep stosb
+.buffer_ready:
+%endif
     in al,08h
     mov byte [interrupts],0
     mov ah,02h
     mov al,[sector_count]
     mov cx,0203h
+%ifdef WRITE_TEST
+    mov ah,03h
+    cmp byte [stage],1
+    jne .issue
+    mov cl,5
+%elifdef WRITE_READBACK
+    cmp byte [stage],4
+    jb .issue
+    mov cl,5
+    je .issue
+    mov ah,03h
+%endif
+.issue:
     mov dx,0100h | UNIT
     push bx
     int 13h
     pop bx
     pushf
     pop si
+%ifdef WRITE_READBACK
+    cmp byte [stage],5
+    je .protected
+%endif
 %ifdef TRACK_IMAGE
+%ifndef WRITE_READBACK
     cmp byte [stage],3
     je .boundary_error
+%endif
 %endif
     jmp .success
 %ifdef TRACK_IMAGE
@@ -68,6 +115,19 @@ check_read:
     mov al,0a5h
     repe scasb
     jne report
+    jmp .check_mask
+%endif
+%ifdef WRITE_READBACK
+.protected:
+    test si,1
+    jz report
+    cmp ax,0300h
+    jne report
+    cmp byte [interrupts],1
+    jne report
+    in al,08h
+    test al,04h
+    jnz report
     jmp .check_mask
 %endif
 .success:
@@ -92,13 +152,31 @@ check_read:
     mov di,bx
     mov cx,512
     mov al,53h
+%ifdef WRITE_TEST
+    mov al,73h
+    cmp byte [stage],1
+    jne .check_first
+    mov al,75h
+%elifdef WRITE_READBACK
+    mov al,73h
+    cmp byte [stage],4
+    jne .check_first
+    mov al,75h
+%endif
+.check_first:
     repe scasb
     jne report
     mov cx,512
     mov al,0a5h
     cmp byte [sector_count],1
     je .second_sector
+%ifdef WRITE_TEST
+    mov al,74h
+%elifdef WRITE_READBACK
+    mov al,74h
+%else
     mov al,54h
+%endif
 .second_sector:
     repe scasb
     jne report
