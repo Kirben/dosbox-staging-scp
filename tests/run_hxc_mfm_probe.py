@@ -49,7 +49,7 @@ def encode_track(disk, track, duplicate_id=False, verify_errors=False):
     order = (1, 2, 4, 3, 5, 6, 7, 8, 9) if track == 5 else range(1, 10)
     for sector in order:
         inject = verify_errors and track == 5
-        if inject and sector == 8:
+        if verify_errors and (track, sector) in ((5, 8), (6, 2)):
             continue
         sector_id = 6 if duplicate_id and track == 5 and sector == 5 else sector
         field(bytes((0xfe, track // 2, track % 2, sector_id, 2)), inject and sector == 6)
