@@ -129,7 +129,8 @@ std::unique_ptr<FloppyTrackImage> FloppyTrackImage::LoadTransCopy(FILE* file,
 			track.sectors    = DecodeMfmTrack(
                                 std::span(bytes).subspan(offset, length),
                                 bit_count,
-                                check_cast<size_t>(index));
+                                check_cast<size_t>(index),
+                                true);
 			image->UpdateLogicalGeometry(static_cast<uint32_t>(cylinder),
 			                             static_cast<uint32_t>(head),
 			                             track.sectors);

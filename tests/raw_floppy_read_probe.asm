@@ -2,6 +2,12 @@
 bits 16
 org 100h
 
+%ifdef SCP_REVOLUTIONS
+%define REVOLUTION_PROBE
+%elifdef TC_WEAK_BITS
+%define REVOLUTION_PROBE
+%endif
+
 %ifndef UNIT
 %define UNIT 0
 %endif
@@ -238,6 +244,17 @@ org 100h
     xor al,bl
     cmp al,3
     jne finish
+%endif
+
+%ifdef TC_WEAK_BITS
+    mov byte [stage],20
+    mov bp,read_turn_marker
+    mov bx,1200h
+    call check_tc_weak
+    inc byte [stage]
+    mov bp,read_track_turn
+    mov bx,1200h + 6 * 512
+    call check_tc_weak
 %endif
 
 %ifdef WRITE_TEST
@@ -554,7 +571,7 @@ finish:
     mov ah,4ch
     int 21h
 
-%ifdef SCP_REVOLUTIONS
+%ifdef REVOLUTION_PROBE
 read_track_turn:
     mov si,read_track_command
     mov ax,9 * 512 - 1
@@ -583,12 +600,51 @@ read_turn:
     mov cx,9
     call command_and_irq
     call read_result
+%ifdef TC_WEAK_BITS
+    cmp word [result+1],02020h * TC_WEAK_BITS
+%else
     cmp word [result],DRIVE_HEAD
+%endif
     jne finish
     in al,08h
     test al,4
     jz finish
     ret
+%endif
+
+%ifdef TC_WEAK_BITS
+check_tc_weak:
+    call bp
+    xor si,si
+.save:
+    mov ax,[es:bx+si]
+    mov [weak_sample+si],ax
+    add si,2
+    cmp si,16
+    jb .save
+    cmp word [es:bx+16],0
+    jne finish
+    call bp
+    xor si,si
+    xor dx,dx
+.compare:
+    mov ax,[es:bx+si]
+    xor ax,[weak_sample+si]
+    or dx,ax
+    add si,2
+    cmp si,16
+    jb .compare
+    cmp word [es:bx+16],0
+    jne finish
+    test dx,dx
+%if TC_WEAK_BITS
+    jz finish
+%else
+    jnz finish
+%endif
+    ret
+
+weak_sample times 16 db 0
 %endif
 
 %ifdef DUPLICATE_TEST
@@ -928,7 +984,7 @@ next_id db 2,5,10,1,7,3,11,0,0,4,6
 next_id db 2,4,5,3,6,7,8,9,1
 %endif
 %endif
-%ifdef SCP_REVOLUTIONS
+%ifdef REVOLUTION_PROBE
 read_marker db 46h,DRIVE_HEAD,2,1,6,2,6,2ah,0ffh
 read_track_command db 42h,DRIVE_HEAD,2,1,1,2,9,2ah,0ffh
 %endif

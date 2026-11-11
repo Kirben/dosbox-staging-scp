@@ -4,6 +4,7 @@
 
 #include <algorithm>
 #include <array>
+#include <cassert>
 #include <map>
 
 #include "utils/checks.h"
@@ -67,11 +68,75 @@ struct AddressMark {
 	uint8_t type = 0;
 };
 
+constexpr auto SyncCrc = uint16_t{0xcdb4}; // CRC after three A1 bytes
+
+std::vector<bool> find_weak_cells(const MfmBitstream track)
+{
+	// TransCopy no-flux regions contain at least 16 consecutive zero cells.
+	constexpr size_t MinWeakRun = 16;
+	std::vector<bool> weak(track.bit_count);
+	size_t first_transition = 0;
+	while (first_transition < track.bit_count &&
+	       !bit_at(track, first_transition)) {
+		++first_transition;
+	}
+	if (first_transition == track.bit_count) {
+		return weak; // A blank track contains no data fields.
+	}
+
+	const auto end = first_transition + track.bit_count + 1;
+	auto start     = first_transition + 1;
+	for (auto bit = start; bit < end; ++bit) {
+		if (!bit_at(track, bit)) {
+			continue;
+		}
+		if (bit - start >= MinWeakRun) {
+			for (auto cell = start; cell < bit; ++cell) {
+				weak[cell % track.bit_count] = true;
+			}
+		}
+		start = bit + 1;
+	}
+	return weak;
+}
+
 } // namespace
+
+bool FloppySector::SampleWeakData(const uint64_t turn,
+                                  std::vector<uint8_t>& sampled) const
+{
+	assert(weak_mask.size() == data.size() + 2);
+	sampled    = data;
+	auto state = (turn + 1) * 0x9e3779b97f4a7c15ull ^ weak_seed;
+	if (!state) {
+		state = 1;
+	}
+	const auto sample_byte = [&](const uint8_t byte, const uint8_t mask) {
+		if (!mask) {
+			return byte;
+		}
+		state ^= state >> 12;
+		state ^= state << 25;
+		state ^= state >> 27;
+		const auto noise = static_cast<uint8_t>(
+		        (state * 0x2545f4914f6cdd1dull) >> 56);
+		return static_cast<uint8_t>((byte & ~mask) | (noise & mask));
+	};
+	auto crc = update_crc(SyncCrc, deleted ? 0xf8 : 0xfb);
+	for (size_t i = 0; i < data.size(); ++i) {
+		sampled[i] = sample_byte(data[i], weak_mask[i]);
+		crc        = update_crc(crc, sampled[i]);
+	}
+	const auto high = sample_byte(static_cast<uint8_t>(recorded_crc >> 8),
+	                              weak_mask[data.size()]);
+	const auto low  = sample_byte(static_cast<uint8_t>(recorded_crc),
+                                     weak_mask[data.size() + 1]);
+	return crc != ((high << 8) | low);
+}
 
 std::vector<FloppySector> FloppyTrackImage::DecodeMfmTrack(
         const std::span<const uint8_t> bytes, const size_t bit_count,
-        const size_t index)
+        const size_t index, const bool detect_weak)
 {
 	constexpr auto SyncWord    = 0x4489;
 	constexpr auto IdMark      = 0xfe;
@@ -79,13 +144,14 @@ std::vector<FloppySector> FloppyTrackImage::DecodeMfmTrack(
 	constexpr auto DeletedMark = 0xf8;
 	constexpr auto MarkBits    = 64u;
 	constexpr auto ByteBits    = 16u;
-	constexpr auto SyncCrc = uint16_t{0xcdb4}; // CRC after three A1 bytes
 
 	const auto track_bits = bit_count ? bit_count : bytes.size() * 8;
 	if (!track_bits || track_bits > bytes.size() * 8 || index >= track_bits) {
 		return {};
 	}
 	const MfmBitstream track       = {bytes, track_bits};
+	const auto weak_cells          = detect_weak ? find_weak_cells(track)
+	                                             : std::vector<bool>{};
 	std::vector<AddressMark> marks = {};
 	auto word                      = read_word(track, 0);
 	for (size_t bit = 0; bit < track_bits; ++bit) {
@@ -147,6 +213,29 @@ std::vector<FloppySector> FloppyTrackImage::DecodeMfmTrack(
 				        read_byte(track,
 				                  field + (size + 1) * ByteBits);
 				sector.data_crc_error = crc != data_crc;
+				if (!weak_cells.empty()) {
+					std::vector<uint8_t> mask(size + 2);
+					for (size_t byte = 0; byte < mask.size();
+					     ++byte) {
+						for (size_t bit = 0; bit < 8; ++bit) {
+							const auto cell = field +
+							                  byte * ByteBits +
+							                  2 * bit + 1;
+							if (weak_cells[cell % track_bits]) {
+								mask[byte] |= static_cast<uint8_t>(
+								        0x80u >> bit);
+							}
+						}
+					}
+					if (std::ranges::any_of(mask, [](const auto byte) {
+						    return byte != 0;
+					    })) {
+						sector.weak_mask = std::move(mask);
+						sector.recorded_crc = static_cast<uint16_t>(
+						        data_crc);
+						sector.weak_seed = data.bit;
+					}
+				}
 			}
 		}
 		if (sector.id_crc_error && data.type != IdMark &&

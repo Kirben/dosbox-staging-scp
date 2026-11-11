@@ -13,7 +13,7 @@ from tempfile import TemporaryDirectory
 # pylint: disable-next=R0913,R0917,R0914,R0912,R0915
 def run_probe(dosbox, nasm, directory, extension, unit, size_kb, sectors, encode=None,
               write_mode=None, partial_format=False, format_reset=None,
-              format_motor=None, bios_format=False, format_switch=False):
+              format_motor=None, bios_format=False, format_switch=False, weak_bits=None):
     """Check a raw or encoded image with the selected controller scenario."""
     image = directory / f"disk.{extension}"
     data = bytearray(size_kb * 1024)
@@ -44,6 +44,8 @@ def run_probe(dosbox, nasm, directory, extension, unit, size_kb, sectors, encode
         options.append("-DFIRST_ID_AFTER_INDEX=2")
     elif extension == "tc":
         options.extend(("-DFIRST_ID_AFTER_INDEX=9", "-DTC_STEPPED"))
+        if weak_bits is not None:
+            options.append(f"-DTC_WEAK_BITS={int(weak_bits)}")
     if write_mode in ("write", "protected"):
         options.append("-DWRITE_TEST")
     if write_mode == "protected":
