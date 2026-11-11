@@ -280,35 +280,48 @@ void format_track(uint32_t)
 	std::array<uint8_t, IdSize * 255> ids = {};
 	const auto count                      = fdc.command[3] * size_t{IdSize};
 	auto* dma                             = DMA_GetChannel(FloppyDma);
+	auto* track                           = fdc.disk->GetTrackImage();
 	if (!dma || dma->is_masked || !dma->is_memory_to_device ||
-	    fdc.non_dma || !(fdc.dor & InterruptEnabled) ||
-	    static_cast<size_t>(dma->curr_count) + 1 < count) {
+	    fdc.non_dma || !(fdc.dor & InterruptEnabled)) {
 		finish_data(0x10);
 		return;
 	}
 
+	const auto available = std::min(count,
+	                                static_cast<size_t>(dma->curr_count) + 1);
+	if (!track && available < count) {
+		finish_data(0x10);
+		return;
+	}
 	dma->RaiseRequest();
-	const auto transferred = dma->Read(count, ids.data());
+	const auto transferred = dma->Read(available, ids.data());
 	dma->ClearRequest();
-	if (transferred != count) {
+	const auto completed = transferred - transferred % IdSize;
+	if (completed == 0 || (!track && completed != count)) {
 		finish_data(0x10);
 		return;
 	}
 
-	if (auto* track = fdc.disk->GetTrackImage()) {
+	if (track) {
 		using Result = FloppyTrackImage::FormatResult;
 		const auto result = track->FormatScpTrack(fdc.cylinder,
 		                                          fdc.head,
-		                                          std::span(ids).first(count),
-		                                          fdc.command[5]);
+		                                          std::span(ids).first(completed),
+		                                          fdc.command[5],
+		                                          fdc.command[3]);
 		switch (result) {
 		case Result::InvalidLayout: finish_data(0x04); return;
 		case Result::WriteError: finish_data(0x20); return;
-		case Result::Success:
-			fdc.track_sector =
-			        &track->GetTrack(fdc.cylinder, fdc.head).back();
-			finish_data(0);
+		case Result::Success: {
+			const auto last           = completed - IdSize;
+			const FloppySector sector = {ids[last],
+			                             ids[last + 1],
+			                             ids[last + 2],
+			                             ids[last + 3]};
+			fdc.track_sector          = &sector;
+			finish_data(completed == count ? 0 : 0x10);
 			return;
+		}
 		}
 	}
 

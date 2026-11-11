@@ -85,7 +85,11 @@ org 100h
     cmp bl,[result+5]
     jne finish
 %ifdef SCP_FORMAT_READBACK
+%ifdef FORMAT_PARTIAL
+    mov bp,7
+%else
     mov bp,SECTORS - 1
+%endif
 .check_formatted_ids:
     xor bh,bh
     mov bl,[result+5]
@@ -255,6 +259,45 @@ org 100h
 %endif
 %endif
 
+%ifdef FORMAT_PARTIAL
+%ifdef FORMAT_READBACK
+    mov byte [stage],12
+    ; Read the preserved sector write and its untouched neighbor.
+    mov al,6
+    out 0ah,al
+    out 0ch,al
+    mov al,46h
+    out 0bh,al
+    xor al,al
+    out 04h,al
+    mov al,12h
+    out 04h,al
+    mov al,0ffh
+    out 05h,al
+    mov al,3
+    out 05h,al
+    mov al,2
+    out 0ah,al
+    mov si,read_survivors
+    mov cx,9
+    call command_and_irq
+    call read_result
+    cmp word [result],DRIVE_HEAD
+    jne finish
+    cmp word [result+5],0207h
+    jne finish
+    mov di,1200h
+    mov cx,512
+    mov al,54h
+    repe scasb
+    jne finish
+    mov cx,512
+    xor al,al
+    repe scasb
+    jne finish
+%endif
+%endif
+
 %ifdef FORMAT_TEST
     mov byte [stage],11
     ; Channel 2 transfers four CHRN bytes per sector.
@@ -271,7 +314,12 @@ org 100h
     out 04h,al
     mov al,12h
     out 04h,al
+%ifdef FORMAT_PARTIAL
+    ; Two complete IDs and one byte of the third before terminal count.
+    mov al,8
+%else
     mov al,SECTORS * 4 - 1
+%endif
     out 05h,al
     xor al,al
     out 05h,al
@@ -286,7 +334,11 @@ org 100h
 %elifdef FORMAT_INVALID
     cmp word [result],0440h + DRIVE_HEAD
 %else
+%ifdef FORMAT_PARTIAL
+    cmp word [result],1040h + DRIVE_HEAD
+%else
     cmp word [result],DRIVE_HEAD
+%endif
     jne finish
     cmp word [result+3],0102h
     jne finish
@@ -473,12 +525,17 @@ id db 4ah,DRIVE_HEAD
 format_command db 4dh,DRIVE_HEAD,2,SECTORS,54h,0e5h
 format_ids:
 %ifdef SCP_FORMAT
+%ifdef FORMAT_PARTIAL
+    db 2,1,10,2, 2,1,11,2, 2,1,12,2
+    times (SECTORS - 3) * 4 db 0
+%else
     db 2,1,6,2, 2,1,3,2, 2,1,10,2, 2,1,4,2
     db 2,1,1,2, 2,1,2,2, 2,1,5,2, 2,1,7,2
 %ifdef FORMAT_INVALID
     db 2,1,11,8
 %else
     db 2,1,11,2
+%endif
 %endif
 %else
 %assign sector 1
@@ -497,6 +554,9 @@ format_ids:
 read_data db 46h,DRIVE_HEAD,2,1,5,2,6,2ah,0ffh
 %elifdef SCP_FORMAT_READBACK
 read_data db 46h,DRIVE_HEAD,2,1,10,2,11,2ah,0ffh
+%ifdef FORMAT_PARTIAL
+read_survivors db 46h,DRIVE_HEAD,2,1,6,2,7,2ah,0ffh
+%endif
 %else
 read_data db 46h,DRIVE_HEAD,2,1,3,2,4,2ah,0ffh
 %endif
@@ -510,7 +570,11 @@ interrupts db 0
 result times 7 db 0
 %ifdef REORDERED
 %ifdef SCP_FORMAT_READBACK
+%ifdef FORMAT_PARTIAL
+next_id db 0,0,5,0,6,7,8,9,10,11,3
+%else
 next_id db 2,5,10,1,7,3,11,0,0,4,6
+%endif
 %else
 next_id db 2,4,5,3,6,7,8,9,1
 %endif

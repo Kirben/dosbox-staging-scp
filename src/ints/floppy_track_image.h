@@ -47,7 +47,7 @@ public:
 	enum class FormatResult { Success, InvalidLayout, WriteError };
 	FormatResult FormatScpTrack(const uint8_t cylinder, const uint8_t head,
 	                            const std::span<const uint8_t> ids,
-	                            const uint8_t fill);
+	                            const uint8_t fill, const uint8_t requested);
 
 	uint32_t cylinders       = 0;
 	uint32_t heads           = 0;
@@ -61,13 +61,16 @@ private:
 	struct TrackFormat {
 		std::vector<uint8_t> ids = {};
 		uint8_t fill             = 0;
+		uint8_t requested        = 0;
+		Overlay prior_writes     = {};
 	};
-	using TrackFormats = std::map<TrackAddress, TrackFormat>;
+	using TrackFormats = std::map<TrackAddress, std::vector<TrackFormat>>;
 	bool LoadScpOverlay();
 	bool SaveScpOverlay(const Overlay& overlay, const TrackFormats& formats) const;
 	bool IsValidTrackFormat(const TrackAddress& address,
 	                        const std::span<const uint8_t> ids) const;
 	void ApplyTrackFormat(const TrackAddress& address, const TrackFormat& format);
+	static Overlay TakeTrackWrites(Overlay& entries, const TrackAddress& address);
 	bool CanOverlaySector(const OverlayKey& key) const;
 	void ApplyOverlaySector(const OverlayKey& key, const OverlaySector& data);
 	std::string overlay_path     = {};
@@ -80,6 +83,7 @@ private:
 		std::vector<FloppySector> sectors = {};
 		double cycle_ms                   = 200.0;
 		double format_cycle_ms            = 200.0;
+		std::vector<double> revolution_ends = {1.0};
 	};
 	static std::vector<FloppySector> DecodeMfmTrack(
 	        const std::span<const uint8_t> bitstream,
