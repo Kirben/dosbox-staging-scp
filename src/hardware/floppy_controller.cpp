@@ -75,12 +75,18 @@ struct Controller {
 };
 
 Controller fdc = {};
+bool irq_asserted = false;
 // The latch belongs to the drive and survives controller resets.
 std::array<bool, 2> disk_changed = {};
 
 void update_irq()
 {
-	if (fdc.irq_pending && (fdc.dor & InterruptEnabled)) {
+	const auto asserted = fdc.irq_pending && (fdc.dor & InterruptEnabled);
+	if (asserted == irq_asserted) {
+		return;
+	}
+	irq_asserted = asserted;
+	if (asserted) {
 		PIC_ActivateIRQ(FloppyIrq);
 	} else {
 		PIC_DeActivateIRQ(FloppyIrq);
@@ -1001,6 +1007,30 @@ uint8_t FLOPPY_BiosDmaFormat(const uint8_t unit, const uint32_t cylinder,
 		return 0x04;
 	}
 	return transfer.transferred == size ? 0 : 0x08;
+}
+
+void FLOPPY_BiosReset(const uint8_t unit)
+{
+	assert(unit < fdc.drives.size());
+	const auto dor = check_cast<uint8_t>((fdc.dor & 0xf0) | ResetReleased |
+	                                     InterruptEnabled | unit);
+	const auto was_masked = (IO_ReadB(0x21) & (1u << FloppyIrq)) != 0;
+	PIC_SetIRQMask(FloppyIrq, false);
+	mem_writeb(BIOS_DRIVE_ACTIVE, mem_readb(BIOS_DRIVE_ACTIVE) & 0x7f);
+	write_dor(0x3f2, dor & ~ResetReleased, io_width_t::byte);
+	write_dor(0x3f2, dor, io_width_t::byte);
+	const auto shutdown = CALLBACK_Idle();
+	PIC_SetIRQMask(FloppyIrq, was_masked);
+	if (shutdown) {
+		return;
+	}
+	// Sense Interrupt Status consumes the reset status for each drive.
+	while (fdc.phase == Phase::Command && !fdc.command_count &&
+	       fdc.reset_unit < 4) {
+		write_data(0x3f5, 0x08, io_width_t::byte);
+		read_data(0x3f5, io_width_t::byte);
+		read_data(0x3f5, io_width_t::byte);
+	}
 }
 
 void FLOPPY_SetDiskChanged(const size_t unit, const bool changed)
