@@ -39,6 +39,26 @@ org 100h
 %endif
     mov byte [stage],1
     call reset_and_seek
+%ifdef TC_STEPPED
+    ; Cylinder 1 is an empty physical slot in the step-2 capture.
+    mov byte [stage],19
+    mov si,seek_skipped
+    mov cx,3
+    call command_and_irq
+    mov bl,1
+    call sense_seek
+    mov si,id
+    mov cx,2
+    call command_and_irq
+    call read_result
+    cmp word [result],0440h + DRIVE_HEAD
+    jne finish
+    mov si,seek
+    mov cx,3
+    call command_and_irq
+    mov bl,2
+    call sense_seek
+%endif
 %ifdef DUPLICATE_TEST
     jmp test_duplicate
 %endif
@@ -888,6 +908,9 @@ read_data db 46h,DRIVE_HEAD,2,1,3,2,4,2ah,0ffh
 %endif
 %ifdef WRITE_TEST
 write_data db 45h,DRIVE_HEAD,2,1,5,2,6,2ah,0ffh
+%endif
+%ifdef TC_STEPPED
+seek_skipped db 0fh,DRIVE_HEAD,1
 %endif
 file db 'FDC.OUT',0
 stage db 0
