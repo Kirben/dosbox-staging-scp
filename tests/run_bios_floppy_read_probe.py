@@ -71,6 +71,8 @@ def check_read_track(dosbox, nasm, disk):
     start = 4 * 9 * 512
     disk[start:start + 512] = bytes(range(256)) * 2
     disk[start + 511] = 0xf7
+    first_sector = (5 * 9 + 6) * 512
+    disk[first_sector:first_sector + 512] = b"Z" * 512
     capture = encode(disk, malformed_id=True, verify_errors=True)
     with TemporaryDirectory() as temp:
         directory = Path(temp)
@@ -84,6 +86,7 @@ def check_read_track(dosbox, nasm, disk):
                       machine=machine, tandy_standard=machine == "tandy")
             print(f"{machine}: malformed ID, Read Track DMA payload, "
                   "terminal count and accumulated overrun status passed")
+            print(f"{machine}: partial BIOS read clears the disk-change latch")
             if machine == "tandy":
                 print("tandy: 96 KB BIOS memory report and four video RAM aliases passed")
 
