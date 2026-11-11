@@ -62,6 +62,7 @@ def main():
     modes = parser.add_mutually_exclusive_group()
     modes.add_argument("--scp-write", action="store_true")
     modes.add_argument("--verify", action="store_true")
+    modes.add_argument("--cross-track", action="store_true")
     args = parser.parse_args()
     dosbox = args.dosbox.resolve()
 
@@ -70,6 +71,13 @@ def main():
         offset = (5 * 9 + sector - 1) * 512
         disk[offset:offset + 512] = bytes([0x50 + sector]) * 512
 
+    if args.cross_track:
+        for track, sector, value in ((2, 9, 0x19), (3, 1, 0x21),
+                                     (3, 9, 0x29), (4, 1, 0x31),
+                                     (5, 9, 0x39), (6, 1, 0x41)):
+            offset = (track * 9 + sector - 1) * 512
+            disk[offset:offset + 512] = bytes([value]) * 512
+
     if args.scp_write:
         check_scp_write(dosbox, args.nasm, disk)
         return
@@ -77,15 +85,27 @@ def main():
     formats = {"img": None, "ima": None, "scp": encode_scp,
                "mfm": encode, "86f": encode_86f}
     for extension, encoder in formats.items():
-        if args.verify and encoder is None:
+        if (args.verify or args.cross_track) and encoder is None:
             continue
-        image_bytes = encoder(disk, verify_errors=args.verify) if encoder else disk
+        image_bytes = encoder(disk, verify_errors=args.verify or args.cross_track) if encoder else disk
         for unit, letter in enumerate("ab"):
             with TemporaryDirectory() as temp:
                 directory = Path(temp)
                 image = directory / f"disk.{extension}"
                 image.write_bytes(image_bytes)
                 options = ["-DTRACK_IMAGE"] if encoder else []
+                if args.cross_track:
+                    options.append("-DCROSS_TRACK")
+                    run_probe(dosbox, args.nasm, directory, image, unit, options)
+                    if extension == "scp":
+                        run_probe(dosbox, args.nasm, directory, image, unit,
+                                  options + ["-DCROSS_WRITE"], read_only=False)
+                        run_probe(dosbox, args.nasm, directory, image, unit,
+                                  options + ["-DCROSS_READBACK"])
+                        if image.read_bytes() != image_bytes:
+                            raise RuntimeError("SCP capture changed after writes")
+                    print(f".{extension} drive {letter.upper()}: track crossing, partial counts and IRQ6 passed")
+                    continue
                 if args.verify:
                     options.append("-DVERIFY_TEST")
                 run_probe(dosbox, args.nasm, directory, image, unit, options)

@@ -819,7 +819,7 @@ BiosCommandResult bios_command(const uint8_t unit, const uint32_t cylinder,
 }
 } // namespace
 
-FloppyBiosTransferResult FLOPPY_BiosTransfer(
+static FloppyBiosTransferResult bios_transfer_track(
         const FloppyBiosTransfer operation, const uint8_t unit,
         const uint32_t cylinder, const uint8_t head, const uint8_t sector,
         const uint8_t size_code, const uint8_t count, const uint8_t gap,
@@ -885,6 +885,73 @@ FloppyBiosTransferResult FLOPPY_BiosTransfer(
 		return {0x04, completed};
 	}
 	return {result.transferred == size ? uint8_t{0} : uint8_t{0x08}, completed};
+}
+
+FloppyBiosTransferResult FLOPPY_BiosTransfer(
+        const FloppyBiosTransfer operation, const uint8_t unit,
+        const uint32_t cylinder, const uint8_t head, const uint8_t sector,
+        const uint8_t size_code, const uint8_t count, const uint8_t gap,
+        const uint32_t address)
+{
+	const auto disk = BIOS_GetDisk(unit);
+	if (!disk || !sector || !count || size_code > 7 || head >= disk->heads) {
+		return {0x04, 0};
+	}
+
+	const auto sector_size = 128u << size_code;
+	const auto dma         = operation != FloppyBiosTransfer::Verify;
+	if (dma && count * sector_size > 0x10000u - (address & 0xffff)) {
+		return {0x09, 0};
+	}
+
+	// IDs beyond the logical geometry can belong to a protection track.
+	// Requests starting at such an ID stay on that track.
+	if (sector > disk->sectors) {
+		return bios_transfer_track(operation,
+		                           unit,
+		                           cylinder,
+		                           head,
+		                           sector,
+		                           size_code,
+		                           count,
+		                           gap,
+		                           address);
+	}
+	const auto end_of_track = std::min(disk->sectors, 255u);
+	auto current_cylinder   = cylinder;
+	auto current_head       = static_cast<uint32_t>(head);
+	auto current_sector     = static_cast<uint32_t>(sector);
+	auto completed          = 0u;
+	while (completed < count) {
+		if (BIOS_GetDisk(unit) != disk || current_cylinder >= disk->cylinders) {
+			return {0x04, check_cast<uint8_t>(completed)};
+		}
+
+		const auto run    = std::min(count - completed,
+		                             end_of_track - current_sector + 1);
+		const auto result = bios_transfer_track(
+		        operation,
+		        unit,
+		        current_cylinder,
+		        check_cast<uint8_t>(current_head),
+		        check_cast<uint8_t>(current_sector),
+		        size_code,
+		        check_cast<uint8_t>(run),
+		        gap,
+		        dma ? address + completed * sector_size : 0u);
+		completed += result.sectors;
+		if (result.status || result.sectors != run) {
+			return {result.status ? result.status : uint8_t{0x04},
+			        check_cast<uint8_t>(completed)};
+		}
+
+		current_sector = 1;
+		if (++current_head == disk->heads) {
+			current_head = 0;
+			++current_cylinder;
+		}
+	}
+	return {0, check_cast<uint8_t>(completed)};
 }
 
 uint8_t FLOPPY_BiosDmaFormat(const uint8_t unit, const uint32_t cylinder,
