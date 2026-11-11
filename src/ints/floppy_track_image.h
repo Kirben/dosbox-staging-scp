@@ -28,6 +28,9 @@ public:
 	static std::unique_ptr<FloppyTrackImage> LoadScp(FILE* file,
 	                                                 std::string& error);
 
+	static std::unique_ptr<FloppyTrackImage> Load86f(FILE* file,
+	                                                 std::string& error);
+
 	double GetCycleMs(const uint32_t cylinder, const uint32_t head) const;
 
 	std::span<const FloppySector> GetTrack(const uint32_t cylinder,
@@ -43,7 +46,8 @@ private:
 		double cycle_ms                   = 200.0;
 	};
 	static std::vector<FloppySector> DecodeMfmTrack(
-	        const std::span<const uint8_t> bitstream);
+	        const std::span<const uint8_t> bitstream,
+	        const size_t bit_count = 0, const size_t index = 0);
 	void UpdateLogicalGeometry(const uint32_t cylinder, const uint32_t head,
 	                           const std::span<const FloppySector> sectors);
 	std::vector<Track> tracks = {};

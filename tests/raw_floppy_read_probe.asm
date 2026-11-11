@@ -57,7 +57,19 @@ org 100h
     call sense_seek
 
     mov byte [stage],4
+%ifdef FIRST_ID_AFTER_INDEX
+    ; Restart the motor phase at index before asking for the first ID.
+    mov dx,3f2h
+    mov al,0ch | UNIT
+    out dx,al
+    mov al,DOR
+    out dx,al
+%endif
     call read_id
+%ifdef FIRST_ID_AFTER_INDEX
+    cmp byte [result+5],FIRST_ID_AFTER_INDEX
+    jne finish
+%endif
     mov bl,[result+5]
 %ifdef REORDERED
     xor bh,bh
