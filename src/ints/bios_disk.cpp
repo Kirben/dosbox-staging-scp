@@ -682,6 +682,30 @@ static Bitu INT13_DiskHandler(void)
 			return CBRET_NONE;
 		}
 
+		if (!is_machine_pcjr_or_tandy() &&
+		    disk_slots[drivenum]->GetTrackImage()) {
+			FloppyBiosReadResult result = {0x04, 0};
+			if (!killRead) {
+				const auto parameters = RealGetVec(0x1e);
+				result                = FLOPPY_BiosDmaRead(
+				        check_cast<uint8_t>(drivenum),
+				        reg_ch | ((reg_cl & 0xc0) << 2),
+				        reg_dh,
+				        reg_cl & 0x3f,
+				        mem_readb(RealToPhysical(parameters) + 3),
+				        reg_al,
+				        mem_readb(RealToPhysical(parameters) + 5),
+				        RealToPhysical(RealMake(SegValue(es), reg_bx)));
+			}
+			killRead    = false;
+			last_status = result.status;
+			mem_writeb(BIOS_DISK_STATUS, result.status);
+			reg_ah = result.status;
+			reg_al = result.sectors;
+			CALLBACK_SCF(result.status != 0);
+			break;
+		}
+
 		segat  = SegValue(es);
 		bufptr = reg_bx;
 		for (Bitu i = 0; i < reg_al; i++) {

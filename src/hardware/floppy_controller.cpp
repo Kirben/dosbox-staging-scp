@@ -682,25 +682,33 @@ FloppyFormatResult FLOPPY_FormatTrack(imageDisk& disk, const uint32_t cylinder,
 	return Result::Success;
 }
 
-uint8_t FLOPPY_BiosDmaFormat(const uint8_t unit, const uint32_t cylinder,
-                             const uint8_t head, const uint8_t size_code,
-                             const uint8_t count, const uint8_t gap,
-                             const uint8_t fill, const uint32_t address)
+namespace {
+
+struct BiosDmaResult {
+	std::array<uint8_t, 7> status = {};
+	uint32_t transferred          = 0;
+	uint8_t error                 = 0;
+};
+
+BiosDmaResult bios_dma_command(const uint8_t unit, const uint32_t cylinder,
+                               const uint8_t head,
+                               const std::span<const uint8_t> command,
+                               const uint32_t address, const uint32_t size,
+                               const bool writing, const int revolutions)
 {
 	if (fdc.phase != Phase::Command || fdc.command_count || fdc.irq_pending) {
-		return 0x80;
+		return {.error = 0x80};
 	}
 	const auto disk = BIOS_GetDisk(unit);
-	if (unit >= fdc.drives.size() || !disk || !disk->active || disk->hardDrive ||
-	    cylinder > UINT8_MAX || cylinder >= disk->cylinders || head > 1 ||
-	    head >= disk->heads || !count || size_code > 7) {
-		return 0x04;
+	if (unit >= fdc.drives.size() || !disk || !disk->active ||
+	    disk->hardDrive || cylinder > UINT8_MAX ||
+	    cylinder >= disk->cylinders || head > 1 || head >= disk->heads) {
+		return {.error = 0x04};
 	}
 	auto* dma         = DMA_GetChannel(FloppyDma);
-	const auto size   = count * FormatIdSize;
 	const auto offset = static_cast<uint16_t>(address);
 	if (!dma || size > 0x10000u - offset) {
-		return 0x09;
+		return {.error = 0x09};
 	}
 
 	constexpr auto MaskChannel = 0x04 | FloppyDma;
@@ -713,10 +721,10 @@ uint8_t FLOPPY_BiosDmaFormat(const uint8_t unit, const uint32_t cylinder,
 	IO_WriteB(0x05, static_cast<uint8_t>(dma_count));
 	IO_WriteB(0x05, check_cast<uint8_t>(dma_count >> 8));
 	IO_WriteB(0x81, check_cast<uint8_t>(address >> 16));
-	IO_WriteB(0x0b, 0x48 | FloppyDma);
+	IO_WriteB(0x0b, (writing ? 0x48 : 0x44) | FloppyDma);
 	IO_WriteB(0x0a, FloppyDma);
 
-	// The BIOS selects and positions the drive before sending Format Track.
+	// The BIOS selects and positions the drive before issuing the command.
 	auto& drive    = fdc.drives[unit];
 	drive.cylinder = check_cast<uint8_t>(cylinder);
 	if (!motor_on(unit)) {
@@ -729,12 +737,10 @@ uint8_t FLOPPY_BiosDmaFormat(const uint8_t unit, const uint32_t cylinder,
 	const auto* track   = disk->GetTrackImage();
 	const auto cycle_ms = track ? track->GetCycleMs(cylinder, head)
 	                            : StandardRevolutionMs;
-	const auto deadline = PIC_FullIndex() + 3 * cycle_ms;
+	const auto deadline = PIC_FullIndex() + revolutions * cycle_ms;
 	const auto mask     = IO_ReadB(0x21);
 	PIC_SetIRQMask(FloppyIrq, false);
 	mem_writeb(BIOS_DRIVE_ACTIVE, mem_readb(BIOS_DRIVE_ACTIVE) & 0x7f);
-	const std::array<uint8_t, 6> command = {
-	        0x4d, check_cast<uint8_t>(unit | (head << 2)), size_code, count, gap, fill};
 	for (const auto byte : command) {
 		write_data(0x3f5, byte, io_width_t::byte);
 	}
@@ -754,13 +760,91 @@ uint8_t FLOPPY_BiosDmaFormat(const uint8_t unit, const uint32_t cylinder,
 	    fdc.result_length != fdc.result.size()) {
 		reset_controller();
 		update_irq();
-		return 0x80;
+		return {.error = 0x80};
 	}
 
-	std::array<uint8_t, 7> result = {};
-	for (auto& byte : result) {
+	BiosDmaResult result = {};
+	for (auto& byte : result.status) {
 		byte = check_cast<uint8_t>(read_data(0x3f5, io_width_t::byte));
 	}
+	const auto remaining = static_cast<uint32_t>(dma->curr_count) + 1;
+	if (dma->has_reached_terminal_count ||
+	    (remaining == 0x10000u && size < remaining)) {
+		result.transferred = size;
+	} else if (remaining <= size) {
+		result.transferred = size - remaining;
+	}
+	return result;
+}
+} // namespace
+
+FloppyBiosReadResult FLOPPY_BiosDmaRead(const uint8_t unit, const uint32_t cylinder,
+                                        const uint8_t head, const uint8_t sector,
+                                        const uint8_t size_code, const uint8_t count,
+                                        const uint8_t gap, const uint32_t address)
+{
+	const auto last_sector = sector + count - 1;
+	if (!sector || !count || last_sector > UINT8_MAX || size_code > 7 ||
+	    unit > 1 || cylinder > UINT8_MAX || head > 1) {
+		return {0x04, 0};
+	}
+
+	const std::array<uint8_t, 9> command = {0x46,
+	                                        check_cast<uint8_t>(unit |
+	                                                            (head << 2)),
+	                                        check_cast<uint8_t>(cylinder),
+	                                        head,
+	                                        sector,
+	                                        size_code,
+	                                        check_cast<uint8_t>(last_sector),
+	                                        gap,
+	                                        0xff};
+	const auto sector_size = 128u << size_code;
+	const auto size        = count * sector_size;
+	const auto result      = bios_dma_command(
+	        unit, cylinder, head, command, address, size, false, 3 + count);
+	if (result.error) {
+		return {result.error, 0};
+	}
+
+	const auto st0 = result.status[0];
+	const auto st1 = result.status[1];
+	const auto st2 = result.status[2];
+	auto completed = check_cast<uint8_t>(result.transferred / sector_size);
+	// Data CRC and deleted-mark errors are reported after DMA transfers the
+	// sector.
+	if ((st2 & 0x60) && completed) {
+		--completed;
+	}
+	if (st1 & 0x10) {
+		return {0x08, completed};
+	}
+	if (st1 & 0x20) {
+		return {0x10, completed};
+	}
+	if ((st0 & 0xc0) || st1 || st2) {
+		return {0x04, completed};
+	}
+	return {result.transferred == size ? uint8_t{0} : uint8_t{0x08}, completed};
+}
+
+uint8_t FLOPPY_BiosDmaFormat(const uint8_t unit, const uint32_t cylinder,
+                             const uint8_t head, const uint8_t size_code,
+                             const uint8_t count, const uint8_t gap,
+                             const uint8_t fill, const uint32_t address)
+{
+	if (unit > 1 || head > 1 || !count || size_code > 7) {
+		return 0x04;
+	}
+	const std::array<uint8_t, 6> command = {
+	        0x4d, check_cast<uint8_t>(unit | (head << 2)), size_code, count, gap, fill};
+	const auto size     = check_cast<uint32_t>(count * FormatIdSize);
+	const auto transfer = bios_dma_command(
+	        unit, cylinder, head, command, address, size, true, 3);
+	if (transfer.error) {
+		return transfer.error;
+	}
+	const auto& result = transfer.status;
 	const auto status = result[1];
 	if (status & 0x02) {
 		return 0x03;
@@ -774,7 +858,7 @@ uint8_t FLOPPY_BiosDmaFormat(const uint8_t unit, const uint32_t cylinder,
 	if ((result[0] & 0xc0) || status || result[2]) {
 		return 0x04;
 	}
-	return dma->curr_count == 0xffff ? 0 : 0x08;
+	return transfer.transferred == size ? 0 : 0x08;
 }
 
 void FLOPPY_Init()
