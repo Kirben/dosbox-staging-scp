@@ -31,7 +31,7 @@ constexpr auto SectorSize                 = 512;
 constexpr auto SectorSizeCode             = 2;
 constexpr auto StandardRevolutionMs       = 200.0;
 constexpr auto HighDensity525RevolutionMs = 1000.0 / 6;
-constexpr auto PioByteMs                  = 0.032; // 250 kbps MFM
+constexpr auto DefaultDataRateKbps        = 250;
 constexpr auto StepMs                     = 3.0;
 
 constexpr auto PcjrWatchdogEnable  = 0x20;
@@ -95,6 +95,8 @@ struct Controller {
 	bool skipped_deleted                               = false;
 	bool non_dma                                       = false;
 };
+
+double pio_byte_ms = 8.0 / DefaultDataRateKbps;
 
 Controller fdc    = {};
 bool irq_asserted = false;
@@ -294,7 +296,7 @@ void start_pio_transfer(const size_t size, const std::span<const uint8_t> source
 	fdc.pio_ready      = true;
 	fdc.irq_pending    = true;
 	update_irq();
-	PIC_AddEvent(pio_byte_event, PioByteMs);
+	PIC_AddEvent(pio_byte_event, pio_byte_ms);
 }
 
 void transfer_track_sector(uint32_t);
@@ -685,7 +687,7 @@ void pio_byte_event(uint32_t)
 	fdc.pio_ready   = true;
 	fdc.irq_pending = true;
 	update_irq();
-	PIC_AddEvent(pio_byte_event, PioByteMs);
+	PIC_AddEvent(pio_byte_event, pio_byte_ms);
 }
 
 void acknowledge_pio_byte()
@@ -960,6 +962,12 @@ io_val_t read_dir(io_port_t, io_width_t)
 	const auto unit = fdc.dor & 3u;
 	return IDE_ReadPrimaryDriveAddress() |
 	       (FLOPPY_IsDiskChanged(unit) ? 0x80 : 0);
+}
+
+void write_ccr(io_port_t, const io_val_t value, io_width_t)
+{
+	constexpr std::array DataRatesKbps = {500, 300, 250, 1000};
+	pio_byte_ms                        = 8.0 / DataRatesKbps[value & 3u];
 }
 
 void reset_controller()
@@ -1427,6 +1435,7 @@ bool FLOPPY_IsDiskChanged(const size_t unit)
 
 void FLOPPY_Init()
 {
+	pio_byte_ms = 8.0 / DefaultDataRateKbps;
 	PIC_RemoveEvents(pcjr_watchdog_expired);
 	pcjr_dor               = 0;
 	pcjr_watchdog_asserted = false;
@@ -1444,5 +1453,6 @@ void FLOPPY_Init()
 		IO_RegisterWriteHandler(0xf5, write_data, io_width_t::byte);
 	} else {
 		IO_RegisterReadHandler(0x3f7, read_dir, io_width_t::byte);
+		IO_RegisterWriteHandler(0x3f7, write_ccr, io_width_t::byte);
 	}
 }

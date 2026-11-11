@@ -8,6 +8,10 @@ org 100h
 %define MSR 0f4h
 %define DATA 0f5h
 
+%ifdef PIO_RATE
+    jmp check_pio_rate
+%endif
+
 %ifdef WATCHDOG
     call check_watchdog
 %endif
@@ -195,6 +199,86 @@ org 100h
     jnz report
     mov byte [stage],0
     jmp report
+
+%ifdef PIO_RATE
+check_pio_rate:
+    mov byte [stage],15
+    mov dx,3f2h
+    mov al,1ch
+    out dx,al
+    mov dx,3f7h
+    mov al,PIO_RATE
+    out dx,al
+
+    mov dx,3f5h
+    mov si,specify
+    mov cx,3
+    call .send
+    mov si,read_command
+    mov cx,9
+    call .send
+
+    ; PIT channel 2 counts continuously at approximately 1.193 MHz.
+    in al,61h
+    and al,0fch
+    out 61h,al
+    mov al,0b4h
+    out 43h,al
+    xor al,al
+    out 42h,al
+    out 42h,al
+    in al,61h
+    or al,1
+    out 61h,al
+    call .wait_byte
+    call .clock
+    mov bp,ax
+    mov cx,DATA_SIZE
+.read:
+    call .wait_byte
+    inc dx
+    in al,dx
+    cmp al,51h
+    jne report
+    loop .read
+    call .clock
+    sub bp,ax
+    inc byte [stage]
+%if PIO_RATE = 0
+    cmp bp,8500
+    jb report
+    cmp bp,11000
+%else
+    cmp bp,17500
+    jb report
+    cmp bp,21500
+%endif
+    ja report
+    mov byte [stage],0
+    jmp report
+.send:
+    lodsb
+    out dx,al
+    loop .send
+    ret
+.wait_byte:
+    mov dx,3f4h
+    in al,dx
+    and al,0f0h
+    cmp al,0d0h
+    je report
+    cmp al,0f0h
+    jne .wait_byte
+    ret
+.clock:
+    mov al,80h
+    out 43h,al
+    in al,42h
+    mov ah,al
+    in al,42h
+    xchg al,ah
+    ret
+%endif
 
 send:
     lodsb

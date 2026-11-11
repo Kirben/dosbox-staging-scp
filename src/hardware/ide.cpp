@@ -3830,11 +3830,11 @@ void IDEController::install_io_ports()
 		WriteHandlerAlt[0].Install(alt_io, ide_altio_w, io_width_t::dword);
 		ReadHandlerAlt[0].Install(alt_io, ide_altio_r, io_width_t::dword);
 
-		WriteHandlerAlt[1].Install(alt_io + 1u, ide_altio_w, io_width_t::dword);
-
-		// The FDC supplies the change line on reads of the shared
-		// primary port.
+		// The FDC handles the shared primary port.
 		if (alt_io + 1u != 0x3f7 || is_machine_pcjr()) {
+			WriteHandlerAlt[1].Install(alt_io + 1u,
+			                           ide_altio_w,
+			                           io_width_t::dword);
 			ReadHandlerAlt[1].Install(alt_io + 1u,
 			                          ide_altio_r,
 			                          io_width_t::dword);
