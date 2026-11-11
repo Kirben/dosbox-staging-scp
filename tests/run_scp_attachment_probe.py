@@ -85,18 +85,16 @@ def main():
                       encode_scp, write_mode="format-readback", partial_format=True)
             assert overlay.read_bytes() == interrupted
             overlay.write_bytes(saved)
-            for reset in (1, 2):
+            for interruption in ("format_reset", "format_motor"):
+                for phase, expected in ((1, saved), (2, interrupted)):
+                    run_probe(dosbox, args.nasm, directory, "scp", unit, 360, 9,
+                              encode_scp, write_mode="format", partial_format=True,
+                              **{interruption: phase})
+                    assert overlay.read_bytes() == expected
                 run_probe(dosbox, args.nasm, directory, "scp", unit, 360, 9,
-                          encode_scp, write_mode="format", partial_format=True,
-                          format_reset=reset)
-                if reset == 1:
-                    assert overlay.read_bytes() == saved
-                else:
-                    assert overlay.read_bytes() == interrupted
-            run_probe(dosbox, args.nasm, directory, "scp", unit, 360, 9,
-                      encode_scp, write_mode="format-readback", partial_format=True)
-            assert overlay.read_bytes() == interrupted
-            overlay.write_bytes(saved)
+                          encode_scp, write_mode="format-readback", partial_format=True)
+                assert overlay.read_bytes() == interrupted
+                overlay.write_bytes(saved)
             for mode in ("format-protected", "format-invalid", "format",
                          "format-readback"):
                 run_probe(dosbox, args.nasm, directory, "scp", unit, 360, 9,
@@ -109,6 +107,12 @@ def main():
                     assert overlay.read_bytes() == formatted
                 else:
                     assert overlay.read_bytes() == saved
+            overlay.write_bytes(saved)
+            run_probe(dosbox, args.nasm, directory, "scp", unit, 360, 9,
+                      encode_scp, write_mode="format", format_motor=3)
+            assert overlay.read_bytes() == formatted
+            run_probe(dosbox, args.nasm, directory, "scp", unit, 360, 9,
+                      encode_scp, write_mode="format-readback")
         check_fat(dosbox, directory, encode_scp, "scp")
         check_boot(dosbox, args.nasm, directory, encode_scp, "scp")
 
