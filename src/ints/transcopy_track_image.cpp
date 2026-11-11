@@ -37,8 +37,8 @@ size_t read_track_offset(const std::span<const uint8_t> bytes, const size_t entr
 
 } // namespace
 
-std::unique_ptr<FloppyTrackImage> FloppyTrackImage::LoadTransCopy(FILE* file,
-                                                                  std::string& error)
+std::unique_ptr<FloppyTrackImage> FloppyTrackImage::LoadTransCopy(
+        FILE* file, const std::string& path, const bool read_only, std::string& error)
 {
 	const auto fail = [&](const char* message) {
 		error = message;
@@ -114,6 +114,7 @@ std::unique_ptr<FloppyTrackImage> FloppyTrackImage::LoadTransCopy(FILE* file,
 			const auto bit_count = size_t{length} * 8;
 			track.cycle_ms       = static_cast<double>(bit_count) /
 			                 (2 * rate_kbps);
+			track.format_cycle_ms = track.cycle_ms;
 
 			// The skew table always reserves two entries per cylinder.
 			const auto skew_offset = SkewTableOffset +
@@ -139,6 +140,9 @@ std::unique_ptr<FloppyTrackImage> FloppyTrackImage::LoadTransCopy(FILE* file,
 	}
 	if (!found_ids) {
 		return fail("no IBM MFM sector IDs found");
+	}
+	if (!image->OpenOverlay(path, read_only, FloppyImageFingerprint(bytes), error)) {
+		return {};
 	}
 	return image;
 }

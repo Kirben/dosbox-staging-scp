@@ -43,7 +43,9 @@ def run_probe(dosbox, nasm, directory, extension, unit, size_kb, sectors, encode
     elif extension == "86f" and write_mode != "format-readback":
         options.append("-DFIRST_ID_AFTER_INDEX=2")
     elif extension == "tc":
-        options.extend(("-DFIRST_ID_AFTER_INDEX=9", "-DTC_STEPPED"))
+        options.append("-DTC_STEPPED")
+        if write_mode != "format-readback":
+            options.append("-DFIRST_ID_AFTER_INDEX=9")
         if weak_bits is not None:
             options.append(f"-DTC_WEAK_BITS={int(weak_bits)}")
     if write_mode in ("write", "protected"):

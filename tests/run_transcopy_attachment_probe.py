@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: GPL-2.0-or-later
 
-"""Verify read-only TransCopy MOUNT, BOOT and controller reads."""
+"""Verify TransCopy reads, weak bits, and persistent overlay writes."""
 
 import argparse
 from functools import partial
@@ -9,7 +9,7 @@ from pathlib import Path
 from struct import pack_into
 from tempfile import TemporaryDirectory
 
-from run_hxc_mfm_probe import check_boot, check_fat, encode_track
+from run_hxc_mfm_probe import check_boot, check_fat, check_overlay_format, encode_track
 from run_raw_floppy_read_probe import run_probe
 
 
@@ -50,8 +50,25 @@ def main():
             run_probe(dosbox, args.nasm, directory, "tc", 0, 360, 9, encoder,
                       weak_bits=weak_bits)
         print(".tc fixed and weak data passed repeated Read Data and Read Track")
-        check_fat(dosbox, directory, encode_transcopy, "tc", writable=False)
-        check_boot(dosbox, args.nasm, directory, encode_transcopy, "tc", writable=False)
+        encoder = partial(encode_transcopy, step=2, weak_bits=True)
+        overlay = directory / "disk.tc.overlay"
+        for unit in (0, 1):
+            overlay.unlink(missing_ok=True)
+            run_probe(dosbox, args.nasm, directory, "tc", unit, 360, 9, encoder,
+                      write_mode="protected")
+            assert not overlay.exists()
+            run_probe(dosbox, args.nasm, directory, "tc", unit, 360, 9, encoder,
+                      write_mode="write")
+            saved = overlay.read_bytes()
+            for _ in range(2):
+                run_probe(dosbox, args.nasm, directory, "tc", unit, 360, 9, encoder,
+                          write_mode="readback", weak_bits=False)
+                assert overlay.read_bytes() == saved
+        print(".tc: writes replace weak data and survive repeated restarts on A and B")
+        check_fat(dosbox, directory, encode_transcopy, "tc")
+        check_boot(dosbox, args.nasm, directory, encode_transcopy, "tc")
+        overlay.unlink(missing_ok=True)
+        check_overlay_format(dosbox, args.nasm, directory, "tc", encoder)
 
 
 if __name__ == "__main__":
