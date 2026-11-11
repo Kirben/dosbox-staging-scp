@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: GPL-2.0-or-later
 
-"""Exercise raw floppy controller reads from a DOS guest."""
+"""Exercise floppy controller commands from a DOS guest."""
 
 import argparse
 import os
@@ -18,8 +18,11 @@ def run_probe(dosbox, nasm, directory, extension, unit, size_kb, sectors, encode
         offset = ((2 * 2 + 1) * sectors + sector - 1) * 512
         data[offset:offset + 512] = bytes([0x50 + sector]) * 512
     image_bytes = encode(data) if encode else data
-    if write_mode != "readback":
+    if write_mode not in ("readback", "format-readback"):
         image.write_bytes(image_bytes)
+    if write_mode in ("format", "format-readback"):
+        offset = (2 * 2 + 1) * sectors * 512
+        data[offset:offset + sectors * 512] = bytes([0xe5]) * (sectors * 512)
     if write_mode in ("write", "readback"):
         for sector in (5, 6):
             offset = ((2 * 2 + 1) * sectors + sector - 1) * 512
@@ -38,8 +41,12 @@ def run_probe(dosbox, nasm, directory, extension, unit, size_kb, sectors, encode
         options.append("-DWRITE_PROTECTED")
     if write_mode == "readback":
         options.append("-DREADBACK")
+    if write_mode in ("format", "format-invalid", "format-protected"):
+        options.append("-DFORMAT_TEST")
+    if write_mode in ("format-invalid", "format-protected", "format-readback"):
+        options.append("-D" + write_mode.upper().replace("-", "_"))
     (directory / "FDC.OUT").unlink(missing_ok=True)
-    access = "" if write_mode == "write" else " -ro"
+    access = "" if write_mode in ("write", "format", "format-invalid") else " -ro"
     subprocess.run([nasm, *options, "-f", "bin", f"-DUNIT={unit}",
                     f"-DSECTORS={sectors}", source,
                     "-o", directory / "PROBE.COM"], check=True)
@@ -75,6 +82,7 @@ def main():
     parser.add_argument("--dosbox", required=True, type=Path)
     parser.add_argument("--nasm", default="nasm")
     parser.add_argument("--write", action="store_true")
+    parser.add_argument("--format", action="store_true")
     args = parser.parse_args()
     for extension in ("img", "ima"):
         for size_kb, sectors in ((360, 9), (1200, 15)):
@@ -84,6 +92,11 @@ def main():
                               extension, unit, size_kb, sectors)
                     if args.write:
                         for mode in ("protected", "write", "readback"):
+                            run_probe(args.dosbox.resolve(), args.nasm, Path(temporary),
+                                      extension, unit, size_kb, sectors, write_mode=mode)
+                    if args.format:
+                        for mode in ("format-protected", "format-invalid",
+                                     "format", "format-readback"):
                             run_probe(args.dosbox.resolve(), args.nasm, Path(temporary),
                                       extension, unit, size_kb, sectors, write_mode=mode)
 
