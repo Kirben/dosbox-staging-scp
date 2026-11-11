@@ -13,7 +13,7 @@ from tempfile import TemporaryDirectory
 # pylint: disable-next=R0913,R0917,R0914,R0912,R0915
 def run_probe(dosbox, nasm, directory, extension, unit, size_kb, sectors, encode=None,
               write_mode=None, partial_format=False, format_reset=None,
-              format_motor=None, bios_format=False):
+              format_motor=None, bios_format=False, format_switch=False):
     """Check a raw or encoded image with the selected controller scenario."""
     image = directory / f"disk.{extension}"
     data = bytearray(size_kb * 1024)
@@ -62,12 +62,14 @@ def run_probe(dosbox, nasm, directory, extension, unit, size_kb, sectors, encode
         options.append("-DSCP_FORMAT")
         if partial_format:
             options.append("-DFORMAT_PARTIAL")
-            if not (format_reset or format_motor):
+            if not (format_reset or format_motor or format_switch):
                 options.append("-DFORMAT_EARLY_TC")
         if format_reset:
             options.append(f"-DFORMAT_RESET={format_reset}")
         if format_motor:
             options.append(f"-DFORMAT_MOTOR={format_motor}")
+        if format_switch:
+            options.append("-DFORMAT_SWITCH")
         if write_mode == "format-readback":
             options.append("-DSCP_FORMAT_READBACK")
     (directory / "FDC.OUT").unlink(missing_ok=True)
@@ -76,12 +78,17 @@ def run_probe(dosbox, nasm, directory, extension, unit, size_kb, sectors, encode
     subprocess.run([nasm, *options, "-f", "bin", f"-DUNIT={unit}",
                     f"-DSECTORS={sectors}", source,
                     "-o", directory / "PROBE.COM"], check=True)
+    other_mount = ""
+    if format_switch:
+        other_image = directory / f"other.{extension}"
+        other_image.write_bytes(image_bytes)
+        other_mount = f'mount {1 - unit} "{other_image}" -t floppy -fs none -ro\n'
     config = directory / "probe.conf"
     config.write_text(
         "[sdl]\noutput=texture\n[mixer]\nnosound=true\n[autoexec]\n"
         f'mount c "{directory}"\n'
         f'mount {unit} "{image}" -t floppy -fs none{access}\n'
-        "c:\nprobe.com\nexit\n",
+        f"{other_mount}c:\nprobe.com\nexit\n",
         encoding="ascii",
     )
     env = dict(os.environ, SDL_VIDEODRIVER="dummy", SDL_AUDIODRIVER="dummy")

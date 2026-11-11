@@ -269,6 +269,12 @@ bool FloppyTrackImage::OpenOverlay(const std::string& path, const bool read_only
 	return true;
 }
 
+std::span<const double> FloppyTrackImage::GetRevolutionEnds(const uint32_t cylinder,
+                                                            const uint32_t head) const
+{
+	return tracks.at(cylinder * heads + head).revolution_ends;
+}
+
 double FloppyTrackImage::GetFormatCycleMs(const uint32_t cylinder,
                                           const uint32_t head) const
 {
