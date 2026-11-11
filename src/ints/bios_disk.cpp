@@ -92,6 +92,9 @@ std::shared_ptr<imageDisk> BIOS_GetDisk(const size_t slot)
 
 static void set_disk_slot(const size_t slot, std::shared_ptr<imageDisk> disk)
 {
+	if (slot < 2 && disk_slots[slot] != disk) {
+		FLOPPY_SetDiskChanged(slot, true);
+	}
 	disk_slots[slot] = std::move(disk);
 	if (slot >= 2) {
 		if (!disk_slots[slot]) {
@@ -734,6 +737,9 @@ static Bitu INT13_DiskHandler(void)
 				bufptr++;
 			}
 		}
+		if (drivenum < 2) {
+			FLOPPY_SetDiskChanged(drivenum, false);
+		}
 		reg_ah = 0x00;
 		CALLBACK_SCF(false);
 		break;
@@ -763,6 +769,9 @@ static Bitu INT13_DiskHandler(void)
 				CALLBACK_SCF(true);
 				return CBRET_NONE;
 			}
+		}
+		if (drivenum < 2 && reg_al) {
+			FLOPPY_SetDiskChanged(drivenum, false);
 		}
 		reg_ah = 0x00;
 		CALLBACK_SCF(false);
@@ -928,6 +937,20 @@ static Bitu INT13_DiskHandler(void)
 				CALLBACK_SCF(true);
 			}
 		}
+		break;
+	case 0x16: // Diskette change line status
+		if (reg_dl >= 2) {
+			last_status = 0x01;
+		} else {
+			const auto& disk = disk_slots[reg_dl];
+			last_status = !disk || !disk->active
+			                    ? 0x80
+			                    : (FLOPPY_IsDiskChanged(reg_dl) ? 0x06
+			                                                    : 0);
+			mem_writeb(BIOS_DISK_STATUS, last_status);
+		}
+		reg_ah = last_status;
+		CALLBACK_SCF(last_status != 0);
 		break;
 	case 0x17: /* Set disk type for format */
 		/* Pirates! needs this to load */

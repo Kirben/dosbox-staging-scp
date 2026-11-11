@@ -10,6 +10,7 @@
 
 #include "cpu/callback.h"
 #include "hardware/dma.h"
+#include "hardware/ide.h"
 #include "hardware/pic.h"
 #include "hardware/port.h"
 #include "ints/bios_disk.h"
@@ -74,6 +75,8 @@ struct Controller {
 };
 
 Controller fdc = {};
+// The latch belongs to the drive and survives controller resets.
+std::array<bool, 2> disk_changed = {};
 
 void update_irq()
 {
@@ -508,7 +511,11 @@ void complete_seek(uint32_t)
 {
 	const auto unit = selected_unit();
 	if (motor_on(unit) && unit == (fdc.dor & 3u)) {
-		fdc.drives[unit].cylinder = fdc.seek_cylinder;
+		auto& drive = fdc.drives[unit];
+		if (drive.cylinder != fdc.seek_cylinder && BIOS_GetDisk(unit)) {
+			FLOPPY_SetDiskChanged(unit, false);
+		}
+		drive.cylinder  = fdc.seek_cylinder;
 		fdc.seek_status = check_cast<uint8_t>(0x20u | (fdc.command[1] & 7u));
 	} else {
 		fdc.seek_status = check_cast<uint8_t>(0x68u | (fdc.command[1] & 7u));
@@ -617,6 +624,13 @@ io_val_t read_status(io_port_t, io_width_t)
 	case Phase::Command: return fdc.command_count ? 0x90 : 0x80;
 	}
 	return 0;
+}
+
+io_val_t read_dir(io_port_t, io_width_t)
+{
+	const auto unit = fdc.dor & 3u;
+	return IDE_ReadPrimaryDriveAddress() |
+	       (FLOPPY_IsDiskChanged(unit) ? 0x80 : 0);
 }
 
 void reset_controller()
@@ -761,7 +775,9 @@ BiosCommandResult bios_command(const uint8_t unit, const uint32_t cylinder,
 		IO_WriteB(0x0a, FloppyDma);
 	}
 
-	// The BIOS selects and positions the drive before issuing the command.
+	// The BIOS implicitly seeks, stepping away and back if already in
+	// position.
+	FLOPPY_SetDiskChanged(unit, false);
 	auto& drive    = fdc.drives[unit];
 	drive.cylinder = check_cast<uint8_t>(cylinder);
 	if (!motor_on(unit)) {
@@ -987,8 +1003,20 @@ uint8_t FLOPPY_BiosDmaFormat(const uint8_t unit, const uint32_t cylinder,
 	return transfer.transferred == size ? 0 : 0x08;
 }
 
+void FLOPPY_SetDiskChanged(const size_t unit, const bool changed)
+{
+	assert(unit < disk_changed.size());
+	disk_changed[unit] = changed;
+}
+
+bool FLOPPY_IsDiskChanged(const size_t unit)
+{
+	return unit < disk_changed.size() && disk_changed[unit];
+}
+
 void FLOPPY_Init()
 {
+	disk_changed.fill(false);
 	if (is_machine_pcjr()) {
 		return;
 	}
@@ -998,4 +1026,5 @@ void FLOPPY_Init()
 	IO_RegisterReadHandler(0x3f4, read_status, io_width_t::byte);
 	IO_RegisterReadHandler(0x3f5, read_data, io_width_t::byte);
 	IO_RegisterWriteHandler(0x3f5, write_data, io_width_t::byte);
+	IO_RegisterReadHandler(0x3f7, read_dir, io_width_t::byte);
 }
