@@ -369,12 +369,33 @@ Use `-t floppy` if auto-detection picks the wrong type (see below).
 Supported floppy image formats: `.img`, `.ima`, `.dsk` (raw sector images),
 `.vfd` (Virtual Floppy Disk), `.flp` (raw floppy image), and numeric
 extensions matching standard floppy sizes: `.360`, `.720`, `.1200`, `.1440`.
+Track image formats include SuperCard Pro (`.scp`), HxC MFM (`.mfm`),
+and 86Box (`.86f`).
 
 Files with `.vfd`, `.flp`, or numeric extensions are always auto-detected as
 floppy images, so `-t floppy` is not needed. For `.img`, `.ima`, and `.dsk`
 files, DOSBox Staging checks the file size against known floppy disk
 geometries (see [Floppy disk formats](#floppy-disk-formats) below) ---
 matching images are mounted as floppy drives; all others as hard disk images.
+
+#### Writing to floppy images
+
+| Image format | Where writes go |
+| --- | --- |
+| Raw sector images, including `.img` and `.ima` | The image file itself. Controller formatting is limited to layouts the raw format can represent. |
+| SuperCard Pro (`.scp`) | A persistent `.overlay` file beside the capture. |
+| HxC MFM (`.mfm`) and 86Box (`.86f`) | These formats mount read-only. |
+
+Use `-ro` to write-protect a mounted floppy. For a writable SCP mount,
+DOSBox Staging saves sector writes and track formatting in a sidecar named
+after the full capture filename. For example, changes to `disk.scp` go into
+`disk.scp.overlay`. The original flux capture stays intact.
+
+When you reopen the capture, DOSBox Staging loads the sidecar automatically,
+including on a read-only mount. The sidecar is tied to the original capture's
+contents. Keep both files together when moving or backing up a disk. To open
+the original capture without the saved changes, close DOSBox Staging and move
+the sidecar out of the capture's directory before mounting it again.
 
 #### Floppy disk formats
 

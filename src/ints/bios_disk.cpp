@@ -59,8 +59,8 @@ struct BiosDiskSlot {
 	std::shared_ptr<FloppyMedia> floppy = {};
 };
 
-static std::array<BiosDiskSlot, MAX_DISK_IMAGES> disk_slots               = {};
-static BiosBootDisks boot_disks                                           = {};
+static std::array<BiosDiskSlot, MAX_DISK_IMAGES> disk_slots = {};
+static BiosBootDisks boot_disks                             = {};
 
 static size_t swap_position = 0;
 
@@ -111,8 +111,8 @@ static uint8_t floppy_drive_count()
 static void update_floppy_equipment()
 {
 	constexpr uint16_t floppy_bits = 0x00c1;
-	auto equipment = static_cast<uint16_t>(mem_readw(BIOS_CONFIGURATION) &
-	                                       ~floppy_bits);
+	auto equipment   = static_cast<uint16_t>(mem_readw(BIOS_CONFIGURATION) &
+                                               ~floppy_bits);
 	const auto count = floppy_drive_count();
 	if (count) {
 		equipment |= check_cast<uint16_t>(1 | ((count - 1) << 6));
@@ -449,7 +449,7 @@ imageDisk::imageDisk(std::shared_ptr<FloppyMedia> image, const std::string& name
 	cylinders    = cylinder_count;
 	sectors      = sectors_per_track;
 	floppy_media = std::move(image);
-	active      = true;
+	active       = true;
 	for (size_t i = 0; i < disk_geometry_list.size(); ++i) {
 		const auto& geometry = disk_geometry_list[i];
 		if (geometry.cylcount == cylinders &&
@@ -634,15 +634,15 @@ static DiskServiceResult bios_floppy_transfer(const DiskServiceRequest& request,
 	auto transfer = FloppyBiosTransferResult{0x04, 0};
 	if (operation != FloppyBiosTransfer::Read || !killRead) {
 		const auto parameters = RealToPhysical(RealGetVec(0x1e));
-		transfer = FLOPPY_BiosTransfer(operation,
-		                               drivenum,
-		                               request.cylinder,
-		                               request.head,
-		                               request.sector,
-		                               mem_readb(parameters + 3),
-		                               request.count,
-		                               mem_readb(parameters + 5),
-		                               RealToPhysical(request.buffer));
+		transfer              = FLOPPY_BiosTransfer(operation,
+                                               drivenum,
+                                               request.cylinder,
+                                               request.head,
+                                               request.sector,
+                                               mem_readb(parameters + 3),
+                                               request.count,
+                                               mem_readb(parameters + 5),
+                                               RealToPhysical(request.buffer));
 	}
 	if (operation == FloppyBiosTransfer::Read) {
 		killRead = false;
@@ -883,12 +883,12 @@ static DiskServiceResult run_disk_service(const DiskServiceRequest& request)
 		                                         bool(disk_slots[2].sector) +
 		                                         bool(disk_slots[3].sector))
 		                               : floppy_drive_count();
-		result.parameters = DiskServiceResult::DriveParameters{
-		        tmpcyl,
-		        tmpheads,
-		        tmpsect,
-		        disk_slots[unit].sector->GetBiosType(),
-		        drive_count};
+		result.parameters      = DiskServiceResult::DriveParameters{
+                        tmpcyl,
+                        tmpheads,
+                        tmpsect,
+                        disk_slots[unit].sector->GetBiosType(),
+                        drive_count};
 		last_status  = 0;
 		result.carry = false;
 		break;
@@ -931,8 +931,8 @@ static DiskServiceResult run_disk_service(const DiskServiceRequest& request)
 				result.fixed_disk_sectors = 0x4800;
 			}
 		} else {
-			LOG(LOG_BIOS, LOG_WARN)(
-			        "INT13: no images, but invalid drive for call 15");
+			LOG(LOG_BIOS, LOG_WARN)
+			("INT13: no images, but invalid drive for call 15");
 			return {.status = 0xff, .carry = true};
 		}
 		break;
@@ -941,11 +941,11 @@ static DiskServiceResult run_disk_service(const DiskServiceRequest& request)
 			last_status = 0x01;
 		} else {
 			const auto& disk = disk_slots[request.drive].sector;
-			last_status = !disk || !disk->active
-			                    ? 0x80
-			                    : (FLOPPY_IsDiskChanged(request.drive)
-			                               ? 0x06
-			                               : 0);
+			last_status      = !disk || !disk->active
+			                         ? 0x80
+			                         : (FLOPPY_IsDiskChanged(request.drive)
+			                                    ? 0x06
+			                                    : 0);
 			mem_writeb(BIOS_DISK_STATUS, last_status);
 		}
 		result.status = last_status;
@@ -958,11 +958,11 @@ static DiskServiceResult run_disk_service(const DiskServiceRequest& request)
 		result.carry  = false;
 		break;
 	default:
-		LOG(LOG_BIOS,
-		    LOG_ERROR)("INT13: Function %x called on drive %x (dos drive %d)",
-		               request.function,
-		               request.drive,
-		               unit);
+		LOG(LOG_BIOS, LOG_ERROR)
+		("INT13: Function %x called on drive %x (dos drive %d)",
+		 request.function,
+		 request.drive,
+		 unit);
 		result.status = 0xff;
 		result.carry  = true;
 	}

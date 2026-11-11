@@ -113,13 +113,13 @@ std::unique_ptr<FloppyTrackImage> FloppyTrackImage::Load86f(FILE* file,
 		if ((track_flags & 0x18) != 8 || rpm_code > 1 || rate_code > 3) {
 			return fail("unsupported 86F track encoding, speed, or data rate");
 		}
-		const auto rate          = RatesKbps[rate_code];
-		const auto rpm           = rpm_code ? 360 : 300;
-		const auto base_cells    = (120'000ull * rate * speed_num /
-		                            (rpm * speed_den)) &
-		                           ~15ull;
+		const auto rate       = RatesKbps[rate_code];
+		const auto rpm        = rpm_code ? 360 : 300;
+		const auto base_cells = (120'000ull * rate * speed_num /
+		                         (rpm * speed_den)) &
+		                        ~15ull;
 		const auto encoded_count = has_count ? le32(pos + 2) : 0;
-		const auto extra = std::bit_cast<int32_t>(encoded_count);
+		const auto extra    = std::bit_cast<int32_t>(encoded_count);
 		const int64_t cells = total_count
 		                            ? int64_t{encoded_count}
 		                            : static_cast<int64_t>(base_cells) + extra;
