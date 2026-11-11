@@ -418,7 +418,7 @@ uint8_t format_status(const FloppyFormatResult result)
 	return 0x20;
 }
 
-uint8_t commit_scp_format()
+uint8_t commit_track_format()
 {
 	const auto ids = std::span(fdc.format_ids).first(fdc.formatted_ids * FormatIdSize);
 	return format_status(FLOPPY_FormatTrack(*fdc.disk,
@@ -430,13 +430,13 @@ uint8_t commit_scp_format()
 	                                        fdc.command[3]));
 }
 
-void finish_scp_format(const uint8_t status)
+void finish_track_format(const uint8_t status)
 {
 	if (!fdc.formatted_ids) {
 		finish_data(status);
 		return;
 	}
-	const auto result         = commit_scp_format();
+	const auto result         = commit_track_format();
 	const auto offset         = (fdc.formatted_ids - 1) * FormatIdSize;
 	const auto& ids           = fdc.format_ids;
 	const FloppySector sector = {ids[offset],
@@ -447,12 +447,12 @@ void finish_scp_format(const uint8_t status)
 	finish_data(result ? result : status);
 }
 
-double scp_format_slot_ms()
+double track_format_slot_ms()
 {
 	return fdc.media->GetFormatCycleMs(fdc.cylinder, fdc.head) / fdc.command[3];
 }
 
-void format_scp_sector(uint32_t)
+void format_track_sector(uint32_t)
 {
 	if (!media_ready(selected_unit())) {
 		finish_data(0x04);
@@ -460,7 +460,7 @@ void format_scp_sector(uint32_t)
 	}
 	auto* dma = DMA_GetChannel(FloppyDma);
 	if (!format_dma_ready(dma)) {
-		finish_scp_format(0x10);
+		finish_track_format(0x10);
 		return;
 	}
 	const auto remaining = static_cast<size_t>(dma->curr_count) + 1;
@@ -470,13 +470,13 @@ void format_scp_sector(uint32_t)
 	const auto transferred = dma->Read(count, id);
 	dma->ClearRequest();
 	if (transferred != FormatIdSize) {
-		finish_scp_format(0x10);
+		finish_track_format(0x10);
 	} else if (++fdc.formatted_ids == fdc.command[3]) {
-		finish_scp_format(0);
+		finish_track_format(0);
 	} else if (remaining == FormatIdSize) {
-		finish_scp_format(0x10);
+		finish_track_format(0x10);
 	} else {
-		PIC_AddEvent(format_scp_sector, scp_format_slot_ms());
+		PIC_AddEvent(format_track_sector, track_format_slot_ms());
 	}
 }
 
@@ -559,8 +559,8 @@ void start_data(const Command command)
 			PIC_AddEvent(format_raw_track,
 			             to_index + rotation_cycle_ms());
 		} else {
-			PIC_AddEvent(format_scp_sector,
-			             to_index + scp_format_slot_ms());
+			PIC_AddEvent(format_track_sector,
+			             to_index + track_format_slot_ms());
 		}
 		return;
 	}
@@ -756,7 +756,7 @@ void reset_controller()
 	PIC_RemoveEvents(transfer_sector);
 	PIC_RemoveEvents(transfer_track_sector);
 	PIC_RemoveEvents(format_raw_track);
-	PIC_RemoveEvents(format_scp_sector);
+	PIC_RemoveEvents(format_track_sector);
 	PIC_RemoveEvents(missing_sector);
 	fdc = {};
 }
@@ -765,14 +765,14 @@ void write_dor(io_port_t, const io_val_t value, io_width_t)
 {
 	const auto previous       = fdc.dor;
 	const auto unit           = selected_unit();
-	const auto formatting_scp = fdc.phase == Phase::Execution && fdc.disk &&
-	                            fdc.media &&
-	                            (fdc.command[0] & 0x1f) ==
-	                                    static_cast<int>(Command::FormatTrack) &&
-	                            media_ready(unit);
+	const auto formatting_track = fdc.phase == Phase::Execution &&
+	                              fdc.disk && fdc.media &&
+	                              (fdc.command[0] & 0x1f) ==
+	                                      static_cast<int>(Command::FormatTrack) &&
+	                              media_ready(unit);
 	if (!(value & ResetReleased)) {
-		if (formatting_scp && fdc.formatted_ids && commit_scp_format()) {
-			LOG_WARNING("FDC: Could not save SCP format interrupted by reset");
+		if (formatting_track && fdc.formatted_ids && commit_track_format()) {
+			LOG_WARNING("FDC: Could not save track format interrupted by reset");
 		}
 		reset_controller();
 	}
@@ -787,9 +787,9 @@ void write_dor(io_port_t, const io_val_t value, io_width_t)
 		fdc.reset_unit  = 0;
 		fdc.irq_pending = true;
 	}
-	if ((value & ResetReleased) && formatting_scp && !motor_on(unit)) {
-		PIC_RemoveEvents(format_scp_sector);
-		finish_scp_format(0x04);
+	if ((value & ResetReleased) && formatting_track && !motor_on(unit)) {
+		PIC_RemoveEvents(format_track_sector);
+		finish_track_format(0x04);
 		return;
 	}
 	update_irq();

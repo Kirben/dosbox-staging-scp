@@ -40,7 +40,7 @@ def run_probe(dosbox, nasm, directory, extension, unit, size_kb, sectors, encode
     options = ["-DREORDERED"] if encode else []
     if extension == "scp" and not write_mode:
         options.append("-DSCP_REVOLUTIONS")
-    elif extension == "86f":
+    elif extension == "86f" and write_mode != "format-readback":
         options.append("-DFIRST_ID_AFTER_INDEX=2")
     if write_mode in ("write", "protected"):
         options.append("-DWRITE_TEST")
@@ -58,7 +58,7 @@ def run_probe(dosbox, nasm, directory, extension, unit, size_kb, sectors, encode
             options.append("-DBIOS_FORMAT")
     if write_mode in ("format-invalid", "format-protected", "format-readback"):
         options.append("-D" + write_mode.upper().replace("-", "_"))
-    if extension == "scp" and write_mode and write_mode.startswith("format"):
+    if encode and write_mode and write_mode.startswith("format"):
         options.append("-DSCP_FORMAT")
         if partial_format:
             options.append("-DFORMAT_PARTIAL")

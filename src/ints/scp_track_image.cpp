@@ -226,14 +226,23 @@ std::unique_ptr<FloppyTrackImage> FloppyTrackImage::LoadScp(FILE* file,
 		error = "no IBM MFM sector IDs found";
 		return {};
 	}
-	image->overlay_path        = path + ".overlay";
-	image->capture_fingerprint = capture.fingerprint;
-	image->overlay_writable    = !read_only;
-	if (!image->LoadScpOverlay()) {
-		error = "invalid SCP overlay or overlay belongs to another capture";
+	if (!image->OpenOverlay(path, read_only, capture.fingerprint, error)) {
 		return {};
 	}
 	return image;
+}
+
+bool FloppyTrackImage::OpenOverlay(const std::string& path, const bool read_only,
+                                   const uint64_t fingerprint, std::string& error)
+{
+	overlay_path        = path + ".overlay";
+	capture_fingerprint = fingerprint;
+	overlay_writable    = !read_only;
+	if (!LoadOverlay()) {
+		error = "invalid floppy overlay or overlay belongs to another image";
+		return false;
+	}
+	return true;
 }
 
 double FloppyTrackImage::GetFormatCycleMs(const uint32_t cylinder,
@@ -299,7 +308,7 @@ void FloppyTrackImage::ApplyOverlaySector(const OverlayKey& key,
 	}
 }
 
-bool FloppyTrackImage::LoadScpOverlay()
+bool FloppyTrackImage::LoadOverlay()
 {
 	std::error_code error = {};
 	if (!std::filesystem::exists(overlay_path, error)) {
@@ -387,8 +396,8 @@ bool FloppyTrackImage::LoadScpOverlay()
 	return true;
 }
 
-bool FloppyTrackImage::SaveScpOverlay(const Overlay& entries,
-                                      const TrackFormats& formats) const
+bool FloppyTrackImage::SaveOverlay(const Overlay& entries,
+                                   const TrackFormats& formats) const
 {
 	const auto temporary = overlay_path + ".tmp";
 	auto* file           = fopen(temporary.c_str(), "wbx");
@@ -523,7 +532,7 @@ bool FloppyTrackImage::WriteSector(const uint32_t cylinder, const uint32_t head,
 	for (const auto& key : targets) {
 		entries[key] = updated;
 	}
-	if (!SaveScpOverlay(entries, track_formats)) {
+	if (!SaveOverlay(entries, track_formats)) {
 		return false;
 	}
 	for (const auto& key : targets) {
@@ -641,7 +650,7 @@ FloppyTrackImage::FormatResult FloppyTrackImage::FormatTrack(
 	        {ids.begin(), ids.end()},
                 fill, requested, std::move(prior)
         });
-	if (!SaveScpOverlay(entries, formats)) {
+	if (!SaveOverlay(entries, formats)) {
 		return FormatResult::WriteError;
 	}
 	ApplyTrackFormat(address, history.back());

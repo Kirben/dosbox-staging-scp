@@ -4,6 +4,7 @@
 """Check DOS FAT handles across BIOS and controller writes to floppy images."""
 
 import argparse
+from functools import partial
 from pathlib import Path
 from struct import pack_into
 import subprocess
@@ -86,9 +87,9 @@ def run_probe(dosbox, nasm, directory, extension, encoder, unit, writable):
     chain = files["chain.out"].read_bytes()
     assert len(chain) == 1028 and chain[1024:] == b"vfff"
     assert files["name.out"].stat().st_size == 512
-    if extension == "scp":
+    if extension in ("scp", "mfm", "86f"):
         assert image.read_bytes() == capture
-        assert image.with_suffix(".scp.overlay").is_file()
+        assert image.with_suffix(f".{extension}.overlay").is_file()
     print(f".{extension}: open file data, directory and FAT chain refreshed, restart passed")
 
 
@@ -100,8 +101,10 @@ def main():
     args = parser.parse_args()
     for extension, encoder, unit, writable in (
         ("img", bytes, 0, True), ("ima", bytes, 1, True),
-        ("scp", encode_scp, 0, True), ("mfm", encode, 0, False),
-        ("86f", encode_86f, 1, False),
+        ("scp", encode_scp, 0, True), ("mfm", encode, 0, True),
+        ("86f", encode_86f, 1, True),
+        ("86f", partial(encode_86f, write_protected=True), 0, False),
+        ("86f", partial(encode_86f, physical_hole=True), 0, False),
     ):
         with TemporaryDirectory() as directory:
             run_probe(args.dosbox.resolve(), args.nasm, Path(directory),
