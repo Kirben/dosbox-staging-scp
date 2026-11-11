@@ -45,6 +45,10 @@ def run_probe(dosbox, nasm, directory, extension, unit, size_kb, sectors, encode
         options.append("-DFORMAT_TEST")
     if write_mode in ("format-invalid", "format-protected", "format-readback"):
         options.append("-D" + write_mode.upper().replace("-", "_"))
+    if extension == "scp" and write_mode and write_mode.startswith("format"):
+        options.append("-DSCP_FORMAT")
+        if write_mode == "format-readback":
+            options.append("-DSCP_FORMAT_READBACK")
     (directory / "FDC.OUT").unlink(missing_ok=True)
     access = "" if write_mode in ("write", "format", "format-invalid") else " -ro"
     subprocess.run([nasm, *options, "-f", "bin", f"-DUNIT={unit}",

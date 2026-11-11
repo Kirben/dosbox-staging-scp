@@ -77,6 +77,17 @@ def main():
                     saved = overlay.read_bytes()
                 else:
                     assert overlay.read_bytes() == saved
+            for mode in ("format-protected", "format-invalid", "format",
+                         "format-readback"):
+                run_probe(dosbox, args.nasm, directory, "scp", unit, 360, 9,
+                          encode_scp, write_mode=mode)
+                if mode == "format":
+                    formatted = overlay.read_bytes()
+                    assert formatted != saved
+                elif mode == "format-readback":
+                    assert overlay.read_bytes() == formatted
+                else:
+                    assert overlay.read_bytes() == saved
         check_fat(dosbox, directory, encode_scp, "scp")
         check_boot(dosbox, args.nasm, directory, encode_scp, "scp")
 
