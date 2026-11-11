@@ -16,7 +16,7 @@
 #include "dos/dos.h"
 #include "hardware/memory.h"
 #include "ints/bios.h"
-#include "ints/hxc_mfm_image.h"
+#include "ints/floppy_track_image.h"
 #include "ints/sector_media.h"
 
 /* The Section handling Bios Disk Access */
@@ -55,8 +55,9 @@ public:
 	uint32_t getSectSize(void);
 
 	imageDisk(FILE *img_file, const char *img_name, uint32_t img_size_k, bool is_hdd);
-	imageDisk(std::unique_ptr<HxcMfmImage> track_image, const std::string& name);
-	const HxcMfmImage* GetTrackImage() const;
+	imageDisk(std::unique_ptr<FloppyTrackImage> track_image,
+	          const std::string& name);
+	const FloppyTrackImage* GetTrackImage() const;
 	imageDisk(const imageDisk&) = delete; // prevent copy
 	imageDisk& operator=(const imageDisk&) = delete; // prevent assignment
 
@@ -76,7 +77,7 @@ public:
 	uint32_t heads, cylinders, sectors;
 
 private:
-	std::unique_ptr<HxcMfmImage> track_image = {};
+	std::unique_ptr<FloppyTrackImage> track_image = {};
 	uint8_t read_absolute_sector(const uint32_t sector, void* data,
 	                             const bool controller_read);
 	cross_off_t current_fpos;

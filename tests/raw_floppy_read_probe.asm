@@ -163,6 +163,22 @@ org 100h
     cmp word [es:1600h],0
     jne finish
 
+%ifdef SCP_REVOLUTIONS
+    mov byte [stage],9
+    call read_turn_marker
+    mov bl,[es:1200h]
+    cmp bl,61h
+    je .next_turn
+    cmp bl,62h
+    jne finish
+.next_turn:
+    call read_turn_marker
+    mov al,[es:1200h]
+    xor al,bl
+    cmp al,3
+    jne finish
+%endif
+
     mov byte [stage],0
 finish:
     mov al,[saved_imr]
@@ -183,6 +199,35 @@ finish:
     mov al,[stage]
     mov ah,4ch
     int 21h
+
+%ifdef SCP_REVOLUTIONS
+read_turn_marker:
+    mov al,6
+    out 0ah,al
+    out 0ch,al
+    mov al,46h
+    out 0bh,al
+    xor al,al
+    out 04h,al
+    mov al,12h
+    out 04h,al
+    mov al,0ffh
+    out 05h,al
+    mov al,1
+    out 05h,al
+    mov al,2
+    out 0ah,al
+    mov si,read_marker
+    mov cx,9
+    call command_and_irq
+    call read_result
+    cmp word [result],DRIVE_HEAD
+    jne finish
+    in al,08h
+    test al,4
+    jz finish
+    ret
+%endif
 
 read_id:
     mov si,id
@@ -300,4 +345,7 @@ interrupts db 0
 result times 7 db 0
 %ifdef REORDERED
 next_id db 2,4,5,3,6,7,8,9,1
+%endif
+%ifdef SCP_REVOLUTIONS
+read_marker db 46h,DRIVE_HEAD,2,1,6,2,6,2ah,0ffh
 %endif

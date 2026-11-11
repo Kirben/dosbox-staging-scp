@@ -120,10 +120,10 @@ void finish_data(const uint8_t status_1, const uint8_t status_2 = 0)
 	begin_result(fdc.result.size(), true);
 }
 
-double revolution_ms()
+double rotation_cycle_ms()
 {
 	if (const auto* track = fdc.disk->GetTrackImage()) {
-		return track->revolution_ms;
+		return track->GetCycleMs(fdc.cylinder, fdc.head);
 	}
 	// The 1.2 MB 5.25-inch drive spins at 360 RPM.
 	return fdc.disk->GetBiosType() == 2 ? HighDensity525RevolutionMs
@@ -132,14 +132,14 @@ double revolution_ms()
 
 double slot_length_ms()
 {
-	return revolution_ms() / fdc.disk->sectors;
+	return rotation_cycle_ms() / fdc.disk->sectors;
 }
 
 double rotation_ms()
 {
 	const auto elapsed_ms = PIC_FullIndex() -
 	                        fdc.drives[selected_unit()].motor_started_ms;
-	return std::fmod(std::max(0.0, elapsed_ms), revolution_ms());
+	return std::fmod(std::max(0.0, elapsed_ms), rotation_cycle_ms());
 }
 
 void complete_read_id(uint32_t)
@@ -159,12 +159,12 @@ void missing_sector(uint32_t)
 	finish_data(0x04);
 }
 
-void schedule_track_sector(const HxcMfmImage& image, const bool read_id)
+void schedule_track_sector(const FloppyTrackImage& image, const bool read_id)
 {
 	const auto track       = image.GetTrack(fdc.cylinder, fdc.head);
 	const auto position_ms = rotation_ms();
-	const auto turn_ms     = image.revolution_ms;
-	auto delay_ms          = turn_ms;
+	const auto cycle_ms    = image.GetCycleMs(fdc.cylinder, fdc.head);
+	auto delay_ms          = cycle_ms;
 	fdc.track_sector       = nullptr;
 	for (const auto& candidate : track) {
 		if (!read_id &&
@@ -173,10 +173,10 @@ void schedule_track_sector(const HxcMfmImage& image, const bool read_id)
 		     candidate.size_code != fdc.command[5])) {
 			continue;
 		}
-		const auto offset_ms = candidate.revolution_offset * turn_ms;
+		const auto offset_ms = candidate.cycle_fraction * cycle_ms;
 		const auto wait_ms = offset_ms > position_ms
 		                           ? offset_ms - position_ms
-		                           : turn_ms + offset_ms - position_ms;
+		                           : cycle_ms + offset_ms - position_ms;
 		if (!fdc.track_sector || wait_ms < delay_ms) {
 			fdc.track_sector = &candidate;
 			delay_ms         = wait_ms;
@@ -306,7 +306,7 @@ void start_data(const Command command)
 	const auto target_ms = (fdc.sector - 1) * length_ms;
 	const auto delay_ms = target_ms > position_ms
 	                            ? target_ms - position_ms
-	                            : revolution_ms() + target_ms - position_ms;
+	                            : rotation_cycle_ms() + target_ms - position_ms;
 	PIC_AddEvent(transfer_sector, delay_ms);
 }
 

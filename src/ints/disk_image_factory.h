@@ -16,7 +16,7 @@ std::shared_ptr<imageDisk> OpenSectorDiskImage(
         const std::string& path, bool& read_only,
         const std::optional<bool> hard_disk = std::nullopt);
 
-bool IsHxcMfmPath(const std::string_view path);
-std::shared_ptr<imageDisk> LoadHxcMfmDisk(FILE* file, const std::string& path);
+bool IsFloppyTrackImagePath(const std::string_view path);
+std::shared_ptr<imageDisk> LoadFloppyTrackDisk(FILE* file, const std::string& path);
 
 #endif

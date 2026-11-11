@@ -21,6 +21,8 @@ def run_probe(dosbox, nasm, directory, extension, unit, size_kb, sectors, encode
 
     source = Path(__file__).with_name("raw_floppy_read_probe.asm")
     options = ["-DREORDERED"] if encode else []
+    if extension == "scp":
+        options.append("-DSCP_REVOLUTIONS")
     subprocess.run([nasm, *options, "-f", "bin", f"-DUNIT={unit}",
                     f"-DSECTORS={sectors}", source,
                     "-o", directory / "PROBE.COM"], check=True)
