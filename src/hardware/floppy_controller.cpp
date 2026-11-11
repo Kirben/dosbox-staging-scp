@@ -66,7 +66,11 @@ struct Controller {
 	std::array<uint8_t, 7> result                      = {};
 	std::array<uint8_t, FormatIdSize * 255> format_ids = {};
 	size_t track_revolution                            = 0;
-	size_t track_limit                                 = 0;
+	size_t track_remaining                             = 0;
+	bool track_long_transfer                           = false;
+	bool track_dma_ready                               = false;
+	double track_transfer_ms                           = 0;
+	uint64_t track_sample_turn                         = 0;
 	size_t track_offset                                = 0;
 	uint8_t track_status_1                             = 0;
 	uint8_t track_status_2                             = 0;
@@ -322,9 +326,28 @@ void finish_track_sector(const bool terminal_count, const double elapsed_ms)
 	const auto& sector = track[fdc.track_offset];
 	if (terminal_count) {
 		finish_data(fdc.track_status_1, fdc.track_status_2, true);
-	} else if (++fdc.track_offset == fdc.track_limit) {
+	} else if (--fdc.track_remaining == 0) {
 		finish_data(fdc.track_status_1 | 0x80, fdc.track_status_2);
+	} else if (fdc.track_long_transfer) {
+		// A command-sized field can pass other IDs or even cross index.
+		// Resume searching at the physical position reached by the read.
+		const auto cycle    = rotation_cycle_ms();
+		const auto position = rotation_ms();
+		auto delay_ms       = cycle;
+		for (size_t i = 0; i < track.size(); ++i) {
+			const auto offset_ms = track[i].cycle_fraction * cycle;
+			const auto wait_ms   = offset_ms > position
+			                             ? offset_ms - position
+			                             : cycle + offset_ms - position;
+			if (wait_ms < delay_ms) {
+				delay_ms         = wait_ms;
+				fdc.track_offset = i;
+			}
+		}
+		fdc.track_revolution = track[fdc.track_offset].revolution;
+		PIC_AddEvent(transfer_track_sector, delay_ms);
 	} else {
+		++fdc.track_offset;
 		const auto cycle     = rotation_cycle_ms();
 		const auto offset_ms = sector.cycle_fraction * cycle;
 		const auto has_next  = fdc.track_offset < track.size() &&
@@ -359,18 +382,50 @@ void transfer_track_sector(uint32_t)
 		finish_data(fdc.track_status_1 | 0x10, fdc.track_status_2);
 		return;
 	}
-	const auto size = size_t{128} << fdc.command[5];
+	const auto size         = size_t{128} << fdc.command[5];
+	fdc.track_long_transfer = size > sector.data.size() && sector.mfm_track;
+	if (fdc.track_long_transfer && !fdc.non_dma && !fdc.track_dma_ready) {
+		const auto ends  = fdc.media->GetRevolutionEnds(fdc.cylinder,
+                                                               fdc.head);
+		const auto start = fdc.track_revolution
+		                         ? ends[fdc.track_revolution - 1]
+		                         : 0;
+		const auto duration_ms = (ends[fdc.track_revolution] - start) *
+		                         rotation_cycle_ms();
+		fdc.track_transfer_ms = static_cast<double>(sector.data_delay_bits +
+		                                            (size + 2) * 16) *
+		                        duration_ms /
+		                        static_cast<double>(sector.mfm_track->bit_count);
+		fdc.track_sample_turn = static_cast<uint64_t>(
+		        rotation_elapsed_ms() / rotation_cycle_ms());
+		fdc.track_dma_ready = true;
+		PIC_AddEvent(transfer_track_sector, fdc.track_transfer_ms);
+		return;
+	}
 	const auto extended = size > sector.data.size() &&
 	                      !sector.extended_data.empty();
 	std::span<const uint8_t> data = extended ? sector.extended_data : sector.data;
-	if (data.size() < size) {
+	std::vector<uint8_t> sampled = {};
+	bool bad_crc                 = false;
+	if (fdc.track_long_transfer) {
+		const auto turn = fdc.non_dma ? static_cast<uint64_t>(
+		                                        rotation_elapsed_ms() /
+		                                        rotation_cycle_ms())
+		                              : fdc.track_sample_turn;
+		if (!sector.ReadTrackData(size, turn, sampled, bad_crc)) {
+			finish_data(fdc.track_status_1 | 0x01,
+			            fdc.track_status_2 | 0x01);
+			return;
+		}
+		data = sampled;
+	} else if (data.size() < size) {
 		finish_data(fdc.track_status_1 | 0x01, fdc.track_status_2 | 0x01);
 		return;
-	}
-	std::vector<uint8_t> sampled = {};
-	const auto bad_crc = !extended && sample_sector_data(sector, sampled);
-	if (!sampled.empty()) {
-		data = sampled;
+	} else {
+		bad_crc = !extended && sample_sector_data(sector, sampled);
+		if (!sampled.empty()) {
+			data = sampled;
+		}
 	}
 	if (sector.id_crc_error || bad_crc) {
 		fdc.track_status_1 |= 0x20;
@@ -398,7 +453,10 @@ void transfer_track_sector(uint32_t)
 	if (transferred != count) {
 		finish_data(fdc.track_status_1 | 0x10, fdc.track_status_2);
 	} else {
-		finish_track_sector(count == remaining, 0);
+		fdc.track_dma_ready = false;
+		finish_track_sector(count == remaining,
+		                    fdc.track_long_transfer ? fdc.track_transfer_ms
+		                                            : 0);
 	}
 }
 
@@ -796,8 +854,9 @@ void start_data(const Command command)
                         [](const FloppySector& sector, const size_t revolution) {
                                 return sector.revolution < revolution;
                         });
-		fdc.track_offset = check_cast<size_t>(first - track.begin());
-		fdc.track_limit  = fdc.track_offset + fdc.command[6];
+		fdc.track_offset    = check_cast<size_t>(first - track.begin());
+		fdc.track_remaining = fdc.command[6];
+		fdc.track_dma_ready = false;
 		const auto has_sector = first != track.end() &&
 		                        first->revolution == fdc.track_revolution;
 		const auto first_position = has_sector

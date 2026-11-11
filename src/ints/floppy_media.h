@@ -5,6 +5,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <memory>
 #include <span>
 #include <vector>
 
@@ -17,6 +18,12 @@ inline uint64_t FloppyImageFingerprint(const std::span<const uint8_t> bytes)
 	}
 	return fingerprint;
 }
+
+struct FloppyMfmTrack {
+	std::vector<uint8_t> cells   = {};
+	size_t bit_count             = 0;
+	std::vector<bool> weak_cells = {};
+};
 
 struct FloppySector {
 	uint8_t cylinder                   = 0;
@@ -32,11 +39,17 @@ struct FloppySector {
 	std::vector<uint8_t> extended_data = {};
 	std::vector<uint8_t> weak_mask = {}; // Payload followed by the two CRC
 	                                     // bytes.
-	uint16_t recorded_crc = 0;
-	size_t weak_seed      = 0;
+	uint16_t recorded_crc                     = 0;
+	size_t weak_seed                          = 0;
+	std::shared_ptr<FloppyMfmTrack> mfm_track = {};
+	size_t data_bit                           = 0;
+	size_t data_delay_bits                    = 0;
 
 	// Sample one physical turn and return whether its data CRC is bad.
 	bool SampleWeakData(uint64_t turn, std::vector<uint8_t>& sampled) const;
+	bool ReadTrackData(size_t size, uint64_t turn,
+	                   std::vector<uint8_t>& sampled, bool& bad_crc) const;
+	void UpdateTrackData();
 };
 
 constexpr bool IsFloppyOverlaySizeCode(const int size_code)

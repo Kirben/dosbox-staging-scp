@@ -15,7 +15,7 @@ from run_transcopy_attachment_probe import encode_transcopy
 
 
 def run_guest(dosbox, nasm, directory, image, checks, expected=b"", extra_commands=(),
-              machine=None):
+              machine=None, read_only=True):
     """Run BIOS checks and report the first failing stage."""
     source = directory / "probe.asm"
     (directory / "EXPECTED.BIN").write_bytes(expected)
@@ -54,8 +54,9 @@ expected incbin 'EXPECTED.BIN'
                    cwd=directory, check=True)
     report = directory / "RESULT.BIN"
     report.unlink(missing_ok=True)
+    access = " -ro" if read_only else ""
     command, env = launch(dosbox, directory, "layout", [
-        f'mount c "{directory}"', f'mount 0 "{image}" -t floppy -fs none -ro',
+        f'mount c "{directory}"', f'mount 0 "{image}" -t floppy -fs none{access}',
         *extra_commands, "c:", "probe.com", "exit",
     ])
     if machine:

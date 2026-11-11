@@ -331,6 +331,8 @@ void FloppyTrackImage::ApplyOverlaySector(const OverlayKey& key,
 		sector.data_crc_error = false;
 		sector.deleted        = false;
 		sector.weak_mask.clear();
+		sector.extended_data.clear();
+		sector.UpdateTrackData();
 	};
 	if (slot) {
 		apply(sectors[slot - 1]);
@@ -656,7 +658,13 @@ FloppyTrackImage::Overlay FloppyTrackImage::TakeTrackWrites(Overlay& entries,
 void FloppyTrackImage::ApplyTrackFormat(const TrackAddress& address,
                                         const TrackFormat& format)
 {
-	auto& track        = tracks[address[0] * heads + address[1]];
+	auto& track = tracks[address[0] * heads + address[1]];
+	// Formatting replaces the captured layout. Surviving sectors can still
+	// supply ordinary reads, but must not expose the old circular stream.
+	for (auto& sector : track.sectors) {
+		sector.mfm_track.reset();
+		sector.extended_data.clear();
+	}
 	const auto count   = format.ids.size() / ChrnSize;
 	const auto partial = count < format.requested;
 	if (!partial) {
