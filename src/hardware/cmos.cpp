@@ -122,7 +122,6 @@ static uint8_t cmos_readreg(io_port_t, io_width_t)
 		LOG(LOG_BIOS, LOG_ERROR)("CMOS:Read from illegal register %x", cmos.reg);
 		return 0xff;
 	}
-	Bitu drive_a, drive_b;
 	uint8_t hdparm;
 
 	const time_t curtime = time(nullptr);
@@ -177,16 +176,8 @@ static uint8_t cmos_readreg(io_port_t, io_width_t)
 			} 
 			return val;
 		}
-	case 0x10:		/* Floppy size */
-		drive_a = 0;
-		drive_b = 0;
-		if (const auto disk = BIOS_GetDisk(0)) {
-			drive_a = disk->GetBiosType();
-		}
-		if (const auto disk = BIOS_GetDisk(1)) {
-			drive_b = disk->GetBiosType();
-		}
-		return ((drive_a << 4) | drive_b);
+	case 0x10: // Floppy drive types
+		return (BIOS_GetFloppyCmosType(0) << 4) | BIOS_GetFloppyCmosType(1);
 	/* First harddrive info */
 	case 0x12:
 		hdparm = 0;

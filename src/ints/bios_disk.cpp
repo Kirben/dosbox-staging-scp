@@ -102,6 +102,24 @@ std::shared_ptr<FloppyMedia> BIOS_GetFloppyMedia(const size_t slot)
 	return slot < disk_slots.size() ? disk_slots[slot].floppy : nullptr;
 }
 
+static uint8_t floppy_drive_count()
+{
+	return check_cast<uint8_t>(bool(disk_slots[0].sector) +
+	                           bool(disk_slots[1].sector));
+}
+
+static void update_floppy_equipment()
+{
+	constexpr uint16_t floppy_bits = 0x00c1;
+	auto equipment = static_cast<uint16_t>(mem_readw(BIOS_CONFIGURATION) &
+	                                       ~floppy_bits);
+	const auto count = floppy_drive_count();
+	if (count) {
+		equipment |= check_cast<uint16_t>(1 | ((count - 1) << 6));
+	}
+	BIOS_SetEquipment(equipment);
+}
+
 static void set_disk_slot(const size_t slot, std::shared_ptr<imageDisk> disk)
 {
 	if (slot < 2 && disk_slots[slot].sector != disk) {
@@ -109,7 +127,9 @@ static void set_disk_slot(const size_t slot, std::shared_ptr<imageDisk> disk)
 	}
 	auto floppy      = slot < 2 && disk ? disk->GetFloppyMedia() : nullptr;
 	disk_slots[slot] = {std::move(disk), std::move(floppy)};
-	if (slot >= 2) {
+	if (slot < 2) {
+		update_floppy_equipment();
+	} else {
 		if (!disk_slots[slot].sector) {
 			const auto table = CALLBACK_PhysPointer(
 			        slot == 2 ? diskparm0 : diskparm1);
@@ -131,23 +151,6 @@ void BIOS_SetDisk(const size_t slot, std::shared_ptr<imageDisk> disk)
 		swap_position = 0;
 	}
 	set_disk_slot(slot, std::move(disk));
-}
-
-void incrementFDD(void)
-{
-	uint16_t equipment = mem_readw(BIOS_CONFIGURATION);
-	if (equipment & 1) {
-		Bitu numofdisks = (equipment >> 6) & 3;
-		numofdisks++;
-		if (numofdisks > 1) {
-			numofdisks = 1; // max 2 floppies at the moment
-		}
-		equipment &= ~0x00C0;
-		equipment |= (numofdisks << 6);
-	} else {
-		equipment |= 1;
-	}
-	BIOS_SetEquipment(equipment);
 }
 
 template <typename T, size_t N>
@@ -433,8 +436,6 @@ imageDisk::imageDisk(FILE* img_file, const char* img_name, uint32_t img_size_k,
 		}
 		if (!founddisk) {
 			active = false;
-		} else {
-			incrementFDD();
 		}
 	}
 }
@@ -457,7 +458,6 @@ imageDisk::imageDisk(std::shared_ptr<FloppyMedia> image, const std::string& name
 			break;
 		}
 	}
-	incrementFDD();
 }
 
 std::shared_ptr<FloppyMedia> imageDisk::GetFloppyMedia() const
@@ -491,6 +491,20 @@ uint8_t imageDisk::GetBiosType(void)
 	} else {
 		return 0;
 	}
+}
+
+uint8_t BIOS_GetFloppyCmosType(const size_t slot)
+{
+	const auto disk = slot < 2 ? BIOS_GetDisk(slot) : nullptr;
+	if (!disk) {
+		return 0;
+	}
+	const auto type = disk->GetBiosType();
+	// CMOS uses 5 for 2.88 MB and has no separate single-sided type.
+	if (type == 6) {
+		return 5;
+	}
+	return type == 0 ? 1 : type;
 }
 
 uint32_t imageDisk::getSectSize(void)
@@ -864,15 +878,17 @@ static DiskServiceResult run_disk_service(const DiskServiceRequest& request)
 		} else {
 			tmpheads--; // head count -> max head
 		}
-		const auto first_slot = (request.drive & 0x80) ? 2u : 0u;
-		const auto drive_count = (disk_slots[first_slot].sector ? 1u : 0u) +
-		                         (disk_slots[first_slot + 1].sector ? 1u : 0u);
+		const auto drive_count = request.drive & 0x80
+		                               ? check_cast<uint8_t>(
+		                                         bool(disk_slots[2].sector) +
+		                                         bool(disk_slots[3].sector))
+		                               : floppy_drive_count();
 		result.parameters = DiskServiceResult::DriveParameters{
 		        tmpcyl,
 		        tmpheads,
 		        tmpsect,
 		        disk_slots[unit].sector->GetBiosType(),
-		        check_cast<uint8_t>(drive_count)};
+		        drive_count};
 		last_status  = 0;
 		result.carry = false;
 		break;

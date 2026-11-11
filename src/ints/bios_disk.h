@@ -95,7 +95,7 @@ private:
 	enum { NONE,READ,WRITE } last_action;
 };
 
-void incrementFDD(void);
+uint8_t BIOS_GetFloppyCmosType(size_t slot);
 
 #define MAX_HDD_IMAGES 2
 

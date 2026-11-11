@@ -1270,11 +1270,7 @@ bool MOUNT::MountPaths(MountParameters& params)
 	}
 
 	if (params.is_image_mode) {
-		const auto success = MountImage(params);
-		if (success && params.type == MountType::FloppyImage) {
-			incrementFDD();
-		}
-
+		MountImage(params);
 	} else {
 		// Standard directory or overlay mount
 		MountLocal(params, params.paths[0]);
@@ -1448,12 +1444,6 @@ void MOUNT::MountLocal(MountParameters& params, const std::string& local_path)
 		params.label += "_FLOPPY";
 
 		newdrive->dirCache.SetLabel(params.label.c_str(), false, true);
-	}
-
-	// We incrementFDD here only if it was a directory mount pretending to
-	// be floppy Image mounts return early.
-	if (params.type == MountType::FloppyImage) {
-		incrementFDD();
 	}
 }
 
