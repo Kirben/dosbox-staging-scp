@@ -248,28 +248,36 @@ static void swap_disks(bool pressed)
 	swapping_requested = true;
 }
 
+static uint8_t read_track_sector(const FloppyMedia& media, const uint32_t head,
+                                 const uint32_t cylinder, const uint32_t sector,
+                                 const std::span<uint8_t> data)
+{
+	uint8_t status = 0x04;
+	for (const auto& candidate : media.GetTrack(cylinder, head)) {
+		if (candidate.cylinder != cylinder || candidate.head != head ||
+		    candidate.id != sector ||
+		    candidate.data.size() != data.size() || candidate.deleted) {
+			continue;
+		}
+		if (candidate.id_crc_error || candidate.data_crc_error) {
+			status = 0x10;
+			continue;
+		}
+		std::copy(candidate.data.begin(), candidate.data.end(), data.begin());
+		return 0;
+	}
+	return status;
+}
+
 uint8_t imageDisk::Read_Sector(uint32_t head, uint32_t cylinder,
                                uint32_t sector, void* data)
 {
 	if (floppy_media) {
-		uint8_t status = 0x04;
-		for (const auto& candidate : floppy_media->GetTrack(cylinder, head)) {
-			if (candidate.cylinder != cylinder ||
-			    candidate.head != head || candidate.id != sector ||
-			    candidate.data.size() != sector_size ||
-			    candidate.deleted) {
-				continue;
-			}
-			if (candidate.id_crc_error || candidate.data_crc_error) {
-				status = 0x10;
-				continue;
-			}
-			std::copy(candidate.data.begin(),
-			          candidate.data.end(),
-			          static_cast<uint8_t*>(data));
-			return 0;
-		}
-		return status;
+		return read_track_sector(*floppy_media,
+		                         head,
+		                         cylinder,
+		                         sector,
+		                         {static_cast<uint8_t*>(data), sector_size});
 	}
 
 	uint32_t sectnum;
@@ -666,17 +674,18 @@ struct DiskServiceResult {
 
 static FloppyBiosTransferResult bios_track_sector_transfer(
         const DiskServiceRequest& request, const uint8_t unit,
-        const FloppyBiosTransfer operation)
+        const FloppyBiosTransfer operation, const uint8_t size_code)
 {
 	const auto& disk = *disk_slots[unit].sector;
-	if (!request.count) {
+	if (!request.count || size_code > 7) {
 		return {0x01, 0};
 	}
 	if (operation == FloppyBiosTransfer::Write && disk.IsWriteProtected()) {
 		return {0x03, 0};
 	}
 
-	std::array<uint8_t, 512> data = {};
+	const auto& media = *disk_slots[unit].floppy;
+	std::vector<uint8_t> data(size_t{128} << size_code);
 	auto cylinder                 = uint32_t{request.cylinder};
 	auto head                     = uint32_t{request.head};
 	auto sector                   = uint32_t{request.sector};
@@ -694,14 +703,13 @@ static FloppyBiosTransferResult bios_track_sector_transfer(
 			for (auto& byte : data) {
 				byte = real_readb(segment, offset++);
 			}
-			const auto status = disk_slots[unit].sector->Write_Sector(
-			        head, cylinder, sector, data.data());
-			if (status) {
-				return {status, completed};
+			if (!disk_slots[unit].floppy->WriteSector(
+			            cylinder, head, sector, data)) {
+				return {0x05, completed};
 			}
 		} else {
-			const auto status = disk_slots[unit].sector->Read_Sector(
-			        head, cylinder, sector, data.data());
+			const auto status = read_track_sector(
+			        media, head, cylinder, sector, data);
 			if (status) {
 				return {status, completed};
 			}
@@ -743,7 +751,7 @@ static FloppyBiosTransferResult verify_raw_floppy(imageDisk& disk,
 	auto sector = (request.cylinder * disk.heads + request.head) * disk.sectors +
 	              request.sector - 1;
 	const auto end = disk.cylinders * disk.heads * disk.sectors;
-	std::array<uint8_t, 512> scratch = {};
+	std::vector<uint8_t> scratch(disk.getSectSize());
 	for (uint8_t completed = 0; completed < request.count; ++completed, ++sector) {
 		if (sector >= end || !disk.VerifyRawSector(sector, scratch)) {
 			return {0x04, completed};
@@ -758,18 +766,20 @@ static DiskServiceResult bios_floppy_transfer(const DiskServiceRequest& request,
 {
 	auto transfer = FloppyBiosTransferResult{0x04, 0};
 	if (operation != FloppyBiosTransfer::Read || !killRead) {
+		const auto parameters = RealToPhysical(RealGetVec(0x1e));
+		const auto size_code  = mem_readb(parameters + 3);
 		if (is_machine_pcjr_or_tandy()) {
 			transfer = bios_track_sector_transfer(request,
 			                                      drivenum,
-			                                      operation);
+			                                      operation,
+			                                      size_code);
 		} else {
-			const auto parameters = RealToPhysical(RealGetVec(0x1e));
 			transfer = FLOPPY_BiosTransfer(operation,
 			                               drivenum,
 			                               request.cylinder,
 			                               request.head,
 			                               request.sector,
-			                               mem_readb(parameters + 3),
+			                               size_code,
 			                               request.count,
 			                               mem_readb(parameters + 5),
 			                               RealToPhysical(request.buffer));
@@ -783,8 +793,6 @@ static DiskServiceResult bios_floppy_transfer(const DiskServiceRequest& request,
 
 static DiskServiceResult run_disk_service(const DiskServiceRequest& request)
 {
-	uint16_t bufptr                  = 0;
-	std::array<uint8_t, 512> sectbuf = {};
 	DiskServiceResult result         = {};
 	last_drive                       = request.drive;
 	const auto unit                  = GetDosDriveNumber(request.drive);
@@ -867,22 +875,22 @@ static DiskServiceResult run_disk_service(const DiskServiceRequest& request)
 			                            FloppyBiosTransfer::Read);
 		}
 
+		auto& disk = *disk_slots[unit].sector;
+		std::vector<uint8_t> sectbuf(disk.getSectSize());
 		const auto segat = RealSegment(request.buffer);
-		bufptr           = RealOffset(request.buffer);
+		auto bufptr      = RealOffset(request.buffer);
 		for (uint32_t i = 0; i < request.count; ++i) {
-			last_status = disk_slots[unit].sector->Read_Sector(
-			        request.head,
-			        request.cylinder,
-			        request.sector + i,
-			        sectbuf.data());
+			last_status = disk.Read_Sector(request.head,
+			                               request.cylinder,
+			                               request.sector + i,
+			                               sectbuf.data());
 			if ((last_status != 0x00) || killRead) {
 				LOG_MSG("Error in disk read");
 				killRead = false;
 				return {.status = 0x04, .carry = true};
 			}
-			for (size_t t = 0; t < 512; t++) {
-				real_writeb(segat, bufptr, sectbuf[t]);
-				bufptr++;
+			for (const auto byte : sectbuf) {
+				real_writeb(segat, bufptr++, byte);
 			}
 		}
 		if (unit < 2) {
@@ -892,7 +900,7 @@ static DiskServiceResult run_disk_service(const DiskServiceRequest& request)
 		result.carry  = false;
 		break;
 	}
-	case 0x3: /* Write sectors */
+	case 0x3: { // Write sectors
 		if (drive_inactive(unit)) {
 			return {.status = 0xff, .carry = true};
 		}
@@ -901,20 +909,18 @@ static DiskServiceResult run_disk_service(const DiskServiceRequest& request)
 			                            unit,
 			                            FloppyBiosTransfer::Write);
 		}
-		bufptr = RealOffset(request.buffer);
+		auto& disk = *disk_slots[unit].sector;
+		std::vector<uint8_t> sectbuf(disk.getSectSize());
+		const auto segat = RealSegment(request.buffer);
+		auto bufptr      = RealOffset(request.buffer);
 		for (uint32_t i = 0; i < request.count; ++i) {
-			for (size_t t = 0;
-			     t < disk_slots[unit].sector->getSectSize();
-			     t++) {
-				sectbuf[t] = real_readb(RealSegment(request.buffer),
-				                        bufptr);
-				bufptr++;
+			for (auto& byte : sectbuf) {
+				byte = real_readb(segat, bufptr++);
 			}
-			last_status = disk_slots[unit].sector->Write_Sector(
-			        request.head,
-			        request.cylinder,
-			        request.sector + i,
-			        sectbuf.data());
+			last_status = disk.Write_Sector(request.head,
+			                                request.cylinder,
+			                                request.sector + i,
+			                                sectbuf.data());
 			if (last_status != 0x00) {
 				result.carry = true;
 				return result;
@@ -926,6 +932,7 @@ static DiskServiceResult run_disk_service(const DiskServiceRequest& request)
 		result.status = 0x00;
 		result.carry  = false;
 		break;
+	}
 	case 0x04: /* Verify sectors */
 		if (request.count == 0) {
 			return unit < 2 ? report_floppy_transfer({0x01, 0})
