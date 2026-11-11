@@ -121,6 +121,19 @@ org 7c00h
     jc done
     cmp word [8000h],1234h
     jne done
+    mov ax,0401h
+    int 13h
+    jc done
+    cmp word [8000h],1234h
+    jne done
+    mov ax,0401h
+    mov cx,63
+    int 13h
+    jnc done
+    cmp ax,0400h
+    jne done
+    cmp word [8000h],1234h
+    jne done
     mov ax,0301h
     mov cx,2
     xor dh,dh
@@ -175,7 +188,7 @@ dw 0aa55h
                     process.terminate()
                 process.wait(timeout=10)
         assert image.read_bytes() == original
-    print(f".{extension} direct and pre-mounted BOOT, INT 13h read and write rejection passed")
+    print(f".{extension} direct and pre-mounted BOOT, INT 13h read, verify and write rejection passed")
 
 
 def main():
