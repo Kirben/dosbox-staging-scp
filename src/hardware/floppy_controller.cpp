@@ -252,7 +252,13 @@ void schedule_next_sector()
 	if (const auto& track = fdc.media) {
 		schedule_track_sector(*track, false);
 	} else {
-		PIC_AddEvent(transfer_sector, slot_length_ms());
+		const auto target_ms   = (fdc.sector - 1) * slot_length_ms();
+		const auto position_ms = rotation_ms();
+		const auto delay_ms    = target_ms > position_ms
+		                               ? target_ms - position_ms
+		                               : rotation_cycle_ms() + target_ms -
+                                                      position_ms;
+		PIC_AddEvent(transfer_sector, delay_ms);
 	}
 }
 
@@ -808,11 +814,7 @@ void start_data(const Command command)
 		return;
 	}
 
-	const auto target_ms = (fdc.sector - 1) * length_ms;
-	const auto delay_ms  = target_ms > position_ms
-	                             ? target_ms - position_ms
-	                             : rotation_cycle_ms() + target_ms - position_ms;
-	PIC_AddEvent(transfer_sector, delay_ms);
+	schedule_next_sector();
 }
 
 void complete_seek(uint32_t)
