@@ -662,6 +662,9 @@ read_track_test:
     cmp byte [es:di],0f7h
     jne report
 
+    mov byte [stage],10h
+    call check_read_track_dma_mask
+
 %ifndef PCJR_IRQ_TEST
     inc byte [stage]
     int 12h
@@ -703,6 +706,70 @@ read_track_test:
 read_track_command db 42h,0,2,0,1,2,9,2ah,0ffh
 ; Terminal count ends the command normally. ST1 retains ID CRC and size mismatch.
 read_track_result db 00h,24h,00h,02h,00h,01h,01h
+
+check_read_track_dma_mask:
+    ; Position at C2/H1, where the third field has a bad data CRC.
+    mov bx,1100h
+    mov ax,0201h
+    mov cx,0201h
+    mov dx,0100h
+    int 13h
+    jc report
+
+    ; Request five 512-byte fields. Mask DMA after the third field.
+    mov al,6
+    out 0ah,al
+    out 0ch,al
+    mov al,46h
+    out 0bh,al
+    xor al,al
+    out 04h,al
+    mov al,11h
+    out 04h,al
+    mov al,0ffh
+    out 05h,al
+    mov al,9
+    out 05h,al
+    mov al,6
+    out 81h,al
+    mov al,2
+    out 0ah,al
+    mov si,read_crc_track_command
+    mov cx,9
+    mov dx,3f5h
+.send:
+    lodsb
+    out dx,al
+    loop .send
+.wait_count:
+    out 0ch,al
+    in al,05h
+    in al,05h
+    cmp al,3
+    jne .wait_count
+    mov al,6
+    out 0ah,al
+    inc byte [stage]
+
+    mov dx,3f4h
+.wait_result:
+    in al,dx
+    and al,0d0h
+    cmp al,0d0h
+    jne .wait_result
+    inc dx
+    mov si,read_crc_track_result
+    mov cx,7
+.result:
+    in al,dx
+    cmp al,[si]
+    jne report
+    inc si
+    loop .result
+    ret
+
+read_crc_track_command db 42h,4,2,1,1,2,9,2ah,0ffh
+read_crc_track_result db 44h,30h,20h,2,1,3,2
 %endif
 
 report:
