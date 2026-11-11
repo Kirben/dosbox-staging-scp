@@ -90,8 +90,8 @@ private:
 		std::vector<double> revolution_ends = {1.0};
 	};
 	static std::vector<FloppySector> DecodeMfmTrack(
-	        const std::span<const uint8_t> bitstream,
-	        const size_t bit_count = 0, const size_t index = 0);
+	        const std::span<const uint8_t> bitstream, const size_t bit_count = 0,
+	        const size_t index = 0, const bool detect_weak = false);
 	void UpdateLogicalGeometry(const uint32_t cylinder, const uint32_t head,
 	                           const std::span<const FloppySector> sectors);
 	std::vector<Track> tracks = {};

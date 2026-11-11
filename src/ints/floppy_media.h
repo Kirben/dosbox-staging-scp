@@ -30,6 +30,13 @@ struct FloppySector {
 	size_t revolution                  = 0;
 	std::vector<uint8_t> data          = {};
 	std::vector<uint8_t> extended_data = {};
+	std::vector<uint8_t> weak_mask = {}; // Payload followed by the two CRC
+	                                     // bytes.
+	uint16_t recorded_crc = 0;
+	size_t weak_seed      = 0;
+
+	// Sample one physical turn and return whether its data CRC is bad.
+	bool SampleWeakData(uint64_t turn, std::vector<uint8_t>& sampled) const;
 };
 
 constexpr bool IsFloppyOverlaySizeCode(const int size_code)

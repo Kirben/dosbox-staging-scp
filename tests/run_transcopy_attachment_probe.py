@@ -13,7 +13,7 @@ from run_hxc_mfm_probe import check_boot, check_fat, encode_track
 from run_raw_floppy_read_probe import run_probe
 
 
-def encode_transcopy(disk, *, step=1):
+def encode_transcopy(disk, *, step=1, weak_bits=False):
     """Build a native track table, with empty slots for skipped cylinders."""
     image = bytearray(0xa00)
     image[:2] = b"\x5a\xa5"
@@ -22,6 +22,12 @@ def encode_transcopy(disk, *, step=1):
         for head in range(2):
             track = 2 * cylinder + head
             cells = encode_track(disk, track)
+            if weak_bits and track == 5:
+                # Sector 6 is the sixth ID/data pair on this track.
+                sync = b"\x44\x89" * 3
+                mark = cells.split(sync, 12)
+                mark[12][2:34] = bytes(32)
+                cells = sync.join(mark)
             pack_into("<H", image, 0x105 + 2 * track, 10_000)
             pack_into(">H", image, 0x305 + 2 * track, len(image) // 256)
             pack_into("<H", image, 0x505 + 2 * track, len(cells))
@@ -39,8 +45,11 @@ def main():
     dosbox = args.dosbox.resolve()
     with TemporaryDirectory() as temp:
         directory = Path(temp)
-        run_probe(dosbox, args.nasm, directory, "tc", 0, 360, 9,
-                  partial(encode_transcopy, step=2))
+        for weak_bits in (False, True):
+            encoder = partial(encode_transcopy, step=2, weak_bits=weak_bits)
+            run_probe(dosbox, args.nasm, directory, "tc", 0, 360, 9, encoder,
+                      weak_bits=weak_bits)
+        print(".tc fixed and weak data passed repeated Read Data and Read Track")
         check_fat(dosbox, directory, encode_transcopy, "tc", writable=False)
         check_boot(dosbox, args.nasm, directory, encode_transcopy, "tc", writable=False)
 
