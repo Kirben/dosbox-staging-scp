@@ -1209,8 +1209,9 @@ void MOUNT::ProcessPaths(const std::string first_path, MountParameters& params,
 
 					} else if (ext == "vfd" || ext == "flp" ||
 					           ext == "mfm" || ext == "scp" ||
-					           ext == "360" || ext == "720" ||
-					           ext == "1200" || ext == "1440") {
+					           ext == "86f" || ext == "360" ||
+					           ext == "720" || ext == "1200" ||
+					           ext == "1440") {
 						params.type = MountType::FloppyImage;
 
 					} else if (ext == "img" ||
