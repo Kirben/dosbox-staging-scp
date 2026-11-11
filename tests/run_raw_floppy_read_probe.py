@@ -18,8 +18,12 @@ def run_probe(dosbox, nasm, directory, extension, unit, size_kb, sectors, encode
     for sector in (3, 4):
         offset = ((2 * 2 + 1) * sectors + sector - 1) * 512
         data[offset:offset + 512] = bytes([0x50 + sector]) * 512
+    if write_mode in ("duplicate-write", "duplicate-readback"):
+        for sector in (5, 6):
+            offset = (5 * sectors + sector - 1) * 512
+            data[offset:offset + 512] = bytes([0x60 + sector]) * 512
     image_bytes = encode(data) if encode else data
-    if write_mode not in ("readback", "format-readback"):
+    if write_mode not in ("readback", "format-readback", "duplicate-readback"):
         image.write_bytes(image_bytes)
     if write_mode in ("format", "format-readback"):
         offset = (2 * 2 + 1) * sectors * 512
@@ -42,6 +46,10 @@ def run_probe(dosbox, nasm, directory, extension, unit, size_kb, sectors, encode
         options.append("-DWRITE_PROTECTED")
     if write_mode == "readback":
         options.append("-DREADBACK")
+    if write_mode in ("duplicate-write", "duplicate-readback"):
+        options.append("-DDUPLICATE_TEST")
+    if write_mode == "duplicate-write":
+        options.append("-DDUPLICATE_WRITE")
     if write_mode in ("format", "format-invalid", "format-protected"):
         options.append("-DFORMAT_TEST")
     if write_mode in ("format-invalid", "format-protected", "format-readback"):
@@ -59,7 +67,8 @@ def run_probe(dosbox, nasm, directory, extension, unit, size_kb, sectors, encode
         if write_mode == "format-readback":
             options.append("-DSCP_FORMAT_READBACK")
     (directory / "FDC.OUT").unlink(missing_ok=True)
-    access = "" if write_mode in ("write", "format", "format-invalid") else " -ro"
+    writable = ("write", "format", "format-invalid", "duplicate-write")
+    access = "" if write_mode in writable else " -ro"
     subprocess.run([nasm, *options, "-f", "bin", f"-DUNIT={unit}",
                     f"-DSECTORS={sectors}", source,
                     "-o", directory / "PROBE.COM"], check=True)

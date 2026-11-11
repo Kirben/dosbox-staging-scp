@@ -26,6 +26,7 @@ struct FluxTurn {
 constexpr std::array<uint8_t, 8> OverlayMagic = {'S', 'C', 'P', 'O', 'V', 'L', 1, 0};
 constexpr uint8_t TrackFormatMarker           = 0xff;
 constexpr uint8_t PartialFormatMarker         = 0xfe;
+constexpr uint8_t PhysicalWriteMarker         = 0xfd;
 constexpr size_t ChrnSize                     = 4;
 
 auto overlay_header(const uint64_t fingerprint, const uint8_t version)
@@ -248,9 +249,14 @@ bool FloppyTrackImage::IsWriteProtected() const
 
 bool FloppyTrackImage::CanOverlaySector(const OverlayKey& key) const
 {
-	const auto [cylinder, head, id]       = key;
+	const auto [cylinder, head, id, slot] = key;
+	const auto track                      = GetTrack(cylinder, head);
+	if (slot) {
+		return slot <= track.size() && track[slot - 1].size_code == 2 &&
+		       !track[slot - 1].id_crc_error;
+	}
 	std::optional<size_t> last_revolution = {};
-	for (const auto& sector : GetTrack(cylinder, head)) {
+	for (const auto& sector : track) {
 		if (sector.cylinder != cylinder || sector.head != head ||
 		    sector.id != id || sector.size_code != 2 || sector.id_crc_error) {
 			continue;
@@ -268,14 +274,22 @@ bool FloppyTrackImage::CanOverlaySector(const OverlayKey& key) const
 void FloppyTrackImage::ApplyOverlaySector(const OverlayKey& key,
                                           const OverlaySector& data)
 {
-	const auto [cylinder, head, id] = key;
-	for (auto& sector : tracks[cylinder * heads + head].sectors) {
+	const auto [cylinder, head, id, slot] = key;
+	auto& sectors    = tracks[cylinder * heads + head].sectors;
+	const auto apply = [&](FloppySector& sector) {
+		sector.data.assign(data.begin(), data.end());
+		sector.data_crc_error = false;
+		sector.deleted        = false;
+	};
+	if (slot) {
+		apply(sectors[slot - 1]);
+		return;
+	}
+	for (auto& sector : sectors) {
 		if (sector.cylinder == cylinder && sector.head == head &&
 		    sector.id == id && sector.size_code == 2 &&
 		    !sector.id_crc_error) {
-			sector.data.assign(data.begin(), data.end());
-			sector.data_crc_error = false;
-			sector.deleted        = false;
+			apply(sector);
 		}
 	}
 }
@@ -294,13 +308,14 @@ bool FloppyTrackImage::LoadScpOverlay()
 	    fread(header.data(), 1, header.size(), input.get()) != header.size() ||
 	    (header != overlay_header(capture_fingerprint, 1) &&
 	     header != overlay_header(capture_fingerprint, 2) &&
-	     header != overlay_header(capture_fingerprint, 3))) {
+	     header != overlay_header(capture_fingerprint, 3) &&
+	     header != overlay_header(capture_fingerprint, 4))) {
 		return false;
 	}
-	OverlayKey key  = {};
+	std::array<uint8_t, 3> key = {};
 	auto bytes_read = fread(key.data(), 1, key.size(), input.get());
 	while (bytes_read == key.size()) {
-		const auto partial = header[6] == 3 && key[1] == PartialFormatMarker;
+		const auto partial = header[6] >= 3 && key[1] == PartialFormatMarker;
 		if (partial || (header[6] >= 2 && key[1] == TrackFormatMarker)) {
 			const TrackAddress address = {key[0], key[2]};
 			const auto count           = fgetc(input.get());
@@ -332,14 +347,32 @@ bool FloppyTrackImage::LoadScpOverlay()
 			ApplyTrackFormat(address, format);
 			history.push_back(std::move(format));
 		} else {
+			OverlayKey address = {key[0], key[1], key[2], 0};
+			if (header[6] == 4 && key[1] == PhysicalWriteMarker) {
+				std::array<uint8_t, 4> slot_bytes = {};
+				if (fread(slot_bytes.data(),
+				          1,
+				          slot_bytes.size(),
+				          input.get()) != slot_bytes.size()) {
+					return false;
+				}
+				uint32_t slot = 0;
+				for (size_t i = 0; i < slot_bytes.size(); ++i) {
+					slot |= uint32_t{slot_bytes[i]} << (i * 8);
+				}
+				if (!slot) {
+					return false;
+				}
+				address = {key[0], key[2], 0, slot};
+			}
 			OverlaySector data = {};
-			if (!CanOverlaySector(key) ||
+			if (!CanOverlaySector(address) ||
 			    fread(data.data(), 1, data.size(), input.get()) !=
 			            data.size() ||
-			    !overlay.emplace(key, data).second) {
+			    !overlay.emplace(address, data).second) {
 				return false;
 			}
-			ApplyOverlaySector(key, data);
+			ApplyOverlaySector(address, data);
 		}
 		bytes_read = fread(key.data(), 1, key.size(), input.get());
 	}
@@ -357,25 +390,33 @@ bool FloppyTrackImage::SaveScpOverlay(const Overlay& entries,
 	if (!file) {
 		return false;
 	}
-	const auto has_partial =
-	        std::any_of(formats.begin(), formats.end(), [](const auto& entry) {
-		        return std::any_of(entry.second.begin(),
-		                           entry.second.end(),
-		                           [](const auto& format) {
-			                           return format.ids.size() / ChrnSize <
-			                                  format.requested;
-		                           });
-	        });
-	const auto header = overlay_header(capture_fingerprint,
-	                                   has_partial ? 3
-	                                               : (formats.empty() ? 1 : 2));
-	auto success = fwrite(header.data(), 1, header.size(), file) ==
-	               header.size();
+	const auto header = overlay_header(capture_fingerprint, 4);
+	auto success      = fwrite(header.data(), 1, header.size(), file) ==
+	                    header.size();
 	const auto write_sectors = [&](const Overlay& writes) {
 		for (const auto& [key, data] : writes) {
+			const auto [cylinder, head, id, slot] = key;
+			const std::array record = {check_cast<uint8_t>(cylinder),
+			                           slot ? PhysicalWriteMarker
+			                                : check_cast<uint8_t>(head),
+			                           check_cast<uint8_t>(
+			                                   slot ? head : id)};
 			success = success &&
-			          fwrite(key.data(), 1, key.size(), file) ==
-			                  key.size() &&
+			          fwrite(record.data(), 1, record.size(), file) ==
+			                  record.size();
+			if (slot) {
+				std::array<uint8_t, 4> slot_bytes = {};
+				for (size_t i = 0; i < slot_bytes.size(); ++i) {
+					slot_bytes[i] = static_cast<uint8_t>(
+					        slot >> (i * 8));
+				}
+				success = success &&
+				          fwrite(slot_bytes.data(),
+				                 1,
+				                 slot_bytes.size(),
+				                 file) == slot_bytes.size();
+			}
+			success = success &&
 			          fwrite(data.data(), 1, data.size(), file) ==
 			                  data.size();
 		}
@@ -415,25 +456,74 @@ bool FloppyTrackImage::SaveScpOverlay(const Overlay& entries,
 
 bool FloppyTrackImage::WriteScpSector(const uint32_t cylinder,
                                       const uint32_t head, const uint32_t sector,
-                                      const std::span<const uint8_t> data)
+                                      const std::span<const uint8_t> data,
+                                      const FloppySector* selected)
 {
 	if (IsWriteProtected() || cylinder >= cylinders || head >= heads ||
 	    sector > UINT8_MAX || data.size() != OverlaySector{}.size()) {
 		return false;
 	}
-	const OverlayKey key = {check_cast<uint8_t>(cylinder),
-	                        check_cast<uint8_t>(head),
-	                        check_cast<uint8_t>(sector)};
-	if (!CanOverlaySector(key)) {
+	const OverlayKey logical        = {cylinder, head, sector, 0};
+	std::vector<OverlayKey> targets = {};
+	if ((!selected || (selected->cylinder == cylinder && selected->head == head)) &&
+	    CanOverlaySector(logical)) {
+		targets.push_back(logical);
+	} else if (selected) {
+		const auto track = GetTrack(cylinder, head);
+		const auto& ends = tracks[cylinder * heads + head].revolution_ends;
+		std::vector<std::vector<uint32_t>> copies(ends.size());
+		uint32_t selected_slot = 0;
+		for (size_t i = 0; i < track.size(); ++i) {
+			const auto& candidate = track[i];
+			if (candidate.cylinder == selected->cylinder &&
+			    candidate.head == selected->head &&
+			    candidate.id == selected->id &&
+			    candidate.size_code == 2) {
+				const auto slot = check_cast<uint32_t>(i + 1);
+				copies[candidate.revolution].push_back(slot);
+				if (&candidate == selected) {
+					selected_slot = slot;
+				}
+			}
+		}
+		if (!selected_slot || selected->id_crc_error) {
+			return false;
+		}
+		const auto& turn      = copies[selected->revolution];
+		const auto occurrence = static_cast<size_t>(
+		        std::find(turn.begin(), turn.end(), selected_slot) -
+		        turn.begin());
+		// A missing ID makes the occurrence ambiguous on the other turns.
+		if (std::all_of(copies.begin(), copies.end(), [&](const auto& other) {
+			    return other.size() == turn.size();
+		    })) {
+			for (const auto& other : copies) {
+				const OverlayKey key = {cylinder,
+				                        head,
+				                        0,
+				                        other[occurrence]};
+				if (CanOverlaySector(key)) {
+					targets.push_back(key);
+				}
+			}
+		} else {
+			targets.push_back({cylinder, head, 0, selected_slot});
+		}
+	} else {
 		return false;
 	}
-	auto entries  = overlay;
-	auto& updated = entries[key];
+	OverlaySector updated = {};
 	std::copy(data.begin(), data.end(), updated.begin());
+	auto entries = overlay;
+	for (const auto& key : targets) {
+		entries[key] = updated;
+	}
 	if (!SaveScpOverlay(entries, track_formats)) {
 		return false;
 	}
-	ApplyOverlaySector(key, updated);
+	for (const auto& key : targets) {
+		ApplyOverlaySector(key, updated);
+	}
 	overlay.swap(entries);
 	return true;
 }
