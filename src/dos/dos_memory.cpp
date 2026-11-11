@@ -504,12 +504,16 @@ void DOS_SetupMemory(void) {
 	tempmcb2.SetType(middle_mcb_type);
 
 	if (is_machine_tandy()) {
-		/* memory up to 608k available, the rest (to 640k) is used by
-			the tandy graphics system's variable mapping of 0xb800 */
-		DOS_MCB free_block((uint16_t)DOS_MEM_START+mcb_sizes);
+		const auto total_kb = MEM_UsesStandardTandyLayout()
+		                            ? TandyStandardMemorySizeKb
+		                            : ConventionalMemorySizeKb;
+		const auto end      = kilobytes_to_segment(
+		        total_kb - TandyReservedVideoMemoryKb);
+		const auto start = DOS_MEM_START + mcb_sizes;
+		DOS_MCB free_block(start);
 		free_block.SetPSPSeg(MCB_FREE);
 		free_block.SetType(ending_mcb_type);
-		free_block.SetSize(0x9BFF - DOS_MEM_START - mcb_sizes);
+		free_block.SetSize(end - start - 1); // Exclude the MCB paragraph.
 	} else if (is_machine_pcjr()) {
 		const auto pcjr_start = DOS_MEM_START + mcb_sizes;
 		constexpr auto mcb_entry_size = 1;

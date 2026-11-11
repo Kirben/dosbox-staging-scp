@@ -8,5 +8,7 @@
 constexpr auto ConventionalMemorySizeKb = 640;
 constexpr auto PcjrVideoMemorySizeKb    = 32;
 constexpr auto PcjrStandardMemorySizeKb = 128;
+constexpr auto TandyStandardMemorySizeKb  = 128;
+constexpr auto TandyReservedVideoMemoryKb = 32;
 
 #endif // DOSBOX_DOS_MEMORY_H
