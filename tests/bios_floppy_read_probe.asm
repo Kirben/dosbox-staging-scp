@@ -553,6 +553,8 @@ irq_reset_test:
 
 %ifdef READ_TRACK_TEST
 read_track_test:
+    call check_partial_disk_change
+    mov byte [stage],1
     ; BIOS Read Sectors must reject the 256-byte ID and leave the buffer alone.
     mov ax,6000h
     mov es,ax
@@ -770,6 +772,50 @@ check_read_track_dma_mask:
 
 read_crc_track_command db 42h,4,2,1,1,2,9,2ah,0ffh
 read_crc_track_result db 44h,30h,20h,2,1,3,2
+
+check_partial_disk_change:
+    mov byte [stage],20h
+    mov ah,16h
+    xor dx,dx
+    int 13h
+    jnc report
+    cmp ah,6
+    jne report
+
+    ; C2/H1 has sector 7 but no sector 8. Check the count and both buffers.
+    inc byte [stage]
+    mov ax,6000h
+    mov es,ax
+    mov di,1100h
+    mov cx,1024
+    mov al,0a5h
+    rep stosb
+    mov bx,1100h
+    mov ax,0202h
+    mov cx,0207h
+    mov dx,0100h
+    int 13h
+    jnc report
+    cmp ax,0401h
+    jne report
+    mov di,1100h
+    mov cx,512
+    mov al,5ah
+    repe scasb
+    jne report
+    mov cx,512
+    mov al,0a5h
+    repe scasb
+    jne report
+
+    inc byte [stage]
+    mov ah,16h
+    xor dx,dx
+    int 13h
+    jc report
+    test ah,ah
+    jnz report
+    ret
 %endif
 
 report:

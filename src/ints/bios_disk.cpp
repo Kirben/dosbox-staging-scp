@@ -702,6 +702,7 @@ static FloppyBiosTransferResult bios_track_sector_transfer(
 			return {0x04, completed};
 		}
 		FLOPPY_BiosPosition(unit, check_cast<uint8_t>(cylinder));
+		FLOPPY_SetDiskChanged(unit, false);
 		if (operation == FloppyBiosTransfer::Write) {
 			for (auto& byte : data) {
 				byte = real_readb(segment, offset++);
@@ -730,7 +731,6 @@ static FloppyBiosTransferResult bios_track_sector_transfer(
 			}
 		}
 	}
-	FLOPPY_SetDiskChanged(unit, false);
 	return {0, request.count};
 }
 
