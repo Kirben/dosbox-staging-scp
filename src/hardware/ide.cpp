@@ -3831,7 +3831,14 @@ void IDEController::install_io_ports()
 		ReadHandlerAlt[0].Install(alt_io, ide_altio_r, io_width_t::dword);
 
 		WriteHandlerAlt[1].Install(alt_io + 1u, ide_altio_w, io_width_t::dword);
-		ReadHandlerAlt[1].Install(alt_io + 1u, ide_altio_r, io_width_t::dword);
+
+		// The FDC supplies the change line on reads of the shared
+		// primary port.
+		if (alt_io + 1u != 0x3f7 || is_machine_pcjr()) {
+			ReadHandlerAlt[1].Install(alt_io + 1u,
+			                          ide_altio_r,
+			                          io_width_t::dword);
+		}
 	}
 }
 
@@ -3907,6 +3914,20 @@ static void ide_altio_w(io_port_t port, io_val_t val, io_width_t width)
 	}
 }
 
+static uint8_t ide_drive_address(const IDEController& ide)
+{
+	const auto* device = ide.device[ide.select];
+	const auto head = device ? ((device->drivehead & 0x0fu) ^ 0x0fu) << 2u
+	                         : 0x3cu;
+	return check_cast<uint8_t>((ide.select == 0 ? 0x02u : 0x01u) | head);
+}
+
+uint8_t IDE_ReadPrimaryDriveAddress()
+{
+	const auto* ide = match_ide_controller(0x3f7);
+	return ide ? ide_drive_address(*ide) : 0x7f;
+}
+
 static uint32_t ide_altio_r(io_port_t port, io_width_t width)
 {
 	IDEController *ide = match_ide_controller(port);
@@ -3929,8 +3950,7 @@ static uint32_t ide_altio_r(io_port_t port, io_width_t width)
 	if (port == 0) /*3F6(R) status, does NOT clear interrupt*/
 		return (dev != nullptr) ? dev->status : ide->status;
 	else /*3F7(R) Drive Address Register*/
-		return 0x80u | (ide->select == 0 ? 0u : 1u) | (ide->select == 1 ? 0u : 2u) |
-		       ((dev != nullptr) ? (((dev->drivehead & 0xFu) ^ 0xFu) << 2u) : 0x3Cu);
+		return 0x80u | ide_drive_address(*ide);
 
 	return UINT32_MAX;
 }

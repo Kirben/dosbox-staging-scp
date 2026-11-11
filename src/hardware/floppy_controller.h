@@ -3,6 +3,7 @@
 #ifndef DOSBOX_FLOPPY_CONTROLLER_H
 #define DOSBOX_FLOPPY_CONTROLLER_H
 
+#include <cstddef>
 #include <cstdint>
 #include <span>
 
@@ -35,6 +36,9 @@ FloppyBiosTransferResult FLOPPY_BiosTransfer(
 uint8_t FLOPPY_BiosDmaFormat(uint8_t unit, uint32_t cylinder, uint8_t head,
                              uint8_t size_code, uint8_t count, uint8_t gap,
                              uint8_t fill, uint32_t address);
+
+void FLOPPY_SetDiskChanged(const size_t unit, const bool changed);
+bool FLOPPY_IsDiskChanged(const size_t unit);
 
 void FLOPPY_Init();
 
