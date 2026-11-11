@@ -704,6 +704,14 @@ HostPt GetMemBase(void)
 	return MemBase;
 }
 
+bool MEM_UsesStandardTandyLayout()
+{
+	const auto section = get_section("dos");
+	assert(section);
+	return std::string_view(section->GetString("tandy_memory_config")) ==
+	       "standard";
+}
+
 class MEMORY {
 private:
 	IO_ReadHandleObject ReadHandler   = {};

@@ -42,6 +42,8 @@ HostPt GetMemBase();
 void MEM_Init(Section* section);
 void MEM_Destroy();
 
+bool MEM_UsesStandardTandyLayout();
+
 uint16_t MEM_GetMinMegabytes();
 uint16_t MEM_GetMaxMegabytes();
 

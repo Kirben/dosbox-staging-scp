@@ -1280,10 +1280,13 @@ public:
 		callback[2].Install(&INT12_Handler,CB_IRET,"Int 12 Memory");
 		callback[2].Set_RealVec(0x12);
 		if (is_machine_tandy()) {
-			/* reduce reported memory size for the Tandy (32k graphics memory
-			   at the end of the conventional 640k) */
-			mem_writew(BIOS_MEMORY_SIZE, 624);
-			mem_writew(BIOS_TRUE_MEMORY_SIZE, ConventionalMemorySizeKb);
+			const auto standard = MEM_UsesStandardTandyLayout();
+			const auto total_kb = standard ? TandyStandardMemorySizeKb
+			                               : ConventionalMemorySizeKb;
+			const auto available_kb = standard ? total_kb - TandyReservedVideoMemoryKb
+			                                   : 624;
+			mem_writew(BIOS_MEMORY_SIZE, available_kb);
+			mem_writew(BIOS_TRUE_MEMORY_SIZE, total_kb);
 
 		} else if (is_machine_pcjr()) {
 			const auto section = get_section("dos");

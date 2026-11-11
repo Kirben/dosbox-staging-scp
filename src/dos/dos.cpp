@@ -2013,6 +2013,15 @@ static void init_dos_settings(SectionProp& section)
 	        "  standard:  128 KB total memory with applications residing below 96 KB.\n"
 	        "             Required for some older games (e.g., Jumpman, Troll).");
 
+	pstring = section.AddString("tandy_memory_config", OnlyAtStart, "expanded");
+	pstring->SetValues({"expanded", "standard"});
+	pstring->SetHelp(
+	        "Set the Tandy 1000 conventional memory layout ('expanded' by default).\n"
+	        "\n"
+	        "  expanded:  640 KB with shared video RAM in the top 128 KB.\n"
+	        "  standard:  128 KB with 32 KB reserved for video. Select this for\n"
+	        "             software that draws directly into the low video RAM.");
+
 	pstring = section.AddString("ver", WhenIdle, "5.0");
 	pstring->SetHelp(
 	        "Set DOS version in MAJOR.MINOR format (5.0 by default). A single number is\n"
