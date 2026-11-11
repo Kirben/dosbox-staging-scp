@@ -29,7 +29,9 @@ jobs:
       # apt-get update; ubuntu-slim's index is empty until we refresh it, so
       # without this the action would fail.
       - name: Refresh apt index
-        run:  sudo apt-get update
+        uses: ./.github/actions/retry
+        with:
+          cmd: sudo apt-get -o Acquire::Retries=3 update --error-on=any
 
       # Bump 'version:' to force-invalidate the cache
       - name: Install apt dependencies
