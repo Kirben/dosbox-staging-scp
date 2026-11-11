@@ -10,6 +10,12 @@
 #include <optional>
 #include <utility>
 
+#ifdef _WIN32
+#include <share.h>
+#else
+#include <sys/file.h>
+#endif
+
 #include "ints/scp_capture.h"
 #include "misc/support.h"
 #include "utils/checks.h"
@@ -238,6 +244,24 @@ bool FloppyTrackImage::OpenOverlay(const std::string& path, const bool read_only
 	overlay_path        = path + ".overlay";
 	capture_fingerprint = fingerprint;
 	overlay_writable    = !read_only;
+	if (overlay_writable) {
+		// Keep the lock file so every writer locks the same file, even
+		// while the overlay itself is replaced.
+		const auto lock_path = overlay_path + ".lock";
+#ifdef _WIN32
+		overlay_lock.reset(_fsopen(lock_path.c_str(), "ab+", _SH_DENYWR));
+		const auto locked = bool(overlay_lock);
+#else
+		overlay_lock.reset(fopen(lock_path.c_str(), "ab+"));
+		const auto locked = overlay_lock &&
+		                    flock(fileno(overlay_lock.get()),
+		                          LOCK_EX | LOCK_NB) == 0;
+#endif
+		if (!locked) {
+			error = "cannot lock floppy overlay for writing";
+			return false;
+		}
+	}
 	if (!LoadOverlay()) {
 		error = "invalid floppy overlay or overlay belongs to another image";
 		return false;
@@ -400,6 +424,15 @@ bool FloppyTrackImage::SaveOverlay(const Overlay& entries,
                                    const TrackFormats& formats) const
 {
 	const auto temporary = overlay_path + ".tmp";
+	// The writer lock covers the entire mount, so any temporary file
+	// left here belongs to an interrupted save.
+	std::error_code error = {};
+	if (std::filesystem::is_regular_file(temporary, error)) {
+		std::filesystem::remove(temporary, error);
+		if (error) {
+			return false;
+		}
+	}
 	auto* file           = fopen(temporary.c_str(), "wbx");
 	if (!file) {
 		return false;
@@ -457,7 +490,6 @@ bool FloppyTrackImage::SaveOverlay(const Overlay& entries,
 	}
 	write_sectors(entries);
 	success               = fclose(file) == 0 && success;
-	std::error_code error = {};
 	if (success) {
 		std::filesystem::rename(temporary, overlay_path, error);
 		if (!error) {

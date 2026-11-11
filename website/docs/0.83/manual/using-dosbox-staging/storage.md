@@ -392,6 +392,9 @@ after the full image filename. For example, changes to `disk.scp` go into
 `disk.scp.overlay`, and changes to `disk.mfm` go into `disk.mfm.overlay`.
 The original image stays intact.
 
+Only one writable mount can hold an image's sidecar at a time. Use `-ro` for
+an additional mount.
+
 When you reopen the image, DOSBox Staging loads the sidecar automatically,
 including on a read-only mount. The sidecar is tied to the original image's
 contents. Keep both files together when moving or backing up a disk. To open

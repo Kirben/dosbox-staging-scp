@@ -75,6 +75,7 @@ private:
 	std::string overlay_path     = {};
 	uint64_t capture_fingerprint = 0;
 	bool overlay_writable        = false;
+	std::unique_ptr<FILE, decltype([](FILE* file) { fclose(file); })> overlay_lock = {};
 	Overlay overlay              = {};
 	TrackFormats track_formats   = {};
 
