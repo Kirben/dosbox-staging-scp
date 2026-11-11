@@ -194,47 +194,42 @@ std::vector<FloppySector> FloppyTrackImage::DecodeMfmTrack(
 		const auto data = marks[(i + 1) % marks.size()];
 		if (data.type != IdMark && sector.size_code <= 7) {
 			const auto size = size_t{128} << sector.size_code;
-			const auto following = marks[(i + 2) % marks.size()].bit;
-			const auto gap = (following + track_bits - data.bit) %
-			                 track_bits;
-			if (gap >= MarkBits + (size + 2) * ByteBits) {
-				const auto field = data.bit + MarkBits;
-				sector.deleted   = data.type == DeletedMark;
-				sector.data.resize(size);
-				crc = update_crc(SyncCrc, data.type);
-				for (size_t j = 0; j < size; ++j) {
-					sector.data[j] = read_byte(track,
-					                           field + j * ByteBits);
-					crc = update_crc(crc, sector.data[j]);
-				}
-				const auto data_crc =
-				        (read_byte(track, field + size * ByteBits)
-				         << 8) |
-				        read_byte(track,
-				                  field + (size + 1) * ByteBits);
-				sector.data_crc_error = crc != data_crc;
-				if (!weak_cells.empty()) {
-					std::vector<uint8_t> mask(size + 2);
-					for (size_t byte = 0; byte < mask.size();
-					     ++byte) {
-						for (size_t bit = 0; bit < 8; ++bit) {
-							const auto cell = field +
-							                  byte * ByteBits +
-							                  2 * bit + 1;
-							if (weak_cells[cell % track_bits]) {
-								mask[byte] |= static_cast<uint8_t>(
-								        0x80u >> bit);
-							}
+			// Once a data mark is found, the controller consumes
+			// the entire field, including embedded address marks
+			// and index crossings.
+			const auto field = data.bit + MarkBits;
+			sector.deleted   = data.type == DeletedMark;
+			sector.data.resize(size);
+			crc = update_crc(SyncCrc, data.type);
+			for (size_t j = 0; j < size; ++j) {
+				sector.data[j] = read_byte(track,
+				                           field + j * ByteBits);
+				crc = update_crc(crc, sector.data[j]);
+			}
+			const auto data_crc =
+			        (read_byte(track, field + size * ByteBits) << 8) |
+			        read_byte(track, field + (size + 1) * ByteBits);
+			sector.data_crc_error = crc != data_crc;
+			if (!weak_cells.empty()) {
+				std::vector<uint8_t> mask(size + 2);
+				for (size_t byte = 0; byte < mask.size(); ++byte) {
+					for (size_t bit = 0; bit < 8; ++bit) {
+						const auto cell = field +
+						                  byte * ByteBits +
+						                  2 * bit + 1;
+						if (weak_cells[cell % track_bits]) {
+							mask[byte] |= static_cast<uint8_t>(
+							        0x80u >> bit);
 						}
 					}
-					if (std::ranges::any_of(mask, [](const auto byte) {
-						    return byte != 0;
-					    })) {
-						sector.weak_mask = std::move(mask);
-						sector.recorded_crc = static_cast<uint16_t>(
-						        data_crc);
-						sector.weak_seed = data.bit;
-					}
+				}
+				if (std::ranges::any_of(mask, [](const auto byte) {
+					    return byte != 0;
+				    })) {
+					sector.weak_mask = std::move(mask);
+					sector.recorded_crc = static_cast<uint16_t>(
+					        data_crc);
+					sector.weak_seed = data.bit;
 				}
 			}
 		}
