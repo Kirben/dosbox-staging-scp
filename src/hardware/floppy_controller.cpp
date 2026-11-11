@@ -34,6 +34,7 @@ constexpr size_t FormatIdSize = 4;
 
 enum class Phase { Command, Execution, Result };
 enum class Command {
+	ReadTrack      = 0x02,
 	Specify        = 0x03,
 	WriteData      = 0x05,
 	ReadData       = 0x06,
@@ -55,6 +56,9 @@ struct Controller {
 	std::array<uint8_t, 9> command   = {};
 	std::array<uint8_t, 7> result    = {};
 	std::array<uint8_t, FormatIdSize * 255> format_ids = {};
+	size_t track_offset                                = 0;
+	uint8_t track_status_1                             = 0;
+	uint8_t track_status_2                             = 0;
 	size_t formatted_ids                               = 0;
 	std::shared_ptr<imageDisk> disk  = {};
 	const FloppySector* track_sector = nullptr;
@@ -81,6 +85,9 @@ std::array<bool, 2> disk_changed = {};
 
 void update_irq()
 {
+	if (is_machine_pcjr()) {
+		return;
+	}
 	const auto asserted = fdc.irq_pending && (fdc.dor & InterruptEnabled);
 	if (asserted == irq_asserted) {
 		return;
@@ -119,11 +126,12 @@ void begin_result(const size_t length, const bool interrupt)
 	update_irq();
 }
 
-void finish_data(const uint8_t status_1, const uint8_t status_2 = 0)
+void finish_data(const uint8_t status_1, const uint8_t status_2 = 0,
+                 const bool terminal_count = false)
 {
 	const auto status_0 = check_cast<uint8_t>(
-	        ((status_1 || status_2) ? 0x40 : 0) | (fdc.head << 2) |
-	        selected_unit());
+	        (((status_1 || status_2) && !terminal_count) ? 0x40 : 0) |
+	        (fdc.head << 2) | selected_unit());
 	const auto* sector = fdc.track_sector;
 	fdc.result         = {status_0,
 	                      status_1,
@@ -135,6 +143,13 @@ void finish_data(const uint8_t status_1, const uint8_t status_2 = 0)
 	                             : static_cast<uint8_t>(SectorSizeCode)};
 	fdc.track_sector   = nullptr;
 	fdc.disk.reset();
+	if (is_machine_pcjr() &&
+	    (fdc.command[0] & 0x1f) == static_cast<int>(Command::ReadTrack)) {
+		// PCjr reserves IRQ6 for its keyboard. Signal the disk
+		// completion flag used by the guest without raising a PIC
+		// interrupt.
+		mem_writeb(BIOS_DRIVE_ACTIVE, mem_readb(BIOS_DRIVE_ACTIVE) | 0x80);
+	}
 	begin_result(fdc.result.size(), true);
 }
 
@@ -232,6 +247,74 @@ void verify_sector()
 	} else {
 		++fdc.sector;
 		schedule_next_sector();
+	}
+}
+
+void transfer_track_sector(uint32_t)
+{
+	if (!media_ready(selected_unit())) {
+		finish_data(0x04);
+		return;
+	}
+	const auto track = fdc.disk->GetTrackImage()->GetTrack(fdc.cylinder,
+	                                                       fdc.head);
+	if (fdc.track_offset >= track.size() ||
+	    track[fdc.track_offset].revolution != 0) {
+		finish_data(fdc.track_status_1 | 0x04, fdc.track_status_2);
+		return;
+	}
+	const auto& sector = track[fdc.track_offset];
+	fdc.track_sector   = &sector;
+	auto* dma          = DMA_GetChannel(FloppyDma);
+	if (!dma || dma->is_masked || !dma->is_device_to_memory ||
+	    fdc.non_dma || !(fdc.dor & InterruptEnabled)) {
+		finish_data(0x10);
+		return;
+	}
+	const auto size = size_t{128} << fdc.command[5];
+	const auto& data = size > sector.data.size() && !sector.extended_data.empty()
+	                         ? sector.extended_data
+	                         : sector.data;
+	if (data.size() < size) {
+		finish_data(fdc.track_status_1 | 0x01, fdc.track_status_2 | 0x01);
+		return;
+	}
+	if (sector.id_crc_error || (&data == &sector.data && sector.data_crc_error)) {
+		fdc.track_status_1 |= 0x20;
+	}
+	if (&data == &sector.data && sector.data_crc_error) {
+		fdc.track_status_2 |= 0x20;
+	}
+	if (sector.cylinder != fdc.command[2] || sector.head != fdc.head ||
+	    sector.size_code != fdc.command[5]) {
+		fdc.track_status_1 |= 0x04;
+	}
+	if (sector.deleted) {
+		fdc.track_status_2 |= 0x40;
+	}
+	const auto remaining = static_cast<size_t>(dma->curr_count) + 1;
+	const auto count     = std::min(remaining, size);
+	dma->RaiseRequest();
+	const auto transferred = dma->Write(count,
+	                                    const_cast<uint8_t*>(data.data()));
+	dma->ClearRequest();
+	if (transferred != count) {
+		finish_data(fdc.track_status_1 | 0x10, fdc.track_status_2);
+	} else if (count == remaining) {
+		finish_data(fdc.track_status_1, fdc.track_status_2, true);
+	} else if (++fdc.track_offset == fdc.command[6]) {
+		finish_data(fdc.track_status_1 | 0x80, fdc.track_status_2);
+	} else {
+		const auto cycle     = rotation_cycle_ms();
+		const auto offset_ms = sector.cycle_fraction * cycle;
+		const auto next_ms =
+		        fdc.track_offset < track.size() &&
+		                        track[fdc.track_offset].revolution == 0
+		                ? track[fdc.track_offset].cycle_fraction * cycle
+		                : fdc.disk->GetTrackImage()->GetFormatCycleMs(
+		                          fdc.cylinder, fdc.head);
+		PIC_AddEvent(transfer_track_sector,
+		             std::max(0.0, next_ms - offset_ms));
 	}
 }
 
@@ -472,6 +555,22 @@ void start_data(const Command command)
 		}
 		return;
 	}
+	if (command == Command::ReadTrack) {
+		const auto* image = fdc.disk->GetTrackImage();
+		if (!image || fdc.command[5] > 7 || !fdc.command[6]) {
+			finish_data(0x04);
+			return;
+		}
+		fdc.track_offset   = 0;
+		fdc.track_status_1 = 0;
+		fdc.track_status_2 = 0;
+		const auto track   = image->GetTrack(fdc.cylinder, fdc.head);
+		const auto cycle   = rotation_cycle_ms();
+		const auto first = track.empty() ? 1.0 : track.front().cycle_fraction;
+		PIC_AddEvent(transfer_track_sector,
+		             cycle - rotation_ms() + first * cycle);
+		return;
+	}
 	if (const auto* track = fdc.disk->GetTrackImage()) {
 		if (command != Command::ReadId &&
 		    (fdc.command[3] != fdc.head || fdc.sector > fdc.command[6] ||
@@ -567,6 +666,7 @@ void execute_command(const Command command)
 	case Command::FormatTrack:
 	case Command::WriteData:
 	case Command::ReadData:
+	case Command::ReadTrack:
 	case Command::Verify: start_data(command); break;
 	default:
 		fdc.result[0] = 0x80;
@@ -581,6 +681,7 @@ size_t command_length(const Command command)
 	case Command::FormatTrack: return 6;
 	case Command::WriteData:
 	case Command::ReadData:
+	case Command::ReadTrack:
 	case Command::Verify: return 9;
 	case Command::Seek:
 	case Command::Specify: return 3;
@@ -644,6 +745,7 @@ void reset_controller()
 	PIC_RemoveEvents(complete_seek);
 	PIC_RemoveEvents(complete_read_id);
 	PIC_RemoveEvents(transfer_sector);
+	PIC_RemoveEvents(transfer_track_sector);
 	PIC_RemoveEvents(format_raw_track);
 	PIC_RemoveEvents(format_scp_sector);
 	PIC_RemoveEvents(missing_sector);
@@ -784,13 +886,7 @@ BiosCommandResult bios_command(const uint8_t unit, const uint32_t cylinder,
 	// The BIOS implicitly seeks, stepping away and back if already in
 	// position.
 	FLOPPY_SetDiskChanged(unit, false);
-	auto& drive    = fdc.drives[unit];
-	drive.cylinder = check_cast<uint8_t>(cylinder);
-	if (!motor_on(unit)) {
-		drive.motor_started_ms = PIC_FullIndex();
-	}
-	fdc.dor = check_cast<uint8_t>((fdc.dor & 0xf0) | (0x10u << unit) |
-	                              ResetReleased | InterruptEnabled | unit);
+	FLOPPY_BiosPosition(unit, check_cast<uint8_t>(cylinder));
 	fdc.non_dma = false;
 
 	const auto* track   = disk->GetTrackImage();
@@ -1009,6 +1105,18 @@ uint8_t FLOPPY_BiosDmaFormat(const uint8_t unit, const uint32_t cylinder,
 	return transfer.transferred == size ? 0 : 0x08;
 }
 
+void FLOPPY_BiosPosition(const uint8_t unit, const uint8_t cylinder)
+{
+	assert(unit < fdc.drives.size());
+	auto& drive    = fdc.drives[unit];
+	drive.cylinder = cylinder;
+	if (!motor_on(unit)) {
+		drive.motor_started_ms = PIC_FullIndex();
+	}
+	fdc.dor = check_cast<uint8_t>((fdc.dor & 0xf0) | (0x10u << unit) |
+	                              ResetReleased | InterruptEnabled | unit);
+}
+
 void FLOPPY_BiosReset(const uint8_t unit)
 {
 	assert(unit < fdc.drives.size());
@@ -1047,14 +1155,13 @@ bool FLOPPY_IsDiskChanged(const size_t unit)
 void FLOPPY_Init()
 {
 	disk_changed.fill(false);
-	if (is_machine_pcjr()) {
-		return;
-	}
 	reset_controller();
 	update_irq();
 	IO_RegisterWriteHandler(0x3f2, write_dor, io_width_t::byte);
 	IO_RegisterReadHandler(0x3f4, read_status, io_width_t::byte);
 	IO_RegisterReadHandler(0x3f5, read_data, io_width_t::byte);
 	IO_RegisterWriteHandler(0x3f5, write_data, io_width_t::byte);
-	IO_RegisterReadHandler(0x3f7, read_dir, io_width_t::byte);
+	if (!is_machine_pcjr()) {
+		IO_RegisterReadHandler(0x3f7, read_dir, io_width_t::byte);
+	}
 }
