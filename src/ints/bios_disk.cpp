@@ -717,6 +717,9 @@ static Bitu INT13_DiskHandler(void)
 			break;
 		}
 
+		if (drivenum < 2 && disk_slots[drivenum]->GetTrackImage()) {
+			FLOPPY_BiosPosition(drivenum, reg_ch);
+		}
 		segat  = SegValue(es);
 		bufptr = reg_bx;
 		for (Bitu i = 0; i < reg_al; i++) {

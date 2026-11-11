@@ -23,6 +23,7 @@ struct FloppySector {
 	bool deleted              = false;
 	size_t revolution         = 0;
 	std::vector<uint8_t> data = {};
+	std::vector<uint8_t> extended_data = {};
 };
 
 class FloppyTrackImage {

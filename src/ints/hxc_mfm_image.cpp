@@ -149,7 +149,49 @@ std::vector<FloppySector> FloppyTrackImage::DecodeMfmTrack(
 				sector.data_crc_error = crc != data_crc;
 			}
 		}
+		if (sector.id_crc_error && data.type != IdMark &&
+		    !sector.data.empty()) {
+			// Read Track uses the command's size even when the ID
+			// was damaged.
+			const auto following = marks[(i + 2) % marks.size()].bit;
+			const auto gap   = (following + track_bits - data.bit) %
+			                   track_bits;
+			const auto field = data.bit + MarkBits;
+			auto field_crc   = update_crc(SyncCrc, data.type);
+			for (auto size = size_t{128};
+			     size <= 16384 && gap >= MarkBits + (size + 2) * ByteBits;
+			     size *= 2) {
+				const auto start = size == 128 ? size_t{0}
+				                               : size / 2;
+				for (auto j = start; j < size; ++j) {
+					field_crc = update_crc(
+					        field_crc,
+					        read_byte(track, field + j * ByteBits));
+				}
+				const auto stored_crc =
+				        (read_byte(track, field + size * ByteBits)
+				         << 8) |
+				        read_byte(track,
+				                  field + (size + 1) * ByteBits);
+				if (size > sector.data.size() &&
+				    field_crc == stored_crc) {
+					sector.extended_data.resize(size);
+					for (size_t j = 0; j < size; ++j) {
+						sector.extended_data[j] = read_byte(
+						        track, field + j * ByteBits);
+					}
+					break;
+				}
+			}
+		}
 		sectors.push_back(std::move(sector));
+	}
+	if (index) {
+		std::stable_sort(sectors.begin(),
+		                 sectors.end(),
+		                 [](const auto& a, const auto& b) {
+			                 return a.cycle_fraction < b.cycle_fraction;
+		                 });
 	}
 	return sectors;
 }
