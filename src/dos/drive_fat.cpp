@@ -210,6 +210,13 @@ bool fatFile::Write(uint8_t * data, uint16_t *size) {
 	uint16_t sizedec, sizecount;
 	sizedec = *size;
 	sizecount = 0;
+	auto saved_position     = seekpos;
+	const auto write_failed = [&]() {
+		seekpos      = saved_position;
+		loadedSector = false;
+		DOS_SetError(DOSERR_ACCESS_DENIED);
+		return false;
+	};
 
 	set_archive_on_close = true;
 
@@ -288,7 +295,12 @@ bool fatFile::Write(uint8_t * data, uint16_t *size) {
 		sectorBuffer[curSectOff++] = data[sizecount++];
 		seekpos++;
 		if(curSectOff >= myDrive->getSectorSize()) {
-			if(loadedSector) myDrive->writeSector(currentSector, sectorBuffer);
+			if (loadedSector) {
+				if (myDrive->writeSector(currentSector, sectorBuffer)) {
+					return write_failed();
+				}
+				saved_position = seekpos;
+			}
 
 			currentSector = myDrive->getAbsoluteSectFromBytePos(firstCluster, seekpos);
 			if(currentSector == 0) loadedSector = false;
@@ -300,7 +312,12 @@ bool fatFile::Write(uint8_t * data, uint16_t *size) {
 		}
 		--sizedec;
 	}
-	if(curSectOff>0 && loadedSector) myDrive->writeSector(currentSector, sectorBuffer);
+	if (curSectOff > 0 && loadedSector) {
+		if (myDrive->writeSector(currentSector, sectorBuffer)) {
+			return write_failed();
+		}
+		saved_position = seekpos;
+	}
 
 finalizeWrite:
 	if (!ReadDirectoryEntry(tmpentry)) {
@@ -314,7 +331,9 @@ finalizeWrite:
 	tmpentry.modDate = DOS_GetBiosDatePacked();
 	tmpentry.entrysize = filelength;
 	tmpentry.loFirstClust = (uint16_t)firstCluster;
-	myDrive->directoryChange(dirCluster, &tmpentry, dirIndex);
+	if (!myDrive->directoryChange(dirCluster, &tmpentry, dirIndex)) {
+		return write_failed();
+	}
 
 	*size =sizecount;
 	return true;
@@ -1571,8 +1590,7 @@ bool fatDrive::directoryChange(uint32_t dirClustNumber, direntry *useEntry, int3
 	}
 	if(tmpsector != 0) {
 		copyDirEntry(useEntry, &sectbuf[entryoffset]);
-		writeSector(tmpsector, sectbuf);
-		return true;
+		return writeSector(tmpsector, sectbuf) == 0;
 	} else {
 		return false;
 	}
