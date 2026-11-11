@@ -6,10 +6,11 @@
 import argparse
 from pathlib import Path
 import re
-from struct import pack, pack_into
+from struct import pack, pack_into, unpack_from
+import subprocess
 from tempfile import TemporaryDirectory
 
-from run_hxc_mfm_probe import check_boot, check_fat, encode_track
+from run_hxc_mfm_probe import check_boot, check_fat, encode_track, launch
 from run_raw_floppy_read_probe import run_probe
 
 
@@ -54,6 +55,22 @@ def encode_scp(disk, different_turns=False, duplicate_id=False, verify_errors=Fa
             image.extend(flux)
     pack_into("<I", image, 12, sum(image[16:]) & 0xffffffff)
     return image
+
+
+def check_overlapping_revolutions(dosbox, directory):
+    """Reject two revolution descriptors that alias the same flux bytes."""
+    capture = encode_scp(bytes(360 * 1024))
+    track, = unpack_from("<I", capture, 16)
+    count, offset = unpack_from("<II", capture, track + 8)
+    pack_into("<II", capture, track + 20, count, offset)
+    pack_into("<I", capture, 12, sum(capture[16:]) & 0xffffffff)
+    image = directory / "overlap.scp"
+    image.write_bytes(capture)
+    args, env = launch(dosbox, directory, "scp-overlap",
+                       [f'mount a "{image}" -t floppy -fs none -ro', "exit"])
+    run = subprocess.run(args, cwd=directory, env=env, timeout=30, check=True,
+                         capture_output=True, text=True)
+    assert "overlapping SCP track or revolution data" in run.stdout + run.stderr
 
 
 # pylint: disable-next=R0914,R0912,R0915
@@ -102,6 +119,7 @@ def main():
         print(".scp Read Data and Read Track returned different recorded revolutions")
         if args.read_revolutions:
             return
+        check_overlapping_revolutions(dosbox, directory)
         for unit in (0, 1):
             overlay = directory / "disk.scp.overlay"
             overlay.unlink(missing_ok=True)

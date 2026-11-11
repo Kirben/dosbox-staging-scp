@@ -3,7 +3,9 @@
 
 #include <algorithm>
 #include <bit>
+#include <iterator>
 #include <limits>
+#include <map>
 #include <string_view>
 #include <utility>
 
@@ -151,6 +153,21 @@ bool ScpCapture::Parse(const std::vector<uint8_t>& d, std::string& error)
 	                   field_text(d, d.size() - 4, 4) != "FPCS")) {
 		return fail("invalid SCP extension footer");
 	}
+	std::map<size_t, size_t> ranges = {};
+	const auto add_range = [&](const size_t start, const size_t length) {
+		if (!length) {
+			return true;
+		}
+		const auto end  = start + length;
+		const auto next = ranges.lower_bound(start);
+		if ((next != ranges.end() && end > next->first) ||
+		    (next != ranges.begin() && std::prev(next)->second > start)) {
+			return false;
+		}
+		ranges.emplace_hint(next, start, end);
+		return true;
+	};
+
 	size_t last_track_end = TableEnd, total_entries = 0;
 	for (size_t number = 0; number < 168; ++number) {
 		const size_t off = little(d, 16 + number * 4);
@@ -170,6 +187,9 @@ bool ScpCapture::Parse(const std::vector<uint8_t>& d, std::string& error)
 		if (field_text(d, off, 3) != "TRK" || d[off + 3] != number) {
 			return fail("invalid SCP track header");
 		}
+		if (!add_range(off, header_bytes)) {
+			return fail("overlapping SCP track or revolution data");
+		}
 		last_track_end = std::max(last_track_end, off + header_bytes);
 		Track track    = {};
 		track.number   = uint8_t(number);
@@ -188,6 +208,9 @@ bool ScpCapture::Parse(const std::vector<uint8_t>& d, std::string& error)
 			const size_t p = off + relative;
 			if (count > (data_end - p) / stride) {
 				return fail("SCP flux extends outside data area");
+			}
+			if (!add_range(p, count * stride)) {
+				return fail("overlapping SCP track or revolution data");
 			}
 			if (count > MaxStoredEntries - total_entries) {
 				return fail("SCP capture exceeds the 36 Mi-entry resource limit");
