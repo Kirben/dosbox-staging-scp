@@ -109,6 +109,7 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Linux" AND NOT CMAKE_CROSSCOMPILING)
 
         add_floppy_guest_test(FloppyFatCache run_fat_floppy_cache_probe.py)
         add_floppy_guest_test(FloppyTiming run_floppy_timing_probe.py)
+        add_floppy_guest_test(FloppyReporting run_floppy_reporting_probe.py)
         add_floppy_guest_test(FloppyDiskChange run_floppy_disk_change_probe.py)
         add_floppy_guest_test(FloppyBiosRead run_bios_floppy_read_probe.py)
         add_floppy_guest_test(FloppyBiosWrite run_bios_floppy_read_probe.py --scp-write)
