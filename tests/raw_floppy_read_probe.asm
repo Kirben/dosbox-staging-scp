@@ -16,6 +16,12 @@ org 100h
 %define FORMAT_INTERRUPT FORMAT_MOTOR
 %endif
 
+%ifdef BIOS_FORMAT
+    mov ax,350eh
+    int 21h
+    mov [bios_irq6],bx
+    mov [bios_irq6+2],es
+%endif
     mov ax,250eh
     mov dx,irq6
     int 21h
@@ -24,6 +30,11 @@ org 100h
     and al,0bfh
     out 21h,al
 
+%ifdef BIOS_FORMAT
+%if UNIT = 0
+    jmp bios_format_probe
+%endif
+%endif
     mov byte [stage],1
     call reset_and_seek
 %ifdef DUPLICATE_TEST
@@ -273,6 +284,9 @@ org 100h
 %endif
 
 %ifdef FORMAT_TEST
+%ifdef BIOS_FORMAT
+bios_format_probe:
+%endif
     mov byte [stage],11
 %ifdef BIOS_FORMAT
     mov ax,351eh
@@ -280,6 +294,8 @@ org 100h
     cmp byte [es:bx+8],0f6h
     jne finish
     mov byte [es:bx+8],0e5h
+    mov byte [interrupts],0
+    in al,08h
 %ifndef FORMAT_PROTECTED
     ; A table at physical 6fff0h crosses the DMA page boundary.
     mov ax,6000h
@@ -292,6 +308,8 @@ org 100h
     jnc finish
     cmp ah,09h
     jne finish
+    cmp byte [interrupts],0
+    jne finish
 %endif
     ; Alias 61000h with a wrapping segment offset on the same DMA page.
     mov ax,6000h
@@ -299,10 +317,15 @@ org 100h
     mov di,1000h
     mov si,format_ids
     mov cx,SECTORS * 4
+    cld
     rep movsb
     mov ax,5101h
     mov es,ax
     mov bx,0fff0h
+    ; The BIOS must deliver IRQ6 even if the caller masked it.
+    in al,21h
+    or al,40h
+    out 21h,al
     mov ax,0500h + SECTORS
     mov cx,0200h
     mov dx,0100h + UNIT
@@ -318,6 +341,37 @@ org 100h
     test ah,ah
 %endif
     jne finish
+    in al,21h
+    test al,40h
+    jz finish
+%assign EXPECT_FORMAT_IRQ 1
+%ifdef FORMAT_PROTECTED
+%assign EXPECT_FORMAT_IRQ 0
+%elifdef FORMAT_INVALID
+%ifdef SCP_FORMAT
+%assign EXPECT_FORMAT_IRQ 0
+%endif
+%endif
+    cmp byte [interrupts],EXPECT_FORMAT_IRQ
+    jne finish
+    in al,08h
+    test al,4
+%if EXPECT_FORMAT_IRQ
+    jz finish
+    mov ax,0040h
+    mov es,ax
+    test byte [es:003eh],80h
+    jz finish
+    out 0ch,al
+    in al,04h
+    cmp al,SECTORS * 4
+    jne finish
+    in al,04h
+    cmp al,10h
+    jne finish
+%else
+    jnz finish
+%endif
 %else
     ; Channel 2 transfers four CHRN bytes per sector.
     mov di,1200h
@@ -749,12 +803,18 @@ read_result:
     ret
 
 irq6:
+%ifdef BIOS_FORMAT
+    inc byte [cs:interrupts]
+    jmp far [cs:bios_irq6]
+bios_irq6 dw 0,0
+%else
     push ax
     inc byte [cs:interrupts]
     mov al,20h
     out 20h,al
     pop ax
     iret
+%endif
 
 recalibrate db 7,UNIT
 seek db 0fh,DRIVE_HEAD,2

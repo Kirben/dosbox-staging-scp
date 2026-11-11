@@ -528,9 +528,9 @@ static bool has_image(const std::array<T, N>& arr)
 	return std::any_of(std::begin(arr), std::end(arr), to_bool);
 }
 
-static uint8_t format_floppy_track(imageDisk& disk, const uint32_t cylinder,
-                                   const uint8_t head, const uint8_t count,
-                                   const RealPt table)
+static uint8_t format_floppy_track(imageDisk& disk, const uint8_t unit,
+                                   const uint32_t cylinder, const uint8_t head,
+                                   const uint8_t count, const RealPt table)
 {
 	if (!count) {
 		return 0x01;
@@ -542,8 +542,8 @@ static uint8_t format_floppy_track(imageDisk& disk, const uint32_t cylinder,
 	constexpr size_t IdSize = 4;
 	const auto table_size   = count * IdSize;
 	const auto address      = RealToPhysical(table);
-	if (!is_machine_pcjr_or_tandy() &&
-	    table_size > 0x10000u - (address & 0xffff)) {
+	const auto use_dma      = !is_machine_pcjr_or_tandy();
+	if (use_dma && table_size > 0x10000u - (address & 0xffff)) {
 		return 0x09;
 	}
 
@@ -557,13 +557,21 @@ static uint8_t format_floppy_track(imageDisk& disk, const uint32_t cylinder,
 	if (size_code > 7) {
 		return 0x01;
 	}
+	for (size_t i = IdSize - 1; i < table_size; i += IdSize) {
+		if (mem_readb(address + check_cast<PhysPt>(i)) != size_code) {
+			return 0x04;
+		}
+	}
+	if (use_dma) {
+		const auto gap = mem_readb(params + 7);
+		return FLOPPY_BiosDmaFormat(
+		        unit, cylinder, head, size_code, count, gap, fill, address);
+	}
+
 	std::array<uint8_t, UINT8_MAX * IdSize> buffer = {};
 	const auto ids = std::span(buffer).first(table_size);
 	for (size_t i = 0; i < ids.size(); ++i) {
 		ids[i] = mem_readb(address + check_cast<PhysPt>(i));
-		if (i % IdSize == IdSize - 1 && ids[i] != size_code) {
-			return 0x04;
-		}
 	}
 
 	switch (FLOPPY_FormatTrack(disk, cylinder, head, ids, fill, count)) {
@@ -761,6 +769,7 @@ static Bitu INT13_DiskHandler(void)
 			const auto cylinder = static_cast<uint32_t>(
 			        reg_ch | ((reg_cl & 0xc0) << 2));
 			last_status = format_floppy_track(*disk_slots[drivenum],
+			                                  drivenum,
 			                                  cylinder,
 			                                  reg_dh,
 			                                  reg_al,
@@ -896,6 +905,12 @@ static Bitu INT13_DiskHandler(void)
 	return CBRET_NONE;
 }
 
+static Bitu floppy_irq6()
+{
+	mem_writeb(BIOS_DRIVE_ACTIVE, mem_readb(BIOS_DRIVE_ACTIVE) | 0x80);
+	return CBRET_NONE;
+}
+
 void BIOS_SetupDisks(void)
 {
 	// INT 1Eh points to the guest-writable floppy parameter table.
@@ -909,6 +924,11 @@ void BIOS_SetupDisks(void)
 	}
 
 	FLOPPY_Init();
+	if (!is_machine_pcjr_or_tandy()) {
+		const auto irq6 = CALLBACK_Allocate();
+		CALLBACK_Setup(irq6, floppy_irq6, CB_IRET_EOI_PIC1, "IRQ 6 Floppy");
+		RealSetVec(0x0e, CALLBACK_RealPointer(irq6));
+	}
 	/* TODO Start the time correctly */
 	call_int13 = CALLBACK_Allocate();
 	CALLBACK_Setup(call_int13, &INT13_DiskHandler, CB_INT13, "Int 13 Bios disk");
