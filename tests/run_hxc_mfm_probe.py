@@ -77,7 +77,7 @@ def launch(dosbox, directory, name, commands):
     return args, env
 
 
-def check_fat(dosbox, directory):
+def check_fat(dosbox, directory, encode_image=encode, extension="mfm"):
     disk = bytearray(360 * 1024)
     disk[:11] = b"\xeb\x3c\x90MSDOS5.0"
     pack_into("<HBHBHHBHHH", disk, 11, 512, 2, 1, 2, 16, 720, 0xfd, 2, 9, 2)
@@ -88,8 +88,8 @@ def check_fat(dosbox, directory):
     pack_into("<HI", disk, 2560 + 26, 2, 512)
     disk[3072:3584] = b"\x31" * 512
 
-    image = directory / "fat.MFM"
-    original = encode(disk)
+    image = directory / f"fat.{extension.upper()}"
+    original = encode_image(disk)
     image.write_bytes(original)
     args, env = launch(dosbox, directory, "fat", [
         f'mount c "{directory}"', "c:", f'mount a "{image}"',
@@ -102,10 +102,10 @@ def check_fat(dosbox, directory):
     assert files["copied.dat"].read_bytes() == b"\x31" * 512
     assert "bad.txt" not in files or not files["bad.txt"].read_bytes()
     assert image.read_bytes() == original
-    print(".mfm automatic FAT MOUNT, file read and write rejection passed")
+    print(f".{extension} automatic FAT MOUNT, file read and write rejection passed")
 
 
-def check_boot(dosbox, nasm, directory):
+def check_boot(dosbox, nasm, directory, encode_image=encode, extension="mfm"):
     source = directory / "boot.asm"
     source.write_text("""
 bits 16
@@ -149,8 +149,8 @@ dw 0aa55h
     disk = bytearray(360 * 1024)
     disk[:512] = output.read_bytes()
     disk[512:514] = b"\x34\x12"
-    image = directory / "boot.mfm"
-    original = encode(disk)
+    image = directory / f"boot.{extension}"
+    original = encode_image(disk)
     image.write_bytes(original)
     marker = directory / "marker.img"
     for name, commands in (
@@ -175,7 +175,7 @@ dw 0aa55h
                     process.terminate()
                 process.wait(timeout=10)
         assert image.read_bytes() == original
-    print(".mfm direct and pre-mounted BOOT, INT 13h read and write rejection passed")
+    print(f".{extension} direct and pre-mounted BOOT, INT 13h read and write rejection passed")
 
 
 def main():

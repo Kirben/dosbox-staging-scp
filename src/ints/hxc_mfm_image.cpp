@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 
-#include "ints/hxc_mfm_image.h"
+#include "ints/floppy_track_image.h"
 
 #include <algorithm>
 #include <array>
@@ -60,7 +60,9 @@ struct AddressMark {
 	uint8_t type = 0;
 };
 
-std::vector<FloppySector> decode_track(const std::span<const uint8_t> track)
+} // namespace
+
+std::vector<FloppySector> FloppyTrackImage::DecodeMfmTrack(const std::span<const uint8_t> track)
 {
 	constexpr auto SyncWord    = 0x4489;
 	constexpr auto IdMark      = 0xfe;
@@ -99,14 +101,14 @@ std::vector<FloppySector> decode_track(const std::span<const uint8_t> track)
 		}
 		const auto id_crc = (read_byte(track, id_field + 4 * ByteBits) << 8) |
 		                    read_byte(track, id_field + 5 * ByteBits);
-		FloppySector sector      = {};
-		sector.cylinder          = chrn[0];
-		sector.head              = chrn[1];
-		sector.id                = chrn[2];
-		sector.size_code         = chrn[3];
-		sector.revolution_offset = static_cast<double>(id.bit) /
-		                           static_cast<double>(track_bits);
-		sector.id_crc_error      = crc != id_crc;
+		FloppySector sector   = {};
+		sector.cylinder       = chrn[0];
+		sector.head           = chrn[1];
+		sector.id             = chrn[2];
+		sector.size_code      = chrn[3];
+		sector.cycle_fraction = static_cast<double>(id.bit) /
+		                        static_cast<double>(track_bits);
+		sector.id_crc_error   = crc != id_crc;
 
 		const auto data = marks[(i + 1) % marks.size()];
 		if (data.type != IdMark && sector.size_code <= 7) {
@@ -137,9 +139,7 @@ std::vector<FloppySector> decode_track(const std::span<const uint8_t> track)
 	return sectors;
 }
 
-} // namespace
-
-std::unique_ptr<HxcMfmImage> HxcMfmImage::Load(FILE* file)
+std::unique_ptr<FloppyTrackImage> FloppyTrackImage::LoadHxcMfm(FILE* file)
 {
 	constexpr size_t HeaderSize   = 19;
 	constexpr size_t EntrySize    = 11;
@@ -174,10 +174,10 @@ std::unique_ptr<HxcMfmImage> HxcMfmImage::Load(FILE* file)
 		return {};
 	}
 
-	auto image           = std::make_unique<HxcMfmImage>();
-	image->cylinders     = cylinders;
-	image->heads         = heads;
-	image->revolution_ms = rpm ? 60'000.0 / rpm : 200.0;
+	auto image         = std::make_unique<FloppyTrackImage>();
+	image->cylinders   = cylinders;
+	image->heads       = heads;
+	const auto turn_ms = rpm ? 60'000.0 / rpm : 200.0;
 	image->tracks.resize(count);
 	std::vector<bool> seen(count);
 	std::map<size_t, size_t> extents = {};
@@ -209,36 +209,51 @@ std::unique_ptr<HxcMfmImage> HxcMfmImage::Load(FILE* file)
 			return {};
 		}
 		extents.emplace_hint(next, offset, offset + length);
-		image->tracks[track] = decode_track(input.subspan(offset, length));
-
-		// Build the logical CHS geometry from conventional 512-byte IDs.
-		std::array<bool, 256> logical_ids = {};
-		for (const auto& sector : image->tracks[track]) {
-			if (sector.cylinder == cylinder && sector.head == head &&
-			    sector.data.size() == 512 && !sector.id_crc_error) {
-				logical_ids[sector.id] = true;
-			}
-		}
-		const auto first_missing = std::find(logical_ids.begin() + 1,
-		                                     logical_ids.end(),
-		                                     false);
-		image->logical_sectors = std::max(image->logical_sectors,
-		                                  static_cast<uint32_t>(
-		                                          first_missing -
-		                                          logical_ids.begin() - 1));
+		auto& decoded    = image->tracks[track];
+		decoded.cycle_ms = turn_ms;
+		decoded.sectors = DecodeMfmTrack(input.subspan(offset, length));
+		image->UpdateLogicalGeometry(cylinder, head, decoded.sectors);
 	}
-	if (std::ranges::all_of(image->tracks,
-	                        [](const auto& track) { return track.empty(); })) {
+	if (std::ranges::all_of(image->tracks, [](const auto& track) {
+		    return track.sectors.empty();
+	    })) {
 		return {};
 	}
 	return image;
 }
 
-std::span<const FloppySector> HxcMfmImage::GetTrack(const uint32_t cylinder,
-                                                    const uint32_t head) const
+std::span<const FloppySector> FloppyTrackImage::GetTrack(const uint32_t cylinder,
+                                                         const uint32_t head) const
 {
 	if (cylinder >= cylinders || head >= heads) {
 		return {};
 	}
-	return tracks[cylinder * heads + head];
+	return tracks[cylinder * heads + head].sectors;
+}
+
+double FloppyTrackImage::GetCycleMs(const uint32_t cylinder, const uint32_t head) const
+{
+	return cylinder < cylinders && head < heads
+	             ? tracks[cylinder * heads + head].cycle_ms
+	             : 200.0;
+}
+
+void FloppyTrackImage::UpdateLogicalGeometry(const uint32_t cylinder,
+                                             const uint32_t head,
+                                             const std::span<const FloppySector> sectors)
+{
+	// Build the logical CHS geometry from conventional 512-byte IDs.
+	std::array<bool, 256> logical_ids = {};
+	for (const auto& sector : sectors) {
+		if (sector.cylinder == cylinder && sector.head == head &&
+		    sector.data.size() == 512 && !sector.id_crc_error) {
+			logical_ids[sector.id] = true;
+		}
+	}
+	const auto first_missing = std::find(logical_ids.begin() + 1,
+	                                     logical_ids.end(),
+	                                     false);
+	logical_sectors = std::max(logical_sectors,
+	                           static_cast<uint32_t>(first_missing -
+	                                                 logical_ids.begin() - 1));
 }
