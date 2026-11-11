@@ -7,6 +7,7 @@
 #include <cassert>
 #include <cmath>
 #include <memory>
+#include <vector>
 
 #include "cpu/callback.h"
 #include "hardware/dma.h"
@@ -29,6 +30,7 @@ constexpr auto SectorSize                 = 512;
 constexpr auto SectorSizeCode             = 2;
 constexpr auto StandardRevolutionMs       = 200.0;
 constexpr auto HighDensity525RevolutionMs = 1000.0 / 6;
+constexpr auto PioByteMs                  = 0.032; // 250 kbps MFM
 constexpr auto StepMs                     = 3.0;
 
 constexpr size_t FormatIdSize = 4;
@@ -65,6 +67,11 @@ struct Controller {
 	size_t formatted_ids                               = 0;
 	std::shared_ptr<imageDisk> disk                    = {};
 	std::shared_ptr<FloppyMedia> media                 = {};
+	std::vector<uint8_t> pio_data                      = {};
+	size_t pio_offset                                  = 0;
+	double pio_started_ms                              = 0;
+	bool pio_ready                                     = false;
+	bool pio_writing                                   = false;
 	const FloppySector* track_sector                   = nullptr;
 	Phase phase                                        = Phase::Command;
 	size_t command_count                               = 0;
@@ -121,6 +128,8 @@ bool media_ready(const size_t unit)
 	       !fdc.disk->hardDrive;
 }
 
+void pio_byte_event(uint32_t);
+
 void begin_result(const size_t length, const bool interrupt)
 {
 	fdc.phase         = Phase::Result;
@@ -133,6 +142,9 @@ void begin_result(const size_t length, const bool interrupt)
 void finish_data(const uint8_t status_1, const uint8_t status_2 = 0,
                  const bool terminal_count = false)
 {
+	PIC_RemoveEvents(pio_byte_event);
+	fdc.pio_data.clear();
+	fdc.pio_ready       = false;
 	const auto status_0 = check_cast<uint8_t>(
 	        (((status_1 || status_2) && !terminal_count) ? 0x40 : 0) |
 	        (fdc.head << 2) | selected_unit());
@@ -148,7 +160,7 @@ void finish_data(const uint8_t status_1, const uint8_t status_2 = 0,
 	fdc.track_sector   = nullptr;
 	fdc.disk.reset();
 	fdc.media.reset();
-	if (is_machine_pcjr() &&
+	if (is_machine_pcjr() && !fdc.non_dma &&
 	    (fdc.command[0] & 0x1f) == static_cast<int>(Command::ReadTrack)) {
 		// PCjr reserves IRQ6 for its keyboard. Signal the disk
 		// completion flag used by the guest without raising a PIC
@@ -255,6 +267,46 @@ void verify_sector()
 	}
 }
 
+void start_pio_transfer(const size_t size, const std::span<const uint8_t> source = {})
+{
+	fdc.pio_writing = source.empty();
+	fdc.pio_data.assign(size, 0);
+	if (!source.empty()) {
+		std::copy(source.begin(), source.end(), fdc.pio_data.begin());
+	}
+	fdc.pio_offset     = 0;
+	fdc.pio_started_ms = PIC_FullIndex();
+	fdc.pio_ready      = true;
+	fdc.irq_pending    = true;
+	update_irq();
+	PIC_AddEvent(pio_byte_event, PioByteMs);
+}
+
+void transfer_track_sector(uint32_t);
+
+void finish_track_sector(const bool terminal_count, const double elapsed_ms)
+{
+	const auto track   = fdc.media->GetTrack(fdc.cylinder, fdc.head);
+	const auto& sector = track[fdc.track_offset];
+	if (terminal_count) {
+		finish_data(fdc.track_status_1, fdc.track_status_2, true);
+	} else if (++fdc.track_offset == fdc.track_limit) {
+		finish_data(fdc.track_status_1 | 0x80, fdc.track_status_2);
+	} else {
+		const auto cycle     = rotation_cycle_ms();
+		const auto offset_ms = sector.cycle_fraction * cycle;
+		const auto has_next  = fdc.track_offset < track.size() &&
+		                      track[fdc.track_offset].revolution ==
+		                              fdc.track_revolution;
+		const auto ends = fdc.media->GetRevolutionEnds(fdc.cylinder,
+		                                               fdc.head);
+		const auto next = has_next ? track[fdc.track_offset].cycle_fraction
+		                           : ends[fdc.track_revolution];
+		PIC_AddEvent(transfer_track_sector,
+		             std::max(0.0, next * cycle - offset_ms - elapsed_ms));
+	}
+}
+
 void transfer_track_sector(uint32_t)
 {
 	if (!media_ready(selected_unit())) {
@@ -270,8 +322,8 @@ void transfer_track_sector(uint32_t)
 	const auto& sector = track[fdc.track_offset];
 	fdc.track_sector   = &sector;
 	auto* dma          = DMA_GetChannel(FloppyDma);
-	if (!dma || dma->is_masked || !dma->is_device_to_memory ||
-	    fdc.non_dma || !(fdc.dor & InterruptEnabled)) {
+	if (!fdc.non_dma && (!dma || dma->is_masked || !dma->is_device_to_memory ||
+	                     !(fdc.dor & InterruptEnabled))) {
 		finish_data(0x10);
 		return;
 	}
@@ -296,6 +348,10 @@ void transfer_track_sector(uint32_t)
 	if (sector.deleted) {
 		fdc.track_status_2 |= 0x40;
 	}
+	if (fdc.non_dma) {
+		start_pio_transfer(size, std::span(data).first(size));
+		return;
+	}
 	const auto remaining = static_cast<size_t>(dma->curr_count) + 1;
 	const auto count     = std::min(remaining, size);
 	dma->RaiseRequest();
@@ -304,23 +360,44 @@ void transfer_track_sector(uint32_t)
 	dma->ClearRequest();
 	if (transferred != count) {
 		finish_data(fdc.track_status_1 | 0x10, fdc.track_status_2);
-	} else if (count == remaining) {
-		finish_data(fdc.track_status_1, fdc.track_status_2, true);
-	} else if (++fdc.track_offset == fdc.track_limit) {
-		finish_data(fdc.track_status_1 | 0x80, fdc.track_status_2);
 	} else {
-		const auto cycle     = rotation_cycle_ms();
-		const auto offset_ms = sector.cycle_fraction * cycle;
-		const auto next_ms =
-		        fdc.track_offset < track.size() &&
-		                        track[fdc.track_offset].revolution ==
-		                                fdc.track_revolution
-		                ? track[fdc.track_offset].cycle_fraction * cycle
-		                : fdc.media->GetRevolutionEnds(fdc.cylinder,
-		                                               fdc.head)[fdc.track_revolution] *
-		                          cycle;
-		PIC_AddEvent(transfer_track_sector,
-		             std::max(0.0, next_ms - offset_ms));
+		finish_track_sector(count == remaining, 0);
+	}
+}
+
+bool commit_sector_write(const std::span<const uint8_t> data)
+{
+	return fdc.track_sector ? fdc.media->WriteSector(fdc.cylinder,
+	                                                 fdc.head,
+	                                                 fdc.sector,
+	                                                 data,
+	                                                 fdc.track_sector)
+	                        : fdc.disk->WriteSectorForController(fdc.head,
+	                                                             fdc.cylinder,
+	                                                             fdc.sector,
+	                                                             data);
+}
+
+void finish_sector_transfer(const std::span<const uint8_t> write_data,
+                            const bool terminal_count)
+{
+	if (!write_data.empty() && !commit_sector_write(write_data)) {
+		finish_data(0x20);
+	} else if (fdc.track_sector && fdc.track_sector->data_crc_error) {
+		finish_data(0x20, 0x20);
+	} else if (fdc.track_sector && fdc.track_sector->deleted) {
+		finish_data(0, 0x40);
+	} else if (terminal_count) {
+		finish_data(0);
+	} else if (fdc.sector < fdc.command[6]) {
+		++fdc.sector;
+		schedule_next_sector();
+	} else if ((fdc.command[0] & 0x80) && fdc.head == 0 && fdc.disk->heads > 1) {
+		fdc.head   = 1;
+		fdc.sector = 1;
+		schedule_next_sector();
+	} else {
+		finish_data(0x80);
 	}
 }
 
@@ -339,9 +416,10 @@ void transfer_sector(uint32_t)
 
 	const auto writing = command == Command::WriteData;
 	auto* dma          = DMA_GetChannel(FloppyDma);
-	if (!dma || dma->is_masked ||
-	    !(writing ? dma->is_memory_to_device : dma->is_device_to_memory) ||
-	    fdc.non_dma || !(fdc.dor & InterruptEnabled)) {
+	if (!fdc.non_dma &&
+	    (!dma || dma->is_masked ||
+	     !(writing ? dma->is_memory_to_device : dma->is_device_to_memory) ||
+	     !(fdc.dor & InterruptEnabled))) {
 		finish_data(0x10);
 		return;
 	}
@@ -372,6 +450,11 @@ void transfer_sector(uint32_t)
 		return;
 	}
 
+	if (fdc.non_dma) {
+		start_pio_transfer(data.size(),
+		                   writing ? std::span<const uint8_t>{} : data);
+		return;
+	}
 	const auto remaining = static_cast<size_t>(dma->curr_count) + 1;
 	const auto count     = std::min(remaining, data.size());
 	dma->RaiseRequest();
@@ -382,33 +465,10 @@ void transfer_sector(uint32_t)
 	dma->ClearRequest();
 	if (transferred != count) {
 		finish_data(0x10);
-	} else if (writing &&
-	           !(fdc.track_sector
-	                     ? fdc.media->WriteSector(fdc.cylinder,
-	                                              fdc.head,
-	                                              fdc.sector,
-	                                              transfer_buffer,
-	                                              fdc.track_sector)
-	                     : fdc.disk->WriteSectorForController(fdc.head,
-	                                                          fdc.cylinder,
-	                                                          fdc.sector,
-	                                                          transfer_buffer))) {
-		finish_data(0x20);
-	} else if (fdc.track_sector && fdc.track_sector->data_crc_error) {
-		finish_data(0x20, 0x20);
-	} else if (fdc.track_sector && fdc.track_sector->deleted) {
-		finish_data(0, 0x40);
-	} else if (remaining == count) {
-		finish_data(0);
-	} else if (fdc.sector < fdc.command[6]) {
-		++fdc.sector;
-		schedule_next_sector();
-	} else if ((fdc.command[0] & 0x80) && fdc.head == 0 && fdc.disk->heads > 1) {
-		fdc.head   = 1;
-		fdc.sector = 1;
-		schedule_next_sector();
 	} else {
-		finish_data(0x80);
+		finish_sector_transfer(writing ? transfer_buffer
+		                               : std::span<const uint8_t>{},
+		                       remaining == count);
 	}
 }
 
@@ -469,6 +529,10 @@ void format_track_sector(uint32_t)
 		finish_data(0x04);
 		return;
 	}
+	if (fdc.non_dma) {
+		start_pio_transfer(FormatIdSize);
+		return;
+	}
 	auto* dma = DMA_GetChannel(FloppyDma);
 	if (!format_dma_ready(dma)) {
 		finish_track_format(0x10);
@@ -491,6 +555,21 @@ void format_track_sector(uint32_t)
 	}
 }
 
+void finish_raw_format(const std::span<const uint8_t> ids)
+{
+	const auto result = FLOPPY_FormatTrack(*fdc.disk,
+	                                       nullptr,
+	                                       fdc.cylinder,
+	                                       fdc.head,
+	                                       ids,
+	                                       fdc.command[5],
+	                                       fdc.command[3]);
+	if (result == FloppyFormatResult::Success) {
+		fdc.sector = fdc.command[3];
+	}
+	finish_data(format_status(result));
+}
+
 void format_raw_track(uint32_t)
 {
 	if (!media_ready(selected_unit())) {
@@ -499,6 +578,10 @@ void format_raw_track(uint32_t)
 	}
 	std::array<uint8_t, FormatIdSize * 255> ids = {};
 	const auto count = fdc.command[3] * FormatIdSize;
+	if (fdc.non_dma) {
+		start_pio_transfer(count);
+		return;
+	}
 	auto* dma        = DMA_GetChannel(FloppyDma);
 	if (!format_dma_ready(dma) ||
 	    static_cast<size_t>(dma->curr_count) + 1 < count) {
@@ -513,17 +596,74 @@ void format_raw_track(uint32_t)
 		return;
 	}
 
-	const auto result = FLOPPY_FormatTrack(*fdc.disk,
-	                                       nullptr,
-	                                       fdc.cylinder,
-	                                       fdc.head,
-	                                       std::span(ids).first(count),
-	                                       fdc.command[5],
-	                                       fdc.command[3]);
-	if (result == FloppyFormatResult::Success) {
-		fdc.sector = fdc.command[3];
+	finish_raw_format(std::span(ids).first(count));
+}
+
+void finish_pio_transfer()
+{
+	const auto command    = static_cast<Command>(fdc.command[0] & 0x1f);
+	const auto elapsed_ms = PIC_FullIndex() - fdc.pio_started_ms;
+	const auto data       = std::move(fdc.pio_data);
+	fdc.pio_data.clear();
+	switch (command) {
+	case Command::ReadTrack: finish_track_sector(false, elapsed_ms); break;
+	case Command::WriteData: finish_sector_transfer(data, false); break;
+	case Command::ReadData: finish_sector_transfer({}, false); break;
+	case Command::FormatTrack:
+		if (!fdc.media) {
+			finish_raw_format(data);
+			break;
+		}
+		std::copy(data.begin(),
+		          data.end(),
+		          fdc.format_ids.begin() + fdc.formatted_ids * FormatIdSize);
+		if (++fdc.formatted_ids == fdc.command[3]) {
+			finish_track_format(0);
+		} else {
+			PIC_AddEvent(format_track_sector,
+			             std::max(0.0, track_format_slot_ms() - elapsed_ms));
+		}
+		break;
+	default: assert(false); break;
 	}
-	finish_data(format_status(result));
+}
+
+void pio_byte_event(uint32_t)
+{
+	if (!media_ready(selected_unit())) {
+		finish_data(0x04);
+		return;
+	}
+	if (fdc.pio_ready) {
+		const auto command = static_cast<Command>(fdc.command[0] & 0x1f);
+		if (command == Command::FormatTrack && fdc.media) {
+			finish_track_format(0x10);
+		} else {
+			// A write underrun completes the field with zeroes.
+			if (command == Command::WriteData &&
+			    !commit_sector_write(fdc.pio_data)) {
+				finish_data(0x20);
+			} else {
+				finish_data(0x10);
+			}
+		}
+		return;
+	}
+	if (fdc.pio_offset == fdc.pio_data.size()) {
+		finish_pio_transfer();
+		return;
+	}
+	fdc.pio_ready   = true;
+	fdc.irq_pending = true;
+	update_irq();
+	PIC_AddEvent(pio_byte_event, PioByteMs);
+}
+
+void acknowledge_pio_byte()
+{
+	fdc.pio_ready   = false;
+	fdc.irq_pending = false;
+	update_irq();
 }
 
 void start_data(const Command command)
@@ -734,6 +874,11 @@ size_t command_length(const Command command)
 
 void write_data(io_port_t, const io_val_t value, io_width_t)
 {
+	if (fdc.phase == Phase::Execution && fdc.pio_ready && fdc.pio_writing) {
+		fdc.pio_data[fdc.pio_offset++] = check_cast<uint8_t>(value);
+		acknowledge_pio_byte();
+		return;
+	}
 	if (!(fdc.dor & ResetReleased) || fdc.phase != Phase::Command) {
 		return;
 	}
@@ -747,6 +892,11 @@ void write_data(io_port_t, const io_val_t value, io_width_t)
 
 io_val_t read_data(io_port_t, io_width_t)
 {
+	if (fdc.phase == Phase::Execution && fdc.pio_ready && !fdc.pio_writing) {
+		const auto value = fdc.pio_data[fdc.pio_offset++];
+		acknowledge_pio_byte();
+		return value;
+	}
 	if (fdc.phase != Phase::Result) {
 		return 0xff;
 	}
@@ -767,7 +917,12 @@ io_val_t read_status(io_port_t, io_width_t)
 		return 0;
 	}
 	switch (fdc.phase) {
-	case Phase::Execution: return 0x10;
+	case Phase::Execution:
+		if (fdc.pio_data.empty()) {
+			return fdc.non_dma ? 0x30 : 0x10;
+		}
+		return 0x30 | (fdc.pio_ready ? 0x80 : 0) |
+		       (fdc.pio_writing ? 0 : 0x40);
 	case Phase::Result: return 0xd0;
 	case Phase::Command: return fdc.command_count ? 0x90 : 0x80;
 	}
@@ -790,6 +945,7 @@ void reset_controller()
 	PIC_RemoveEvents(format_raw_track);
 	PIC_RemoveEvents(format_track_sector);
 	PIC_RemoveEvents(missing_sector);
+	PIC_RemoveEvents(pio_byte_event);
 	fdc = {};
 }
 
@@ -827,13 +983,29 @@ void write_dor(io_port_t, const io_val_t value, io_width_t)
 		finish_track_format(0x04);
 		return;
 	}
-	if ((value & ResetReleased) && writing_data && !media_ready(unit)) {
-		PIC_RemoveEvents(transfer_sector);
-		PIC_RemoveEvents(missing_sector);
-		finish_data(0x04);
-		return;
+	if ((value & ResetReleased) && !media_ready(unit)) {
+		if (writing_data) {
+			PIC_RemoveEvents(transfer_sector);
+			PIC_RemoveEvents(missing_sector);
+		}
+		if (writing_data || !fdc.pio_data.empty()) {
+			finish_data(0x04);
+			return;
+		}
 	}
 	update_irq();
+}
+
+// The PCjr adapter exposes one drive and uses a different DOR layout.
+void write_pcjr_dor(io_port_t, const io_val_t value, const io_width_t width)
+{
+	const auto translated = ((value & 0x80) ? ResetReleased : 0) |
+	                        ((value & 1) ? 0x10 : 0);
+	const auto was_reset = !(fdc.dor & ResetReleased);
+	write_dor(0x3f2, translated, width);
+	if (was_reset || !(translated & ResetReleased)) {
+		fdc.non_dma = true;
+	}
 }
 
 } // namespace
@@ -1216,7 +1388,12 @@ void FLOPPY_Init()
 	IO_RegisterReadHandler(0x3f4, read_status, io_width_t::byte);
 	IO_RegisterReadHandler(0x3f5, read_data, io_width_t::byte);
 	IO_RegisterWriteHandler(0x3f5, write_data, io_width_t::byte);
-	if (!is_machine_pcjr()) {
+	if (is_machine_pcjr()) {
+		IO_RegisterWriteHandler(0xf2, write_pcjr_dor, io_width_t::byte);
+		IO_RegisterReadHandler(0xf4, read_status, io_width_t::byte);
+		IO_RegisterReadHandler(0xf5, read_data, io_width_t::byte);
+		IO_RegisterWriteHandler(0xf5, write_data, io_width_t::byte);
+	} else {
 		IO_RegisterReadHandler(0x3f7, read_dir, io_width_t::byte);
 	}
 }
