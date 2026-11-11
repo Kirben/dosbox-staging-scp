@@ -242,7 +242,7 @@ double FloppyTrackImage::GetFormatCycleMs(const uint32_t cylinder,
 	return tracks.at(cylinder * heads + head).format_cycle_ms;
 }
 
-bool FloppyTrackImage::IsScp() const
+bool FloppyTrackImage::SupportsTrackWrites() const
 {
 	return !overlay_path.empty();
 }
@@ -459,10 +459,10 @@ bool FloppyTrackImage::SaveScpOverlay(const Overlay& entries,
 	return false;
 }
 
-bool FloppyTrackImage::WriteScpSector(const uint32_t cylinder,
-                                      const uint32_t head, const uint32_t sector,
-                                      const std::span<const uint8_t> data,
-                                      const FloppySector* selected)
+bool FloppyTrackImage::WriteSector(const uint32_t cylinder, const uint32_t head,
+                                   const uint32_t sector,
+                                   const std::span<const uint8_t> data,
+                                   const FloppySector* selected)
 {
 	if (IsWriteProtected() || cylinder >= cylinders || head >= heads ||
 	    sector > UINT8_MAX || data.size() != OverlaySector{}.size()) {
@@ -616,7 +616,7 @@ void FloppyTrackImage::ApplyTrackFormat(const TrackAddress& address,
 	                 });
 }
 
-FloppyTrackImage::FormatResult FloppyTrackImage::FormatScpTrack(
+FloppyTrackImage::FormatResult FloppyTrackImage::FormatTrack(
         const uint8_t cylinder, const uint8_t head,
         const std::span<const uint8_t> ids, const uint8_t fill,
         const uint8_t requested)
