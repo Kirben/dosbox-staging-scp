@@ -208,19 +208,24 @@ uint8_t imageDisk::Read_Sector(uint32_t head, uint32_t cylinder,
                                uint32_t sector, void* data)
 {
 	if (track_image) {
+		uint8_t status = 0x04;
 		for (const auto& candidate : track_image->GetTrack(cylinder, head)) {
-			if (candidate.cylinder == cylinder &&
-			    candidate.head == head && candidate.id == sector &&
-			    candidate.data.size() == sector_size &&
-			    !candidate.id_crc_error &&
-			    !candidate.data_crc_error && !candidate.deleted) {
-				std::copy(candidate.data.begin(),
-				          candidate.data.end(),
-				          static_cast<uint8_t*>(data));
-				return 0;
+			if (candidate.cylinder != cylinder ||
+			    candidate.head != head || candidate.id != sector ||
+			    candidate.data.size() != sector_size ||
+			    candidate.deleted) {
+				continue;
 			}
+			if (candidate.id_crc_error || candidate.data_crc_error) {
+				status = 0x10;
+				continue;
+			}
+			std::copy(candidate.data.begin(),
+			          candidate.data.end(),
+			          static_cast<uint8_t*>(data));
+			return 0;
 		}
-		return 0x04;
+		return status;
 	}
 
 	uint32_t sectnum;
@@ -631,28 +636,23 @@ static Bitu INT13_DiskHandler(void)
 			return CBRET_NONE;
 		}
 
-		/* TODO: Finish coding this section */
-		/*
-		segat = SegValue(es);
-		bufptr = reg_bx;
-		for(i=0;i<reg_al;i++) {
-		        last_status =
-		disk_slots[drivenum]->Read_Sector((uint32_t)reg_dh,
-		(uint32_t)(reg_ch | ((reg_cl & 0xc0)<< 2)), (uint32_t)((reg_cl &
-		63)+i), sectbuf); if(last_status != 0x00) { LOG_MSG("Error in
-		disk read"); CALLBACK_SCF(true); return CBRET_NONE;
-		        }
-		        for(t=0;t<512;t++) {
-		                real_writeb(segat,bufptr,sectbuf[t]);
-		                bufptr++;
-		        }
-		}*/
+		if (disk_slots[drivenum]->GetTrackImage()) {
+			const auto cylinder = static_cast<uint32_t>(
+			        reg_ch | ((reg_cl & 0xc0) << 2));
+			const auto first_sector = static_cast<uint32_t>(reg_cl & 0x3f);
+			for (uint8_t verified = 0; verified < reg_al; ++verified) {
+				last_status = disk_slots[drivenum]->Read_Sector(
+				        reg_dh, cylinder, first_sector + verified, sectbuf);
+				if (last_status) {
+					reg_ah = last_status;
+					reg_al = verified;
+					CALLBACK_SCF(true);
+					return CBRET_NONE;
+				}
+			}
+		}
 		reg_ah = 0x00;
-		// Qbix: The following codes don't match my specs. al should be
-		// number of sector verified reg_al = 0x10; /* CRC verify failed
-		// */ reg_al = 0x00; /* CRC verify succeeded */
 		CALLBACK_SCF(false);
-
 		break;
 	case 0x05: /* Format track */
 		if (driveInactive(drivenum)) {
