@@ -73,6 +73,7 @@ jobs:
             cxx: g++
             compiler_version: "13"
             max_warnings: 0
+            floppy_tests: true
 
           - name: GCC 14, Ubuntu 24.04
             os: ubuntu-24.04
@@ -157,6 +158,12 @@ jobs:
       - name: Report apt cache status
         run:  echo "apt cache hit:" "${{ steps.apt_cache.outputs.cache-hit || 'false' }}"
 
+      - name: Install floppy guest test dependencies
+        if: matrix.conf.floppy_tests
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y python3 nasm
+
       - name: Set up vcpkg
         uses: ./.github/actions/setup-vcpkg
         with:
@@ -187,7 +194,12 @@ jobs:
       - name: Run tests
         run: |
           set -xo pipefail
-          ctest -j 4 --preset ${{ matrix.conf.cmake_preset }} 2>&1 | tee tests.log
+          ctest -j 4 --preset ${{ matrix.conf.cmake_preset }} -LE '^floppy$' 2>&1 | tee tests.log
+
+      - name: Run floppy guest tests
+        if: matrix.conf.floppy_tests
+        run: |
+          ctest -j 4 --preset ${{ matrix.conf.cmake_preset }} -L '^floppy$' --output-on-failure --no-tests=error
 
       - name: Summarize warnings
         env:
