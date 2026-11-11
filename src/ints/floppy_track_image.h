@@ -16,13 +16,18 @@
 
 class FloppyTrackImage final : public FloppyMedia {
 public:
-	static std::unique_ptr<FloppyTrackImage> LoadHxcMfm(FILE* file);
+	static std::unique_ptr<FloppyTrackImage> LoadHxcMfm(FILE* file,
+	                                                    const std::string& path,
+	                                                    const bool read_only,
+	                                                    std::string& error);
 	static std::unique_ptr<FloppyTrackImage> LoadScp(FILE* file,
 	                                                 const std::string& path,
 	                                                 const bool read_only,
 	                                                 std::string& error);
 
 	static std::unique_ptr<FloppyTrackImage> Load86f(FILE* file,
+	                                                 const std::string& path,
+	                                                 const bool read_only,
 	                                                 std::string& error);
 
 	double GetCycleMs(const uint32_t cylinder, const uint32_t head) const override;
@@ -57,8 +62,10 @@ private:
 		Overlay prior_writes     = {};
 	};
 	using TrackFormats = std::map<TrackAddress, std::vector<TrackFormat>>;
-	bool LoadScpOverlay();
-	bool SaveScpOverlay(const Overlay& overlay, const TrackFormats& formats) const;
+	bool OpenOverlay(const std::string& path, const bool read_only,
+	                 const uint64_t fingerprint, std::string& error);
+	bool LoadOverlay();
+	bool SaveOverlay(const Overlay& overlay, const TrackFormats& formats) const;
 	bool IsValidTrackFormat(const TrackAddress& address,
 	                        const std::span<const uint8_t> ids) const;
 	void ApplyTrackFormat(const TrackAddress& address, const TrackFormat& format);
