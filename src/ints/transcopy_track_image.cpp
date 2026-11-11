@@ -81,7 +81,8 @@ std::unique_ptr<FloppyTrackImage> FloppyTrackImage::LoadTransCopy(
 		const auto captured = cylinder >= first &&
 		                      (cylinder - first) % step == 0;
 		for (size_t head = 0; head < heads; ++head) {
-			const auto entry  = cylinder * heads + head;
+			// On-disk tables reserve both heads even for single-sided disks.
+			const auto entry  = cylinder * 2 + head;
 			const auto offset = read_track_offset(bytes, entry);
 			if (!captured) {
 				if (step > 1 && offset) {
@@ -107,7 +108,7 @@ std::unique_ptr<FloppyTrackImage> FloppyTrackImage::LoadTransCopy(
 			}
 			extents.emplace_hint(next, offset, offset + length);
 
-			auto& track = image->tracks[entry];
+			auto& track = image->tracks[cylinder * heads + head];
 			const auto high_density = type == 0x02 || type == 0x03 ||
 			                          (type == 0xff && length >= 18'000);
 			const auto rate_kbps = high_density ? 500 : 250;

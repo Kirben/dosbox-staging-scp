@@ -13,13 +13,13 @@ from run_hxc_mfm_probe import check_boot, check_fat, check_overlay_format, encod
 from run_raw_floppy_read_probe import run_probe
 
 
-def encode_transcopy(disk, *, step=1, weak_bits=False):
+def encode_transcopy(disk, *, step=1, heads=2, weak_bits=False):
     """Build a native track table, with empty slots for skipped cylinders."""
     image = bytearray(0xa00)
     image[:2] = b"\x5a\xa5"
-    image[0x100:0x105] = bytes((7, 0, 39, 2, step))
+    image[0x100:0x105] = bytes((7, 0, 39, heads, step))
     for cylinder in range(0, 40, step):
-        for head in range(2):
+        for head in range(heads):
             track = 2 * cylinder + head
             cells = encode_track(disk, track)
             if weak_bits and track == 5:
