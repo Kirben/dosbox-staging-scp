@@ -622,7 +622,11 @@ check_tc_weak:
     add si,2
     cmp si,16
     jb .save
+%ifdef READBACK
+    cmp word [es:bx+16],5454h
+%else
     cmp word [es:bx+16],0
+%endif
     jne finish
     call bp
     xor si,si
@@ -634,7 +638,11 @@ check_tc_weak:
     add si,2
     cmp si,16
     jb .compare
+%ifdef READBACK
+    cmp word [es:bx+16],5454h
+%else
     cmp word [es:bx+16],0
+%endif
     jne finish
     test dx,dx
 %if TC_WEAK_BITS
