@@ -5,6 +5,7 @@
 
 #include <algorithm>
 #include <cassert>
+#include <optional>
 #include <utility>
 #include <vector>
 
@@ -510,24 +511,21 @@ static uint8_t GetDosDriveNumber(uint8_t biosNum)
 	}
 }
 
-static bool driveInactive(uint8_t driveNum)
+static bool drive_inactive(const uint8_t drive_num)
 {
-	if (driveNum >= MAX_DISK_IMAGES) {
-		LOG(LOG_BIOS, LOG_ERROR)("Disk %d non-existent", driveNum);
+	if (drive_num >= MAX_DISK_IMAGES) {
+		LOG(LOG_BIOS, LOG_ERROR)("Disk %d non-existent", drive_num);
 		last_status = 0x01;
-		CALLBACK_SCF(true);
 		return true;
 	}
-	if (!disk_slots[driveNum].sector) {
-		LOG(LOG_BIOS, LOG_ERROR)("Disk %d not active", driveNum);
+	if (!disk_slots[drive_num].sector) {
+		LOG(LOG_BIOS, LOG_ERROR)("Disk %d not active", drive_num);
 		last_status = 0x01;
-		CALLBACK_SCF(true);
 		return true;
 	}
-	if (!disk_slots[driveNum].sector->active) {
-		LOG(LOG_BIOS, LOG_ERROR)("Disk %d not active", driveNum);
+	if (!disk_slots[drive_num].sector->active) {
+		LOG(LOG_BIOS, LOG_ERROR)("Disk %d not active", drive_num);
 		last_status = 0x01;
-		CALLBACK_SCF(true);
 		return true;
 	}
 	return false;
@@ -589,272 +587,272 @@ static uint8_t format_floppy_track(imageDisk& disk, const uint8_t unit,
 	return 0x20;
 }
 
-static void bios_floppy_transfer(const Bitu drivenum, const FloppyBiosTransfer operation)
+struct DiskServiceRequest {
+	uint8_t function  = 0;
+	uint8_t drive     = 0;
+	uint8_t count     = 0;
+	uint8_t head      = 0;
+	uint8_t sector    = 0;
+	uint16_t cylinder = 0;
+	RealPt buffer     = 0;
+};
+
+struct DiskServiceResult {
+	struct DriveParameters {
+		uint32_t max_cylinder      = 0;
+		uint32_t max_head          = 0;
+		uint32_t sectors_per_track = 0;
+		uint8_t bios_type          = 0;
+		uint8_t drive_count        = 0;
+	};
+
+	std::optional<uint8_t> status              = {};
+	bool carry                                 = false;
+	std::optional<uint8_t> completed           = {};
+	std::optional<DriveParameters> parameters  = {};
+	std::optional<uint32_t> fixed_disk_sectors = {};
+};
+
+static DiskServiceResult bios_floppy_transfer(const DiskServiceRequest& request,
+                                              const uint8_t drivenum,
+                                              const FloppyBiosTransfer operation)
 {
-	auto result = FloppyBiosTransferResult{0x04, 0};
+	auto transfer = FloppyBiosTransferResult{0x04, 0};
 	if (operation != FloppyBiosTransfer::Read || !killRead) {
 		const auto parameters = RealToPhysical(RealGetVec(0x1e));
-		result = FLOPPY_BiosTransfer(operation,
-		                             check_cast<uint8_t>(drivenum),
-		                             reg_ch | ((reg_cl & 0xc0) << 2),
-		                             reg_dh,
-		                             check_cast<uint8_t>(reg_cl & 0x3f),
-		                             mem_readb(parameters + 3),
-		                             reg_al,
-		                             mem_readb(parameters + 5),
-		                             RealToPhysical(RealMake(SegValue(es),
-		                                                     reg_bx)));
+		transfer = FLOPPY_BiosTransfer(operation,
+		                               drivenum,
+		                               request.cylinder,
+		                               request.head,
+		                               request.sector,
+		                               mem_readb(parameters + 3),
+		                               request.count,
+		                               mem_readb(parameters + 5),
+		                               RealToPhysical(request.buffer));
 	}
 	if (operation == FloppyBiosTransfer::Read) {
 		killRead = false;
 	}
-	last_status = result.status;
-	mem_writeb(BIOS_DISK_STATUS, result.status);
-	reg_ah = result.status;
-	reg_al = result.sectors;
-	CALLBACK_SCF(result.status != 0);
+	last_status = transfer.status;
+	mem_writeb(BIOS_DISK_STATUS, transfer.status);
+	return {.status    = transfer.status,
+	        .carry     = transfer.status != 0,
+	        .completed = transfer.sectors};
 }
 
-static Bitu INT13_DiskHandler(void)
+static DiskServiceResult run_disk_service(const DiskServiceRequest& request)
 {
-	uint16_t segat, bufptr;
-	uint8_t sectbuf[512];
-	uint8_t drivenum;
-	Bitu t;
-	last_drive            = reg_dl;
-	drivenum              = GetDosDriveNumber(reg_dl);
+	uint16_t bufptr                  = 0;
+	std::array<uint8_t, 512> sectbuf = {};
+	DiskServiceResult result         = {};
+	last_drive                       = request.drive;
+	const auto unit                  = GetDosDriveNumber(request.drive);
 	const auto any_images = std::ranges::any_of(disk_slots, [](const auto& slot) {
 		return slot.sector != nullptr;
 	});
 
-	// unconditionally enable the interrupt flag
-	CALLBACK_SIF(true);
-
-	// drivenum = 0;
-	// LOG_MSG("INT13: Function %x called on drive %x (dos drive %d)",
-	// reg_ah,  reg_dl, drivenum);
-
 	// NOTE: the 0xff error code returned in some cases is questionable;
 	// 0x01 seems more correct
-	switch (reg_ah) {
+	switch (request.function) {
 	case 0x0: /* Reset disk */
 	{
 		/* if there aren't any diskimages (so only localdrives and
 		 * virtual drives) always succeed on reset disk. If there are
 		 * diskimages then and only then do real checks
 		 */
-		if (any_images && driveInactive(drivenum)) {
-			/* driveInactive sets carry flag if the specified drive
-			 * is not available */
+		if (any_images && drive_inactive(unit)) {
+			result.carry = true;
 			if (is_machine_cga() || is_machine_pcjr()) {
 				/* those bioses call floppy drive reset for
 				 * invalid drive values */
-				if (((disk_slots[0].sector) &&
-				     (disk_slots[0].sector->active)) ||
-				    ((disk_slots[1].sector) &&
-				     (disk_slots[1].sector->active))) {
-					if (!is_machine_pcjr() && reg_dl < 2) {
-						FLOPPY_BiosReset(reg_dl);
+				if ((disk_slots[0].sector &&
+				     disk_slots[0].sector->active) ||
+				    (disk_slots[1].sector &&
+				     disk_slots[1].sector->active)) {
+					if (!is_machine_pcjr() && request.drive < 2) {
+						FLOPPY_BiosReset(request.drive);
 					}
 					last_status = 0x00;
-					CALLBACK_SCF(false);
+					result.carry = false;
 				}
 			}
-			return CBRET_NONE;
+			return result;
 		}
-		if (!is_machine_pcjr() && reg_dl < 2) {
-			FLOPPY_BiosReset(reg_dl);
+		if (!is_machine_pcjr() && request.drive < 2) {
+			FLOPPY_BiosReset(request.drive);
 		}
 		last_status = 0x00;
-		CALLBACK_SCF(false);
-	} break;
-	case 0x1: /* Get status of last operation */
-
-		if (last_status != 0x00) {
-			reg_ah = last_status;
-			CALLBACK_SCF(true);
-		} else {
-			reg_ah = 0x00;
-			CALLBACK_SCF(false);
-		}
 		break;
-	case 0x2: /* Read sectors */
-		if (reg_al == 0) {
-			reg_ah = 0x01;
-			CALLBACK_SCF(true);
-			return CBRET_NONE;
+	}
+	case 0x1: // Get status of last operation
+		return {.status = last_status, .carry = last_status != 0};
+	case 0x2: { // Read sectors
+		if (request.count == 0) {
+			return {.status = 0x01, .carry = true};
 		}
-		if (drivenum >= MAX_DISK_IMAGES || !disk_slots[drivenum].sector) {
-			if (drivenum >= DOS_DRIVES || !Drives[drivenum] ||
-			    Drives[drivenum]->IsRemovable()) {
-				reg_ah = 0x01;
-				CALLBACK_SCF(true);
-				return CBRET_NONE;
+		if (unit >= MAX_DISK_IMAGES || !disk_slots[unit].sector) {
+			if (unit >= DOS_DRIVES || !Drives[unit] ||
+			    Drives[unit]->IsRemovable()) {
+				return {.status = 0x01, .carry = true};
 			}
 			// Inherit the Earth cdrom and Amberstar use it as a
 			// disk test
-			if (((reg_dl & 0x80) == 0x80) && (reg_dh == 0) &&
-			    ((reg_cl & 0x3f) == 1)) {
-				if (reg_ch == 0) {
+			if (((request.drive & 0x80) == 0x80) &&
+			    (request.head == 0) && (request.sector == 1)) {
+				if ((request.cylinder & 0xff) == 0) {
 					// write some MBR data into buffer for
 					// Amberstar installer
-					real_writeb(SegValue(es),
-					            reg_bx + 0x1be,
+					real_writeb(RealSegment(request.buffer),
+					            RealOffset(request.buffer) + 0x1be,
 					            0x80); // first partition is
 					                   // active
-					real_writeb(SegValue(es),
-					            reg_bx + 0x1c2,
+					real_writeb(RealSegment(request.buffer),
+					            RealOffset(request.buffer) + 0x1c2,
 					            0x06); // first partition is
 					                   // FAT16B
 				}
-				reg_ah = 0;
-				CALLBACK_SCF(false);
-				return CBRET_NONE;
+				result.status = 0;
+				result.carry  = false;
+				return result;
 			}
 		}
-		if (driveInactive(drivenum)) {
-			reg_ah = 0xff;
-			CALLBACK_SCF(true);
-			return CBRET_NONE;
+		if (drive_inactive(unit)) {
+			return {.status = 0xff, .carry = true};
 		}
 
-		if (!is_machine_pcjr_or_tandy() && disk_slots[drivenum].floppy) {
-			bios_floppy_transfer(drivenum, FloppyBiosTransfer::Read);
-			break;
+		if (!is_machine_pcjr_or_tandy() && disk_slots[unit].floppy) {
+			return bios_floppy_transfer(request,
+			                            unit,
+			                            FloppyBiosTransfer::Read);
 		}
 
-		if (drivenum < 2 && disk_slots[drivenum].floppy) {
-			FLOPPY_BiosPosition(drivenum, reg_ch);
+		if (unit < 2 && disk_slots[unit].floppy) {
+			FLOPPY_BiosPosition(unit,
+			                    check_cast<uint8_t>(request.cylinder &
+			                                        0xff));
 		}
-		segat  = SegValue(es);
-		bufptr = reg_bx;
-		for (Bitu i = 0; i < reg_al; i++) {
-			last_status = disk_slots[drivenum].sector->Read_Sector(
-			        (uint32_t)reg_dh,
-			        (uint32_t)(reg_ch | ((reg_cl & 0xc0) << 2)),
-			        (uint32_t)((reg_cl & 63) + i),
-			        sectbuf);
+		const auto segat = RealSegment(request.buffer);
+		bufptr           = RealOffset(request.buffer);
+		for (uint32_t i = 0; i < request.count; ++i) {
+			last_status = disk_slots[unit].sector->Read_Sector(
+			        request.head,
+			        request.cylinder,
+			        request.sector + i,
+			        sectbuf.data());
 			if ((last_status != 0x00) || killRead) {
 				LOG_MSG("Error in disk read");
 				killRead = false;
-				reg_ah   = 0x04;
-				CALLBACK_SCF(true);
-				return CBRET_NONE;
+				return {.status = 0x04, .carry = true};
 			}
-			for (t = 0; t < 512; t++) {
+			for (size_t t = 0; t < 512; t++) {
 				real_writeb(segat, bufptr, sectbuf[t]);
 				bufptr++;
 			}
 		}
-		if (drivenum < 2) {
-			FLOPPY_SetDiskChanged(drivenum, false);
+		if (unit < 2) {
+			FLOPPY_SetDiskChanged(unit, false);
 		}
-		reg_ah = 0x00;
-		CALLBACK_SCF(false);
+		result.status = 0x00;
+		result.carry  = false;
 		break;
+	}
 	case 0x3: /* Write sectors */
-		if (driveInactive(drivenum)) {
-			reg_ah = 0xff;
-			CALLBACK_SCF(true);
-			return CBRET_NONE;
+		if (drive_inactive(unit)) {
+			return {.status = 0xff, .carry = true};
 		}
-		if (const auto& track = disk_slots[drivenum].floppy;
+		if (const auto& track = disk_slots[unit].floppy;
 		    track && track->SupportsTrackWrites() &&
 		    !is_machine_pcjr_or_tandy()) {
-			bios_floppy_transfer(drivenum, FloppyBiosTransfer::Write);
-			break;
+			return bios_floppy_transfer(request,
+			                            unit,
+			                            FloppyBiosTransfer::Write);
 		}
-		bufptr = reg_bx;
-		for (Bitu i = 0; i < reg_al; i++) {
-			for (t = 0; t < disk_slots[drivenum].sector->getSectSize();
+		bufptr = RealOffset(request.buffer);
+		for (uint32_t i = 0; i < request.count; ++i) {
+			for (size_t t = 0;
+			     t < disk_slots[unit].sector->getSectSize();
 			     t++) {
-				sectbuf[t] = real_readb(SegValue(es), bufptr);
+				sectbuf[t] = real_readb(RealSegment(request.buffer),
+				                        bufptr);
 				bufptr++;
 			}
-			last_status = disk_slots[drivenum].sector->Write_Sector(
-			        (uint32_t)reg_dh,
-			        (uint32_t)(reg_ch | ((reg_cl & 0xc0) << 2)),
-			        (uint32_t)((reg_cl & 63) + i),
-			        &sectbuf[0]);
+			last_status = disk_slots[unit].sector->Write_Sector(
+			        request.head,
+			        request.cylinder,
+			        request.sector + i,
+			        sectbuf.data());
 			if (last_status != 0x00) {
-				CALLBACK_SCF(true);
-				return CBRET_NONE;
+				result.carry = true;
+				return result;
 			}
 		}
-		if (drivenum < 2 && reg_al) {
-			FLOPPY_SetDiskChanged(drivenum, false);
+		if (unit < 2 && request.count) {
+			FLOPPY_SetDiskChanged(unit, false);
 		}
-		reg_ah = 0x00;
-		CALLBACK_SCF(false);
+		result.status = 0x00;
+		result.carry  = false;
 		break;
 	case 0x04: /* Verify sectors */
-		if (reg_al == 0) {
-			reg_ah = 0x01;
-			CALLBACK_SCF(true);
-			return CBRET_NONE;
+		if (request.count == 0) {
+			return {.status = 0x01, .carry = true};
 		}
-		if (driveInactive(drivenum)) {
-			reg_ah = last_status;
-			return CBRET_NONE;
+		if (drive_inactive(unit)) {
+			return {.status = last_status, .carry = true};
 		}
 
-		if (!is_machine_pcjr_or_tandy() && disk_slots[drivenum].floppy) {
-			bios_floppy_transfer(drivenum, FloppyBiosTransfer::Verify);
-			break;
+		if (!is_machine_pcjr_or_tandy() && disk_slots[unit].floppy) {
+			return bios_floppy_transfer(request,
+			                            unit,
+			                            FloppyBiosTransfer::Verify);
 		}
-		if (disk_slots[drivenum].floppy) {
-			const auto cylinder = static_cast<uint32_t>(
-			        reg_ch | ((reg_cl & 0xc0) << 2));
-			const auto first_sector = static_cast<uint32_t>(reg_cl & 0x3f);
-			for (uint8_t verified = 0; verified < reg_al; ++verified) {
-				last_status = disk_slots[drivenum].sector->Read_Sector(
-				        reg_dh, cylinder, first_sector + verified, sectbuf);
+		if (disk_slots[unit].floppy) {
+			const auto first_sector = static_cast<uint32_t>(request.sector);
+			for (uint8_t verified = 0; verified < request.count;
+			     ++verified) {
+				last_status = disk_slots[unit].sector->Read_Sector(
+				        request.head,
+				        request.cylinder,
+				        first_sector + verified,
+				        sectbuf.data());
 				if (last_status) {
-					reg_ah = last_status;
-					reg_al = verified;
-					CALLBACK_SCF(true);
-					return CBRET_NONE;
+					result.status    = last_status;
+					result.completed = verified;
+					result.carry     = true;
+					return result;
 				}
 			}
 		}
-		reg_ah = 0x00;
-		CALLBACK_SCF(false);
+		result.status = 0x00;
+		result.carry  = false;
 		break;
 	case 0x05: /* Format track */
-		if (driveInactive(drivenum)) {
+		if (drive_inactive(unit)) {
 			last_status = 0xff;
-		} else if (disk_slots[drivenum].sector->hardDrive) {
+		} else if (disk_slots[unit].sector->hardDrive) {
 			// Preserve the existing fixed-disk BIOS behavior.
 			last_status = 0;
 		} else {
-			const auto cylinder = static_cast<uint32_t>(
-			        reg_ch | ((reg_cl & 0xc0) << 2));
-			last_status = format_floppy_track(*disk_slots[drivenum].sector,
-			                                  drivenum,
-			                                  cylinder,
-			                                  reg_dh,
-			                                  reg_al,
-			                                  RealMake(SegValue(es),
-			                                           reg_bx));
+			last_status = format_floppy_track(*disk_slots[unit].sector,
+			                                  unit,
+			                                  request.cylinder,
+			                                  request.head,
+			                                  request.count,
+			                                  request.buffer);
 			mem_writeb(BIOS_DISK_STATUS, last_status);
 		}
-		reg_ah = last_status;
-		CALLBACK_SCF(last_status != 0);
+		result.status = last_status;
+		result.carry  = last_status != 0;
 		break;
-	case 0x08: /* Get drive parameters */
-		if (driveInactive(drivenum)) {
+	case 0x08: { // Get drive parameters
+		if (drive_inactive(unit)) {
 			last_status = 0x07;
-			reg_ah      = last_status;
-			CALLBACK_SCF(true);
-			return CBRET_NONE;
+			return {.status = last_status, .carry = true};
 		}
-		reg_ax = 0x00;
-		reg_bl = disk_slots[drivenum].sector->GetBiosType();
 		uint32_t tmpheads, tmpcyl, tmpsect, tmpsize;
-		disk_slots[drivenum].sector->Get_Geometry(&tmpheads,
-		                                          &tmpcyl,
-		                                          &tmpsect,
-		                                          &tmpsize);
+		disk_slots[unit].sector->Get_Geometry(&tmpheads,
+		                                      &tmpcyl,
+		                                      &tmpsect,
+		                                      &tmpsize);
 		if (tmpcyl == 0) {
 			LOG(LOG_BIOS,
 			    LOG_ERROR)("INT13 DrivParm: cylinder count zero!");
@@ -866,49 +864,37 @@ static Bitu INT13_DiskHandler(void)
 		} else {
 			tmpheads--; // head count -> max head
 		}
-		reg_ch = (uint8_t)(tmpcyl & 0xff);
-		reg_cl = (uint8_t)(((tmpcyl >> 2) & 0xc0) | (tmpsect & 0x3f));
-		reg_dh = (uint8_t)tmpheads;
-		last_status = 0x00;
-		if (reg_dl & 0x80) { // harddisks
-			reg_dl = 0;
-			if (disk_slots[2].sector) {
-				reg_dl++;
-			}
-			if (disk_slots[3].sector) {
-				reg_dl++;
-			}
-		} else { // floppy disks
-			reg_dl = 0;
-			if (disk_slots[0].sector) {
-				reg_dl++;
-			}
-			if (disk_slots[1].sector) {
-				reg_dl++;
-			}
-		}
-		CALLBACK_SCF(false);
+		const auto first_slot = (request.drive & 0x80) ? 2u : 0u;
+		const auto drive_count = (disk_slots[first_slot].sector ? 1u : 0u) +
+		                         (disk_slots[first_slot + 1].sector ? 1u : 0u);
+		result.parameters = DiskServiceResult::DriveParameters{
+		        tmpcyl,
+		        tmpheads,
+		        tmpsect,
+		        disk_slots[unit].sector->GetBiosType(),
+		        check_cast<uint8_t>(drive_count)};
+		last_status  = 0;
+		result.carry = false;
 		break;
+	}
 	case 0x11: /* Recalibrate drive */
-		reg_ah = 0x00;
-		CALLBACK_SCF(false);
+		result.status = 0x00;
+		result.carry  = false;
 		break;
 	case 0x15: /* Get disk type */
 		/* Korean Powerdolls uses this to detect harddrives */
 		LOG(LOG_BIOS, LOG_WARN)("INT13: Get disktype used!");
 		if (any_images) {
-			if (driveInactive(drivenum)) {
+			if (drive_inactive(unit)) {
 				last_status = 0x07;
-				reg_ah      = last_status;
-				CALLBACK_SCF(true);
-				return CBRET_NONE;
+				return {.status = last_status, .carry = true};
 			}
 
 			uint32_t tmpheads, tmpcyl, tmpsect, tmpsize;
-			disk_slots[drivenum].sector->Get_Geometry(&tmpheads,
-			                                          &tmpcyl,
-			                                          &tmpsect,
-			                                          &tmpsize);
+			disk_slots[unit].sector->Get_Geometry(&tmpheads,
+			                                      &tmpcyl,
+			                                      &tmpsect,
+			                                      &tmpsize);
 			// Store intermediate calculations in 64-bit to avoid
 			// accidental integer overflow on temporary value:
 			uint64_t largesize = tmpheads;
@@ -917,69 +903,88 @@ static Bitu INT13_DiskHandler(void)
 			largesize *= tmpsize;
 			const auto ts = static_cast<uint32_t>(largesize / 512);
 
-			reg_ah = (drivenum < 2) ? 1 : 3; // With 2 for floppy
-			                                 // MSDOS starts calling
-			                                 // int 13 ah 16
-			if (reg_ah == 3) {
-				reg_cx = static_cast<uint16_t>(ts >> 16);
-				reg_dx = static_cast<uint16_t>(ts & 0xffff);
+			// DOS probes AH=16h if the floppy is reported as type 2.
+			result.status = unit < 2 ? 1 : 3;
+			if (unit >= 2) {
+				result.fixed_disk_sectors = ts;
 			}
-			CALLBACK_SCF(false);
+			result.carry = false;
+		} else if (unit < DOS_DRIVES && (Drives[unit] || unit < 2)) {
+			result.status = unit < 2 ? 1 : 3;
+			if (unit >= 2) {
+				result.fixed_disk_sectors = 0x4800;
+			}
 		} else {
-			if (drivenum < DOS_DRIVES &&
-			    (Drives[drivenum] != nullptr || drivenum < 2)) {
-				if (drivenum < 2) {
-					// TODO use actual size (using 1.44 for
-					// now).
-					reg_ah = 0x1; // type
-					              //					reg_cx
-					//= 0; 					reg_dx = 2880; //Only set size
-					//for harddrives.
-				} else {
-					// TODO use actual size (using 105 mb
-					// for now).
-					reg_ah = 0x3; // type
-					reg_cx = 3;
-					reg_dx = 0x4800;
-				}
-				CALLBACK_SCF(false);
-			} else {
-				LOG(LOG_BIOS, LOG_WARN)(
-				        "INT13: no images, but invalid drive for call 15");
-				reg_ah = 0xff;
-				CALLBACK_SCF(true);
-			}
+			LOG(LOG_BIOS, LOG_WARN)(
+			        "INT13: no images, but invalid drive for call 15");
+			return {.status = 0xff, .carry = true};
 		}
 		break;
 	case 0x16: // Diskette change line status
-		if (reg_dl >= 2) {
+		if (request.drive >= 2) {
 			last_status = 0x01;
 		} else {
-			const auto& disk = disk_slots[reg_dl].sector;
+			const auto& disk = disk_slots[request.drive].sector;
 			last_status = !disk || !disk->active
 			                    ? 0x80
-			                    : (FLOPPY_IsDiskChanged(reg_dl) ? 0x06
-			                                                    : 0);
+			                    : (FLOPPY_IsDiskChanged(request.drive)
+			                               ? 0x06
+			                               : 0);
 			mem_writeb(BIOS_DISK_STATUS, last_status);
 		}
-		reg_ah = last_status;
-		CALLBACK_SCF(last_status != 0);
+		result.status = last_status;
+		result.carry  = last_status != 0;
 		break;
 	case 0x17: /* Set disk type for format */
 		/* Pirates! needs this to load */
 		killRead = true;
-		reg_ah   = 0x00;
-		CALLBACK_SCF(false);
+		result.status = 0x00;
+		result.carry  = false;
 		break;
 	default:
 		LOG(LOG_BIOS,
 		    LOG_ERROR)("INT13: Function %x called on drive %x (dos drive %d)",
-		               reg_ah,
-		               reg_dl,
-		               drivenum);
-		reg_ah = 0xff;
-		CALLBACK_SCF(true);
+		               request.function,
+		               request.drive,
+		               unit);
+		result.status = 0xff;
+		result.carry  = true;
 	}
+	return result;
+}
+
+static Bitu INT13_DiskHandler()
+{
+	const DiskServiceRequest request = {reg_ah,
+	                                    reg_dl,
+	                                    reg_al,
+	                                    reg_dh,
+	                                    check_cast<uint8_t>(reg_cl & 0x3f),
+	                                    check_cast<uint16_t>(
+	                                            reg_ch | ((reg_cl & 0xc0) << 2)),
+	                                    RealMake(SegValue(es), reg_bx)};
+	CALLBACK_SIF(true);
+	const auto result = run_disk_service(request);
+	if (result.status) {
+		reg_ah = *result.status;
+	}
+	if (result.completed) {
+		reg_al = *result.completed;
+	}
+	if (const auto& params = result.parameters) {
+		reg_ax = 0;
+		reg_bl = params->bios_type;
+		reg_ch = check_cast<uint8_t>(params->max_cylinder & 0xff);
+		reg_cl = check_cast<uint8_t>(((params->max_cylinder >> 2) & 0xc0) |
+		                             (params->sectors_per_track & 0x3f));
+		reg_dh = static_cast<uint8_t>(params->max_head);
+		reg_dl = params->drive_count;
+	}
+	if (result.fixed_disk_sectors) {
+		reg_cx = check_cast<uint16_t>(*result.fixed_disk_sectors >> 16);
+		reg_dx = check_cast<uint16_t>(*result.fixed_disk_sectors & 0xffff);
+	}
+	CALLBACK_SCF(result.carry);
 	return CBRET_NONE;
 }
 
