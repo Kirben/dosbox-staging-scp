@@ -8,6 +8,10 @@ org 100h
 %define MSR 0f4h
 %define DATA 0f5h
 
+%ifdef WATCHDOG
+    call check_watchdog
+%endif
+
     mov byte [stage],1
     xor al,al
     out 0f2h,al
@@ -175,7 +179,124 @@ check_result:
     jne report
     ret
 
+%ifdef WATCHDOG
+check_watchdog:
+    mov ax,350eh
+    int 21h
+    mov [old_irq6],bx
+    mov [old_irq6+2],es
+    mov dx,watchdog_irq
+    mov ax,250eh
+    int 21h
+    in al,21h
+    mov [old_mask],al
+    and al,0bfh
+    out 21h,al
+    mov byte [hooked],1
+
+    mov byte [stage],7
+    mov al,81h
+    out 0f2h,al
+    ; An enable with the trigger held high must not start the timer.
+    mov al,0e1h
+    out 0f2h,al
+    mov cx,60
+    call wait_ticks
+    cmp byte [watchdog_count],0
+    jne report
+
+    mov byte [stage],8
+    mov al,0a1h
+    out 0f2h,al
+    ; Simulate a guest stuck partway through sending Specify.
+    mov al,03h
+    out DATA,al
+    mov cx,18
+    call wait_ticks
+    mov al,0e1h
+    out 0f2h,al
+    mov al,0a1h
+    out 0f2h,al
+    mov cx,40
+    call wait_ticks
+    cmp byte [watchdog_count],0
+    jne report
+    mov cx,20
+    call wait_ticks
+    cmp byte [watchdog_count],1
+    jne report
+    in al,MSR
+    cmp al,90h
+    jne report
+
+    mov byte [stage],9
+    ; Disable and reset in the guest, then prove a canceled timer stays quiet.
+    xor al,al
+    out 0f2h,al
+    mov al,0e1h
+    out 0f2h,al
+    mov al,0a1h
+    out 0f2h,al
+    mov al,81h
+    out 0f2h,al
+    mov cx,60
+    call wait_ticks
+    cmp byte [watchdog_count],1
+    jne report
+
+    mov byte [stage],10
+    mov al,0e1h
+    out 0f2h,al
+    mov al,0a1h
+    out 0f2h,al
+    mov cx,60
+    call wait_ticks
+    cmp byte [watchdog_count],2
+    jne report
+    mov al,81h
+    out 0f2h,al
+    ret
+
+wait_ticks:
+    push es
+    mov ax,40h
+    mov es,ax
+    mov bx,[es:6ch]
+.wait:
+    mov ax,[es:6ch]
+    sub ax,bx
+    cmp ax,cx
+    jb .wait
+    pop es
+    ret
+
+watchdog_irq:
+    push ax
+    inc byte [cs:watchdog_count]
+    mov al,20h
+    out 20h,al
+    pop ax
+    iret
+
+old_irq6 dd 0
+old_mask db 0
+hooked db 0
+watchdog_count db 0
+%endif
+
 report:
+%ifdef WATCHDOG
+    cmp byte [hooked],0
+    je .write_report
+    mov al,[old_mask]
+    out 21h,al
+    push ds
+    lds dx,[old_irq6]
+    mov ax,250eh
+    int 21h
+    pop ds
+.write_report:
+%endif
     mov ax,3c00h
     mov dx,filename
     xor cx,cx
