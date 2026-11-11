@@ -646,8 +646,8 @@ static Bitu INT13_DiskHandler(void)
 				 * invalid drive values */
 				if (((disk_slots[0]) && (disk_slots[0]->active)) ||
 				    ((disk_slots[1]) && (disk_slots[1]->active))) {
-					if (!is_machine_pcjr() && reg_dl < 0x80) {
-						reg_ip++;
+					if (!is_machine_pcjr() && reg_dl < 2) {
+						FLOPPY_BiosReset(reg_dl);
 					}
 					last_status = 0x00;
 					CALLBACK_SCF(false);
@@ -655,8 +655,8 @@ static Bitu INT13_DiskHandler(void)
 			}
 			return CBRET_NONE;
 		}
-		if (!is_machine_pcjr() && reg_dl < 0x80) {
-			reg_ip++;
+		if (!is_machine_pcjr() && reg_dl < 2) {
+			FLOPPY_BiosReset(reg_dl);
 		}
 		last_status = 0x00;
 		CALLBACK_SCF(false);
@@ -989,7 +989,7 @@ void BIOS_SetupDisks(void)
 	}
 
 	FLOPPY_Init();
-	if (!is_machine_pcjr_or_tandy()) {
+	if (!is_machine_pcjr()) {
 		const auto irq6 = CALLBACK_Allocate();
 		CALLBACK_Setup(irq6, floppy_irq6, CB_IRET_EOI_PIC1, "IRQ 6 Floppy");
 		RealSetVec(0x0e, CALLBACK_RealPointer(irq6));

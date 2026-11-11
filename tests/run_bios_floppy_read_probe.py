@@ -13,7 +13,8 @@ from run_hxc_mfm_probe import encode, launch
 from run_scp_attachment_probe import encode_scp
 
 
-def run_probe(dosbox, nasm, directory, image, unit, options, read_only=True):
+def run_probe(dosbox, nasm, directory, image, unit, options, read_only=True,
+              machine=None):
     source = Path(__file__).with_name("bios_floppy_read_probe.asm")
     (directory / "BIOS.OUT").unlink(missing_ok=True)
     subprocess.run(
@@ -23,11 +24,16 @@ def run_probe(dosbox, nasm, directory, image, unit, options, read_only=True):
     )
     letter = "ab"[unit]
     access = " -ro" if read_only else ""
-    command, env = launch(dosbox, directory, "bios", [
-        f'mount c "{directory}"',
-        f'mount {letter} "{image}" -t floppy -fs none{access}',
-        "c:", "probe.com", "exit",
-    ])
+    commands = [f'mount c "{directory}"',
+                f'mount {letter} "{image}" -t floppy -fs none{access}', "c:"]
+    if machine:
+        commands.append("autotype -w 2 k")
+    commands.extend(("probe.com", "exit"))
+    command, env = launch(dosbox, directory, "bios", commands)
+    if machine:
+        config = command[-1]
+        config.write_text(f"[dosbox]\nmachine={machine}\n" + config.read_text(),
+                          encoding="ascii")
     run = subprocess.run(command, cwd=directory, env=env, timeout=30,
                          capture_output=True, text=True, check=True)
     report = directory / "BIOS.OUT"
@@ -63,6 +69,7 @@ def main():
     modes.add_argument("--scp-write", action="store_true")
     modes.add_argument("--verify", action="store_true")
     modes.add_argument("--cross-track", action="store_true")
+    modes.add_argument("--irq-reset", action="store_true")
     args = parser.parse_args()
     dosbox = args.dosbox.resolve()
 
@@ -94,6 +101,19 @@ def main():
                 image = directory / f"disk.{extension}"
                 image.write_bytes(image_bytes)
                 options = ["-DTRACK_IMAGE"] if encoder else []
+                if args.irq_reset:
+                    options.append("-DIRQ_RESET_TEST")
+                    run_probe(dosbox, args.nasm, directory, image, unit, options)
+                    print(f".{extension} drive {letter.upper()}: BIOS reset and PIC IRQ6 passed")
+                    if extension == "mfm" and unit == 0:
+                        for machine in ("pcjr", "tandy"):
+                            machine_options = options + ["-DKEYBOARD_TEST"]
+                            if machine == "pcjr":
+                                machine_options.append("-DPCJR_IRQ_TEST")
+                            run_probe(dosbox, args.nasm, directory, image, unit,
+                                      machine_options, machine=machine)
+                            print(f"{machine}: BIOS reset, MFM read and keyboard passed")
+                    continue
                 if args.cross_track:
                     options.append("-DCROSS_TRACK")
                     run_probe(dosbox, args.nasm, directory, image, unit, options)

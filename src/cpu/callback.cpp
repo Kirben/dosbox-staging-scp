@@ -487,8 +487,6 @@ static uint8_t callback_setup_extra(const callback_number_t callback_number,
 			add_native_call_4(callback_number);
 		}
 		add_instruction_1(0xcf);                   // iret
-		add_instruction_2(0xcd, 0x0e);             // int 0x0e
-		add_instruction_1(0xcf);                   // iret
 		break;
 	case CB_VESA_WAIT:
 		if (use_callback) {
