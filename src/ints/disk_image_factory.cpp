@@ -46,16 +46,21 @@ std::shared_ptr<imageDisk> OpenSectorDiskImage(const std::string& path,
 	if (is_track_image && hard_disk.value_or(false)) {
 		return {};
 	}
-	read_only |= is_track_image;
 	const auto close_file = [](FILE* file) { fclose(file); };
 	std::unique_ptr<FILE, decltype(close_file)> file(
-	        fopen_wrap_ro_fallback(path, read_only), close_file);
+	        is_track_image ? fopen(path.c_str(), "rb")
+	                       : fopen_wrap_ro_fallback(path, read_only),
+	        close_file);
 	if (!file) {
 		return {};
 	}
 
 	if (is_track_image) {
-		return LoadFloppyTrackDisk(file.get(), path);
+		auto disk = LoadFloppyTrackDisk(file.get(), path, read_only);
+		if (disk) {
+			read_only = disk->IsWriteProtected();
+		}
+		return disk;
 	}
 
 	const auto size_kb = stdio_size_kb(file.get());
@@ -78,7 +83,8 @@ bool IsFloppyTrackImagePath(const std::string_view path)
 	return track_format(path) != TrackFormat::None;
 }
 
-std::shared_ptr<imageDisk> LoadFloppyTrackDisk(FILE* file, const std::string& path)
+std::shared_ptr<imageDisk> LoadFloppyTrackDisk(FILE* file, const std::string& path,
+                                               const bool read_only)
 {
 	std::string error                       = {};
 	std::unique_ptr<FloppyTrackImage> image = {};
@@ -87,7 +93,7 @@ std::shared_ptr<imageDisk> LoadFloppyTrackDisk(FILE* file, const std::string& pa
 		image = FloppyTrackImage::LoadHxcMfm(file);
 		break;
 	case TrackFormat::Scp:
-		image = FloppyTrackImage::LoadScp(file, error);
+		image = FloppyTrackImage::LoadScp(file, path, read_only, error);
 		break;
 	case TrackFormat::F86:
 		image = FloppyTrackImage::Load86f(file, error);

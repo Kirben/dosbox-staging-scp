@@ -136,8 +136,13 @@ bool ScpCapture::Parse(const std::vector<uint8_t>& d, std::string& error)
 		return fail("writable SCP captures must have one revolution");
 	}
 	uint32_t sum = 0;
-	for (size_t i = 16; i < d.size(); ++i) {
-		sum += d[i];
+	// FNV-1a binds a sidecar to the exact source, including the SCP header.
+	fingerprint = 14695981039346656037ull;
+	for (size_t i = 0; i < d.size(); ++i) {
+		fingerprint = (fingerprint ^ d[i]) * 1099511628211ull;
+		if (i >= 16) {
+			sum += d[i];
+		}
 	}
 	const auto checksum = little(d, 12);
 	if (!(header.WritableSource() && checksum == 0) && sum != checksum) {

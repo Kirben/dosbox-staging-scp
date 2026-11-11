@@ -3,8 +3,10 @@
 #ifndef DOSBOX_FLOPPY_TRACK_IMAGE_H
 #define DOSBOX_FLOPPY_TRACK_IMAGE_H
 
+#include <array>
 #include <cstdint>
 #include <cstdio>
+#include <map>
 #include <memory>
 #include <span>
 #include <string>
@@ -19,6 +21,7 @@ struct FloppySector {
 	bool id_crc_error         = false;
 	bool data_crc_error       = false;
 	bool deleted              = false;
+	size_t revolution         = 0;
 	std::vector<uint8_t> data = {};
 };
 
@@ -26,6 +29,8 @@ class FloppyTrackImage {
 public:
 	static std::unique_ptr<FloppyTrackImage> LoadHxcMfm(FILE* file);
 	static std::unique_ptr<FloppyTrackImage> LoadScp(FILE* file,
+	                                                 const std::string& path,
+	                                                 const bool read_only,
 	                                                 std::string& error);
 
 	static std::unique_ptr<FloppyTrackImage> Load86f(FILE* file,
@@ -35,12 +40,28 @@ public:
 
 	std::span<const FloppySector> GetTrack(const uint32_t cylinder,
 	                                       const uint32_t head) const;
+	bool IsWriteProtected() const;
+	bool WriteScpSector(const uint32_t cylinder, const uint32_t head,
+	                    const uint32_t sector,
+	                    const std::span<const uint8_t> data);
 
 	uint32_t cylinders       = 0;
 	uint32_t heads           = 0;
 	uint32_t logical_sectors = 0;
 
 private:
+	using OverlayKey    = std::array<uint8_t, 3>;
+	using OverlaySector = std::array<uint8_t, 512>;
+	using Overlay       = std::map<OverlayKey, OverlaySector>;
+	bool LoadScpOverlay();
+	bool SaveScpOverlay(const Overlay& overlay) const;
+	bool CanOverlaySector(const OverlayKey& key) const;
+	void ApplyOverlaySector(const OverlayKey& key, const OverlaySector& data);
+	std::string overlay_path     = {};
+	uint64_t capture_fingerprint = 0;
+	bool overlay_writable        = false;
+	Overlay overlay              = {};
+
 	struct Track {
 		std::vector<FloppySector> sectors = {};
 		double cycle_ms                   = 200.0;
