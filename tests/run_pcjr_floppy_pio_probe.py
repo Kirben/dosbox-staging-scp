@@ -49,14 +49,14 @@ def main():
     args = parser.parse_args()
     with TemporaryDirectory() as temp:
         folder = Path(temp)
-        disk = b"Q" * 512 + b"R" * 512 + bytes(360 * 1024 - 1024)
+        disk = b"Q" * 512 + b"R" * 512 + bytes(512) + b"S" * 512 + bytes(360 * 1024 - 2048)
         if args.watchdog:
             image = folder / "disk.img"
             image.write_bytes(disk)
             run_probe(args.dosbox.resolve(), args.nasm, folder, image, False, watchdog=True)
             print("PCjr watchdog timeout, retrigger, cancellation, and recovery passed")
             return
-        for extension, capture in (("img", disk), ("mfm", encode(disk))):
+        for extension, capture in (("img", disk), ("mfm", encode(disk, deleted_sector=True))):
             image = folder / f"disk.{extension}"
             image.write_bytes(capture)
             for replay in (False, True):

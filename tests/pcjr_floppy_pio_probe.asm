@@ -78,6 +78,17 @@ org 100h
     mov bl,10h
     call check_result
 %ifdef TRACK_IMAGE
+    mov byte [stage],11
+    mov si,skip_deleted
+    mov cx,9
+    call send
+    mov bl,53h
+    call read_sector
+    mov bl,80h
+    mov byte [expected_st2],40h
+    call check_result
+    mov byte [expected_st2],0
+
     mov byte [stage],6
     mov si,format_command
     mov cx,6
@@ -168,8 +179,8 @@ check_result:
     cmp al,bl
     jne report
     in al,DATA
-    test al,al
-    jnz report
+    cmp al,[expected_st2]
+    jne report
     mov cx,4
 .rest:
     in al,DATA
@@ -313,6 +324,8 @@ report:
     mov ax,4c00h
     int 21h
 
+skip_deleted db 66h,0,0,0,3,2,4,2ah,0ffh
+expected_st2 db 0
 specify db 03h,0dfh,1
 read_command db 46h,0,0,0,1,2,2,2ah,0ffh
 write_command db 45h,0,0,0,1,2,2,2ah,0ffh
