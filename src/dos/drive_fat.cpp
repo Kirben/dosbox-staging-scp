@@ -3,10 +3,13 @@
 
 #include "dos/drives.h"
 
+#include <algorithm>
+#include <array>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
 #include <ctime>
+#include <utility>
 
 #include "dos.h"
 #include "ints/bios.h"
@@ -27,7 +30,8 @@ static constexpr uint16_t BytePerSector = 512;
 
 class fatFile final : public DOS_File {
 public:
-	fatFile(const char* name, uint32_t startCluster, uint32_t fileLen, std::shared_ptr<fatDrive> useDrive, bool _read_only_medium);
+	fatFile(const direntry& entry, uint32_t dir_cluster, uint32_t dir_index,
+	        std::shared_ptr<fatDrive> drive, bool read_only);
 	fatFile(const fatFile&) = delete; // prevent copy
 	fatFile& operator=(const fatFile&) = delete; // prevent assignment
 	bool Read(uint8_t * data,uint16_t * size) override;
@@ -51,6 +55,13 @@ public:
 	bool set_archive_on_close   = false;
 	bool loadedSector           = false;
 	const bool read_only_medium = false;
+
+private:
+	friend class fatDrive;
+
+	bool ReadDirectoryEntry(direntry& entry);
+	bool RefreshDirectoryEntry();
+	std::array<uint8_t, 11> directory_name = {};
 };
 
 /* IN - char * filename: Name in regular filename format, e.g. bob.txt */
@@ -71,17 +82,51 @@ static void convToDirFile(char *filename, char *filearray) {
 	}
 }
 
-fatFile::fatFile(const char* /*name*/, uint32_t startCluster, uint32_t fileLen,
-                 std::shared_ptr<fatDrive> useDrive, bool _read_only_medium)
-        : myDrive(useDrive),
-          firstCluster(startCluster),
-          filelength(fileLen),
-          read_only_medium(_read_only_medium)
+fatFile::fatFile(const direntry& entry, uint32_t dir_cluster, uint32_t dir_index,
+                 std::shared_ptr<fatDrive> drive, bool read_only)
+        : myDrive(std::move(drive)),
+          firstCluster(entry.loFirstClust),
+          filelength(entry.entrysize),
+          dirCluster(dir_cluster),
+          dirIndex(dir_index),
+          read_only_medium(read_only)
 {
+	std::copy_n(entry.entryname, directory_name.size(), directory_name.begin());
 	uint32_t seekto = 0;
-	if(filelength > 0) {
+	if (filelength > 0) {
 		Seek(&seekto, DOS_SEEK_SET);
 	}
+}
+
+bool fatFile::ReadDirectoryEntry(direntry& entry)
+{
+	if (!myDrive->directoryBrowse(dirCluster, &entry, dirIndex)) {
+		return false;
+	}
+	// A raw write may have deleted or reused this slot. Do not update
+	// a different file when the original handle is written or closed.
+	const FatAttributeFlags attributes = entry.attrib;
+	return myDrive->loadedDisk->hardDrive ||
+	       (!attributes.directory && !attributes.volume &&
+	        std::equal(directory_name.begin(), directory_name.end(), entry.entryname));
+}
+
+bool fatFile::RefreshDirectoryEntry()
+{
+	if (myDrive->loadedDisk->hardDrive) {
+		return true;
+	}
+	direntry entry = {};
+	if (!ReadDirectoryEntry(entry)) {
+		DOS_SetError(DOSERR_ACCESS_DENIED);
+		return false;
+	}
+	if (firstCluster != entry.loFirstClust || filelength != entry.entrysize) {
+		firstCluster = entry.loFirstClust;
+		filelength   = entry.entrysize;
+		loadedSector = false;
+	}
+	return true;
 }
 
 bool fatFile::Read(uint8_t * data, uint16_t *size) {
@@ -90,13 +135,18 @@ bool fatFile::Read(uint8_t * data, uint16_t *size) {
 		DOS_SetError(DOSERR_ACCESS_DENIED);
 		return false;
 	}
+	if (!RefreshDirectoryEntry()) {
+		return false;
+	}
 	uint16_t sizedec, sizecount;
 	if(seekpos >= filelength) {
 		*size = 0;
 		return true;
 	}
 
-	if (!loadedSector) {
+	// External floppy writes can change both the sector contents and its
+	// FAT chain.
+	if (!loadedSector || !myDrive->loadedDisk->hardDrive) {
 		currentSector = myDrive->getAbsoluteSectFromBytePos(firstCluster, seekpos);
 		if(currentSector == 0) {
 			/* EOC reached before EOF */
@@ -105,7 +155,11 @@ bool fatFile::Read(uint8_t * data, uint16_t *size) {
 			return true;
 		}
 		curSectOff = seekpos % myDrive->getSectorSize();
-		myDrive->readSector(currentSector, sectorBuffer);
+		if (myDrive->readSector(currentSector, sectorBuffer)) {
+			loadedSector = false;
+			DOS_SetError(DOSERR_ACCESS_DENIED);
+			return false;
+		}
 		loadedSector = true;
 	}
 
@@ -148,6 +202,9 @@ bool fatFile::Write(uint8_t * data, uint16_t *size) {
 
 	// File should always be opened in read-only mode if on read-only drive
 	assert(!IsOnReadOnlyMedium());
+	if (!RefreshDirectoryEntry()) {
+		return false;
+	}
 
 	direntry tmpentry;
 	uint16_t sizedec, sizecount;
@@ -182,6 +239,21 @@ bool fatFile::Write(uint8_t * data, uint16_t *size) {
 		}
 		if(filelength > seekpos) filelength = seekpos;
 		if(*size == 0) goto finalizeWrite;
+	}
+
+	if (sizedec && !myDrive->loadedDisk->hardDrive) {
+		loadedSector = false;
+		if (seekpos < filelength) {
+			currentSector = myDrive->getAbsoluteSectFromBytePos(firstCluster,
+			                                                    seekpos);
+			if (!currentSector ||
+			    myDrive->readSector(currentSector, sectorBuffer)) {
+				DOS_SetError(DOSERR_ACCESS_DENIED);
+				return false;
+			}
+			curSectOff   = seekpos % myDrive->getSectorSize();
+			loadedSector = true;
+		}
 	}
 
 	while(sizedec != 0) {
@@ -231,7 +303,10 @@ bool fatFile::Write(uint8_t * data, uint16_t *size) {
 	if(curSectOff>0 && loadedSector) myDrive->writeSector(currentSector, sectorBuffer);
 
 finalizeWrite:
-	myDrive->directoryBrowse(dirCluster, &tmpentry, dirIndex);
+	if (!ReadDirectoryEntry(tmpentry)) {
+		DOS_SetError(DOSERR_ACCESS_DENIED);
+		return false;
+	}
 	// TODO: On MS-DOS 6.22 timestamps only get flushed to disk on file close.
 	// The time value should also be the time of close, not of write.
 	// This is unlikely to cause huge problems and I don't feel confident in changing this code right now.
@@ -247,7 +322,10 @@ finalizeWrite:
 
 bool fatFile::Seek(uint32_t *pos, uint32_t type) {
 	int32_t seekto=0;
-	
+	if (type == DOS_SEEK_END && !RefreshDirectoryEntry()) {
+		return false;
+	}
+
 	switch(type) {
 		case DOS_SEEK_SET:
 			seekto = (int32_t)*pos;
@@ -279,11 +357,11 @@ bool fatFile::Seek(uint32_t *pos, uint32_t type) {
 
 void fatFile::Close()
 {
-	if (flush_time_on_close == FlushTimeOnClose::ManuallySet ||
-	    set_archive_on_close) {
+	direntry tmpentry = {};
+	if ((flush_time_on_close == FlushTimeOnClose::ManuallySet ||
+	     set_archive_on_close) &&
+	    ReadDirectoryEntry(tmpentry)) {
 		assert(!IsOnReadOnlyMedium());
-		direntry tmpentry;
-		myDrive->directoryBrowse(dirCluster, &tmpentry, dirIndex);
 		if (flush_time_on_close == FlushTimeOnClose::ManuallySet) {
 			tmpentry.modTime = time;
 			tmpentry.modDate = date;
@@ -337,7 +415,7 @@ uint32_t fatDrive::getClusterValue(uint32_t clustNum) {
 	fatsectnum = bootbuffer.reservedsectors + (fatoffset / bootbuffer.bytespersector) + partSectOff;
 	fatentoff = fatoffset % bootbuffer.bytespersector;
 
-	if(curFatSect != fatsectnum) {
+	if (curFatSect != fatsectnum || !loadedDisk->hardDrive) {
 		/* Load two sectors at once for FAT12 */
 		readSector(fatsectnum, &fatSectBuffer[0]);
 		if (fattype==FAT12)
@@ -384,7 +462,7 @@ void fatDrive::setClusterValue(uint32_t clustNum, uint32_t clustValue) {
 	fatsectnum = bootbuffer.reservedsectors + (fatoffset / bootbuffer.bytespersector) + partSectOff;
 	fatentoff = fatoffset % bootbuffer.bytespersector;
 
-	if(curFatSect != fatsectnum) {
+	if (curFatSect != fatsectnum || !loadedDisk->hardDrive) {
 		/* Load two sectors at once for FAT12 */
 		readSector(fatsectnum, &fatSectBuffer[0]);
 		if (fattype==FAT12)
@@ -1129,21 +1207,9 @@ std::unique_ptr<DOS_File> fatDrive::FileCreate(const char* name,
 		}
 	}
 
-	// These must be extracted to temporaries or GCC throws a compile error
-	// It doesn't like something about the combination of the packed attribute
-	// and how make_unique uses references as arguments
-	const auto first_cluster = fileEntry.loFirstClust;
-	const auto entry_size = fileEntry.entrysize;
-
-	/* Empty file created, now lets open it */
-	auto fat_file        = std::make_unique<fatFile>(name,
-                                                  first_cluster,
-                                                  entry_size,
-                                                  shared_from_this(),
-                                                  IsReadOnly());
+	auto fat_file = std::make_unique<fatFile>(
+	        fileEntry, dirClust, subEntry, shared_from_this(), IsReadOnly());
 	fat_file->flags      = OPEN_READWRITE;
-	fat_file->dirCluster = dirClust;
-	fat_file->dirIndex   = subEntry;
 	fat_file->time       = fileEntry.modTime;
 	fat_file->date       = fileEntry.modDate;
 
@@ -1183,21 +1249,9 @@ std::unique_ptr<DOS_File> fatDrive::FileOpen(const char* name, uint8_t flags)
 		flags = OPEN_READ;
 	}
 
-	// These must be extracted to temporaries or GCC throws a compile error
-	// It doesn't like something about the combination of the packed attribute
-	// and how make_unique uses references as arguments
-	const auto first_cluster = fileEntry.loFirstClust;
-	const auto entry_size = fileEntry.entrysize;
-
-	auto fat_file = std::make_unique<fatFile>(name,
-	                                          first_cluster,
-	                                          entry_size,
-	                                          shared_from_this(),
-	                                          IsReadOnly());
-
+	auto fat_file = std::make_unique<fatFile>(
+	        fileEntry, dirClust, subEntry, shared_from_this(), IsReadOnly());
 	fat_file->flags      = flags;
-	fat_file->dirCluster = dirClust;
-	fat_file->dirIndex   = subEntry;
 	fat_file->time       = fileEntry.modTime;
 	fat_file->date       = fileEntry.modDate;
 
@@ -1500,12 +1554,13 @@ bool fatDrive::directoryChange(uint32_t dirClustNumber, direntry *useEntry, int3
 		if(dirClustNumber==0) {
 			if(dirPos >= bootbuffer.rootdirentries) return false;
 			tmpsector = firstRootDirSect+logentsector;
-			readSector(tmpsector,sectbuf);
 		} else {
 			tmpsector = getAbsoluteSectFromChain(dirClustNumber, logentsector);
 			/* A zero sector number can't happen */
 			if(tmpsector == 0) return false;
-			readSector(tmpsector,sectbuf);
+		}
+		if (readSector(tmpsector, sectbuf)) {
+			return false;
 		}
 		dirPos++;
 
@@ -1724,8 +1779,30 @@ bool fatDrive::Rename(const char * oldname, const char * newname) {
 		if(!getFileDirEntry(newname, &fileEntry2, &dirClust2, &subEntry2)) return false;
 
 		/* Remove old entry */
+		std::array<uint8_t, 11> original_name = {};
+		std::copy_n(fileEntry1.entryname,
+		            original_name.size(),
+		            original_name.begin());
 		fileEntry1.entryname[0] = 0xe5;
 		directoryChange(dirClust1, &fileEntry1, subEntry1);
+
+		if (!loadedDisk->hardDrive) {
+			for (const auto& open_file : Files) {
+				auto* file = dynamic_cast<fatFile*>(open_file.get());
+				if (file && file->myDrive.get() == this &&
+				    file->dirCluster == dirClust1 &&
+				    file->dirIndex == subEntry1 &&
+				    std::equal(file->directory_name.begin(),
+				               file->directory_name.end(),
+				               original_name.begin())) {
+					file->dirCluster = dirClust2;
+					file->dirIndex   = subEntry2;
+					std::copy_n(fileEntry2.entryname,
+					            file->directory_name.size(),
+					            file->directory_name.begin());
+				}
+			}
+		}
 
 		return true;
 	}
