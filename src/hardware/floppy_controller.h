@@ -42,6 +42,7 @@ uint8_t FLOPPY_BiosDmaFormat(uint8_t unit, uint32_t cylinder, uint8_t head,
 void FLOPPY_SetDiskChanged(const size_t unit, const bool changed);
 bool FLOPPY_IsDiskChanged(const size_t unit);
 
+bool FLOPPY_CanStartBiosCommand();
 void FLOPPY_BiosPosition(const uint8_t unit, const uint8_t cylinder);
 void FLOPPY_BiosReset(const uint8_t unit);
 void FLOPPY_Init();
