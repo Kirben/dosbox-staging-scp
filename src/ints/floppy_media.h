@@ -40,6 +40,9 @@ public:
 	virtual ~FloppyMedia()                                     = default;
 	virtual double GetCycleMs(const uint32_t cylinder,
 	                          const uint32_t head) const       = 0;
+	// Index positions as fractions of the full capture cycle, ending at 1.
+	virtual std::span<const double> GetRevolutionEnds(uint32_t cylinder,
+	                                                  uint32_t head) const = 0;
 	virtual double GetFormatCycleMs(const uint32_t cylinder,
 	                                const uint32_t head) const = 0;
 	virtual std::span<const FloppySector> GetTrack(const uint32_t cylinder,

@@ -57,6 +57,8 @@ struct Controller {
 	std::array<uint8_t, 9> command                     = {};
 	std::array<uint8_t, 7> result                      = {};
 	std::array<uint8_t, FormatIdSize * 255> format_ids = {};
+	size_t track_revolution                            = 0;
+	size_t track_limit                                 = 0;
 	size_t track_offset                                = 0;
 	uint8_t track_status_1                             = 0;
 	uint8_t track_status_2                             = 0;
@@ -261,7 +263,7 @@ void transfer_track_sector(uint32_t)
 	}
 	const auto track = fdc.media->GetTrack(fdc.cylinder, fdc.head);
 	if (fdc.track_offset >= track.size() ||
-	    track[fdc.track_offset].revolution != 0) {
+	    track[fdc.track_offset].revolution != fdc.track_revolution) {
 		finish_data(fdc.track_status_1 | 0x04, fdc.track_status_2);
 		return;
 	}
@@ -304,16 +306,19 @@ void transfer_track_sector(uint32_t)
 		finish_data(fdc.track_status_1 | 0x10, fdc.track_status_2);
 	} else if (count == remaining) {
 		finish_data(fdc.track_status_1, fdc.track_status_2, true);
-	} else if (++fdc.track_offset == fdc.command[6]) {
+	} else if (++fdc.track_offset == fdc.track_limit) {
 		finish_data(fdc.track_status_1 | 0x80, fdc.track_status_2);
 	} else {
 		const auto cycle     = rotation_cycle_ms();
 		const auto offset_ms = sector.cycle_fraction * cycle;
 		const auto next_ms =
 		        fdc.track_offset < track.size() &&
-		                        track[fdc.track_offset].revolution == 0
+		                        track[fdc.track_offset].revolution ==
+		                                fdc.track_revolution
 		                ? track[fdc.track_offset].cycle_fraction * cycle
-		                : fdc.media->GetFormatCycleMs(fdc.cylinder, fdc.head);
+		                : fdc.media->GetRevolutionEnds(fdc.cylinder,
+		                                               fdc.head)[fdc.track_revolution] *
+		                          cycle;
 		PIC_AddEvent(transfer_track_sector,
 		             std::max(0.0, next_ms - offset_ms));
 	}
@@ -570,14 +575,35 @@ void start_data(const Command command)
 			finish_data(0x04);
 			return;
 		}
-		fdc.track_offset   = 0;
 		fdc.track_status_1 = 0;
 		fdc.track_status_2 = 0;
 		const auto track   = image->GetTrack(fdc.cylinder, fdc.head);
-		const auto cycle   = rotation_cycle_ms();
-		const auto first = track.empty() ? 1.0 : track.front().cycle_fraction;
+		const auto ends = image->GetRevolutionEnds(fdc.cylinder, fdc.head);
+		const auto cycle    = rotation_cycle_ms();
+		const auto position = rotation_ms() / cycle;
+		// The final index wraps to the first recorded revolution.
+		const auto index = std::upper_bound(ends.begin(),
+		                                    ends.end() - 1,
+		                                    position);
+		const auto next  = check_cast<size_t>(index - ends.begin()) + 1;
+		fdc.track_revolution = next % ends.size();
+		const auto first     = std::lower_bound(
+                        track.begin(),
+                        track.end(),
+                        fdc.track_revolution,
+                        [](const FloppySector& sector, const size_t revolution) {
+                                return sector.revolution < revolution;
+                        });
+		fdc.track_offset = check_cast<size_t>(first - track.begin());
+		fdc.track_limit  = fdc.track_offset + fdc.command[6];
+		const auto has_sector = first != track.end() &&
+		                        first->revolution == fdc.track_revolution;
+		const auto first_position = has_sector
+		                                  ? first->cycle_fraction
+		                                  : ends[fdc.track_revolution];
+		const auto wrap = fdc.track_revolution == 0 ? 1.0 : 0.0;
 		PIC_AddEvent(transfer_track_sector,
-		             cycle - rotation_ms() + first * cycle);
+		             (wrap + first_position - position) * cycle);
 		return;
 	}
 	if (const auto& track = fdc.media) {
@@ -787,7 +813,7 @@ void write_dor(io_port_t, const io_val_t value, io_width_t)
 		fdc.reset_unit  = 0;
 		fdc.irq_pending = true;
 	}
-	if ((value & ResetReleased) && formatting_track && !motor_on(unit)) {
+	if ((value & ResetReleased) && formatting_track && !media_ready(unit)) {
 		PIC_RemoveEvents(format_track_sector);
 		finish_track_format(0x04);
 		return;

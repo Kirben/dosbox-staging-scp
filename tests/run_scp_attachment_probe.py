@@ -63,10 +63,28 @@ def main():
     parser.add_argument("--dosbox", required=True, type=Path)
     parser.add_argument("--nasm", default="nasm")
     parser.add_argument("--bios-format", action="store_true")
+    parser.add_argument("--format-switch", action="store_true")
+    parser.add_argument("--read-revolutions", action="store_true")
     args = parser.parse_args()
     dosbox = args.dosbox.resolve()
     with TemporaryDirectory() as temp:
         directory = Path(temp)
+        if args.format_switch:
+            for unit in (0, 1):
+                overlay = directory / "disk.scp.overlay"
+                overlay.unlink(missing_ok=True)
+                run_probe(dosbox, args.nasm, directory, "scp", unit, 360, 9,
+                          encode_scp, write_mode="write")
+                before = overlay.read_bytes()
+                run_probe(dosbox, args.nasm, directory, "scp", unit, 360, 9,
+                          encode_scp, write_mode="format", partial_format=True,
+                          format_switch=True)
+                saved = overlay.read_bytes()
+                assert saved != before
+                run_probe(dosbox, args.nasm, directory, "scp", unit, 360, 9,
+                          encode_scp, write_mode="format-readback", partial_format=True)
+                assert overlay.read_bytes() == saved
+            return
         if args.bios_format:
             for unit in (0, 1):
                 overlay = directory / "disk.scp.overlay"
@@ -81,7 +99,9 @@ def main():
             return
         run_probe(dosbox, args.nasm, directory, "scp", 0, 360, 9,
                   lambda disk: encode_scp(disk, different_turns=True))
-        print(".scp successive reads returned different recorded revolutions")
+        print(".scp Read Data and Read Track returned different recorded revolutions")
+        if args.read_revolutions:
+            return
         for unit in (0, 1):
             overlay = directory / "disk.scp.overlay"
             overlay.unlink(missing_ok=True)

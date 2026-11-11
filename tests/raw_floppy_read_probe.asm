@@ -14,6 +14,8 @@ org 100h
 %define FORMAT_INTERRUPT FORMAT_RESET
 %elifdef FORMAT_MOTOR
 %define FORMAT_INTERRUPT FORMAT_MOTOR
+%elifdef FORMAT_SWITCH
+%define FORMAT_INTERRUPT 2
 %endif
 
 %ifdef BIOS_FORMAT
@@ -199,6 +201,20 @@ org 100h
 .next_turn:
     call read_turn_marker
     mov al,[es:1200h]
+    xor al,bl
+    cmp al,3
+    jne finish
+
+    mov byte [stage],17
+    call read_track_turn
+    mov bl,[es:1200h + 5 * 512]
+    cmp bl,61h
+    je .next_track
+    cmp bl,62h
+    jne finish
+.next_track:
+    call read_track_turn
+    mov al,[es:1200h + 5 * 512]
     xor al,bl
     cmp al,3
     jne finish
@@ -462,11 +478,15 @@ format_interrupt_recovery:
     call reset_and_seek
 %else
     mov dx,3f2h
+%ifdef FORMAT_SWITCH
+    mov al,DOR ^ 1
+%else
     mov al,0ch | UNIT
+%endif
     mov byte [interrupts],0
     out dx,al
-%if FORMAT_MOTOR < 3
-    ; Motor loss completes the command even before the next sector event.
+%if FORMAT_INTERRUPT < 3
+    ; The interruption completes the command before the next sector event.
     mov dx,3f4h
     in al,dx
     cmp al,0d0h
@@ -477,7 +497,7 @@ format_interrupt_recovery:
     jne finish
     cmp byte [result+2],0
     jne finish
-%if FORMAT_MOTOR = 2
+%if FORMAT_INTERRUPT = 2
     cmp word [result+3],0102h
     jne finish
     cmp word [result+5],020bh
@@ -515,7 +535,16 @@ finish:
     int 21h
 
 %ifdef SCP_REVOLUTIONS
+read_track_turn:
+    mov si,read_track_command
+    mov ax,9 * 512 - 1
+    jmp read_turn
+
 read_turn_marker:
+    mov si,read_marker
+    mov ax,512 - 1
+read_turn:
+    push ax
     mov al,6
     out 0ah,al
     out 0ch,al
@@ -525,13 +554,12 @@ read_turn_marker:
     out 04h,al
     mov al,12h
     out 04h,al
-    mov al,0ffh
+    pop ax
     out 05h,al
-    mov al,1
+    mov al,ah
     out 05h,al
     mov al,2
     out 0ah,al
-    mov si,read_marker
     mov cx,9
     call command_and_irq
     call read_result
@@ -879,4 +907,5 @@ next_id db 2,4,5,3,6,7,8,9,1
 %endif
 %ifdef SCP_REVOLUTIONS
 read_marker db 46h,DRIVE_HEAD,2,1,6,2,6,2ah,0ffh
+read_track_command db 42h,DRIVE_HEAD,2,1,1,2,9,2ah,0ffh
 %endif

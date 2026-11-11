@@ -31,6 +31,8 @@ public:
 	                                                 std::string& error);
 
 	double GetCycleMs(const uint32_t cylinder, const uint32_t head) const override;
+	std::span<const double> GetRevolutionEnds(uint32_t cylinder,
+	                                          uint32_t head) const override;
 	double GetFormatCycleMs(const uint32_t cylinder,
 	                        const uint32_t head) const override;
 
