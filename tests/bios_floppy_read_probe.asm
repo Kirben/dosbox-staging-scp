@@ -15,6 +15,9 @@ org 100h
     or al,40h
     out 21h,al
     cld
+%ifdef CROSS_TRACK
+    jmp cross_track
+%endif
 %ifdef VERIFY_TEST
     mov cx,0202h
     mov dx,0002h
@@ -255,6 +258,119 @@ check_transfer:
     jz report
     ret
 
+%endif
+
+%ifdef CROSS_TRACK
+; Each row specifies the BIOS request, result, IRQ count, and expected buffer.
+%macro cross_case 10
+    mov ax,%1
+    mov cx,%2
+    mov dx,(%3 << 8) | UNIT
+    mov bx,%4
+    call cross_transfer
+    dw %5
+    db %6,%7,%8,%9,%10
+%endmacro
+
+cross_track:
+%ifdef CROSS_WRITE
+    cross_case 0302h,0109h,0,1100h,0002h,2,0a5h,0a5h,0b6h,0c7h
+    cross_case 0302h,0109h,1,1100h,0002h,2,0a5h,0a5h,0b6h,0c7h
+    cross_case 0303h,0209h,1,1100h,0402h,2,0a5h,0a5h,0b6h,0c7h
+    cross_case 0302h,0109h,0,0fb01h,0900h,0,0cch,0cch,0cch,0cch
+%elifdef CROSS_READBACK
+    cross_case 0202h,0109h,0,1100h,0002h,2,0cch,0a5h,0b6h,0cch
+    cross_case 0202h,0109h,1,1100h,0002h,2,0cch,0a5h,0b6h,0cch
+    cross_case 0203h,0209h,1,1100h,0402h,2,0cch,0a5h,0b6h,0cch
+%else
+    cross_case 0202h,0109h,0,0fb00h,0002h,2,0cch,19h,21h,0cch
+    cross_case 0202h,0109h,1,1100h,0002h,2,0cch,29h,31h,0cch
+    cross_case 0203h,0209h,1,1100h,0402h,2,0cch,39h,41h,0cch
+    cross_case 0202h,0109h,0,0fb01h,0900h,0,0cch,0cch,0cch,0cch
+    cross_case 0402h,0109h,0,0fb01h,0002h,2,0cch,0cch,0cch,0cch
+    cross_case 0402h,0109h,1,1100h,0002h,2,0cch,0cch,0cch,0cch
+    cross_case 0403h,0209h,1,1100h,0402h,2,0cch,0cch,0cch,0cch
+    cross_case 0402h,2709h,1,1100h,0401h,1,0cch,0cch,0cch,0cch
+%endif
+    mov byte [stage],0
+    jmp report
+
+cross_transfer:
+    pop si
+    push ax
+    push cx
+    mov ah,al
+    mov cx,6010h
+    mov es,cx
+    mov di,bx
+    mov cx,1024
+    cmp ah,3
+    jne .fill_buffer
+    mov cx,1536
+.fill_buffer:
+    mov al,[si+3]
+    rep stosb
+%ifdef CROSS_WRITE
+    mov di,bx
+    add di,512
+    mov cx,512
+    mov al,[si+5]
+    rep stosb
+    cmp ah,3
+    jne .buffer_ready
+    mov cx,512
+    mov al,[si+6]
+    rep stosb
+.buffer_ready:
+%endif
+    pop cx
+    pop ax
+    mov byte [interrupts],0
+    push si
+    push bx
+    push ax
+    int 13h
+    pop bp
+    pop di
+    pop si
+    pushf
+    pop dx
+    cmp ax,[si]
+    jne report
+    test ah,ah
+    jz .success
+    test dl,1
+    jz report
+    jmp .check_irq
+.success:
+    test dl,1
+    jnz report
+.check_irq:
+    mov al,[interrupts]
+    cmp al,[si+2]
+    jne report
+    mov bx,4
+.check_sector:
+    mov al,[si+bx]
+    mov cx,512
+    repe scasb
+    jne report
+    inc bx
+    cmp bx,6
+    jb .check_sector
+    je .check_third
+    jmp .check_mask
+.check_third:
+    and bp,0ffh
+    cmp bp,3
+    je .check_sector
+.check_mask:
+    in al,21h
+    test al,40h
+    jz report
+    inc byte [stage]
+    add si,7
+    jmp si
 %endif
 
 report:
