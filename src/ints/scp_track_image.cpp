@@ -242,6 +242,11 @@ double FloppyTrackImage::GetFormatCycleMs(const uint32_t cylinder,
 	return tracks.at(cylinder * heads + head).format_cycle_ms;
 }
 
+bool FloppyTrackImage::IsScp() const
+{
+	return !overlay_path.empty();
+}
+
 bool FloppyTrackImage::IsWriteProtected() const
 {
 	return !overlay_writable;

@@ -778,10 +778,11 @@ BiosDmaResult bios_dma_command(const uint8_t unit, const uint32_t cylinder,
 }
 } // namespace
 
-FloppyBiosReadResult FLOPPY_BiosDmaRead(const uint8_t unit, const uint32_t cylinder,
-                                        const uint8_t head, const uint8_t sector,
-                                        const uint8_t size_code, const uint8_t count,
-                                        const uint8_t gap, const uint32_t address)
+FloppyBiosTransferResult FLOPPY_BiosDmaTransfer(
+        const FloppyBiosTransfer operation, const uint8_t unit,
+        const uint32_t cylinder, const uint8_t head, const uint8_t sector,
+        const uint8_t size_code, const uint8_t count, const uint8_t gap,
+        const uint32_t address)
 {
 	const auto last_sector = sector + count - 1;
 	if (!sector || !count || last_sector > UINT8_MAX || size_code > 7 ||
@@ -789,7 +790,9 @@ FloppyBiosReadResult FLOPPY_BiosDmaRead(const uint8_t unit, const uint32_t cylin
 		return {0x04, 0};
 	}
 
-	const std::array<uint8_t, 9> command = {0x46,
+	const auto writing = operation == FloppyBiosTransfer::Write;
+	const std::array<uint8_t, 9> command = {writing ? uint8_t{0x45}
+	                                                : uint8_t{0x46},
 	                                        check_cast<uint8_t>(unit |
 	                                                            (head << 2)),
 	                                        check_cast<uint8_t>(cylinder),
@@ -802,7 +805,7 @@ FloppyBiosReadResult FLOPPY_BiosDmaRead(const uint8_t unit, const uint32_t cylin
 	const auto sector_size = 128u << size_code;
 	const auto size        = count * sector_size;
 	const auto result      = bios_dma_command(
-	        unit, cylinder, head, command, address, size, false, 3 + count);
+	        unit, cylinder, head, command, address, size, writing, 3 + count);
 	if (result.error) {
 		return {result.error, 0};
 	}
@@ -813,14 +816,22 @@ FloppyBiosReadResult FLOPPY_BiosDmaRead(const uint8_t unit, const uint32_t cylin
 	auto completed = check_cast<uint8_t>(result.transferred / sector_size);
 	// Data CRC and deleted-mark errors are reported after DMA transfers the
 	// sector.
-	if ((st2 & 0x60) && completed) {
+	if (writing && ((st0 & 0xc0) || st1 || st2)) {
+		// DMA can finish before the overlay commits the current sector.
+		const auto before_error = std::max(0, result.status[5] - sector);
+		completed = check_cast<uint8_t>(
+		        std::min<int>(completed, before_error));
+	} else if ((st2 & 0x60) && completed) {
 		--completed;
+	}
+	if (st1 & 0x02) {
+		return {0x03, completed};
 	}
 	if (st1 & 0x10) {
 		return {0x08, completed};
 	}
 	if (st1 & 0x20) {
-		return {0x10, completed};
+		return {writing ? uint8_t{0x20} : uint8_t{0x10}, completed};
 	}
 	if ((st0 & 0xc0) || st1 || st2) {
 		return {0x04, completed};
