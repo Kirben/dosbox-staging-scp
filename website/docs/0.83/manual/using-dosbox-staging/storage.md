@@ -387,9 +387,11 @@ matching images are mounted as floppy drives; all others as hard disk images.
 | HxC MFM (`.mfm`) and 86Box (`.86f`) | A persistent `.overlay` file beside the image. 86F captures marked write-protected or containing physical holes mount read-only. |
 
 Use `-ro` to write-protect a mounted floppy. For a writable track image,
-DOSBox Staging saves 512-byte sector writes and track formatting in a sidecar named
+DOSBox Staging saves 256-, 512-, and 1,024-byte sector writes and track
+formatting in a sidecar named
 after the full image filename. For example, changes to `disk.scp` go into
 `disk.scp.overlay`, and changes to `disk.mfm` go into `disk.mfm.overlay`.
+Sidecars with 256- or 1,024-byte writes require a build that supports those writes.
 The original image stays intact.
 
 Only one writable mount can hold an image's sidecar at a time. Use `-ro` for

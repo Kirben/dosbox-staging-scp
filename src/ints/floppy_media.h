@@ -32,6 +32,11 @@ struct FloppySector {
 	std::vector<uint8_t> extended_data = {};
 };
 
+constexpr bool IsFloppyOverlaySizeCode(const int size_code)
+{
+	return size_code >= 1 && size_code <= 3;
+}
+
 // Physical track access. Logical sector callers use SectorMedia.
 class FloppyMedia {
 public:
