@@ -78,6 +78,7 @@ struct Controller {
 	double pio_started_ms                              = 0;
 	bool pio_ready                                     = false;
 	bool pio_writing                                   = false;
+	bool sector_data_crc_error                         = false;
 	const FloppySector* track_sector                   = nullptr;
 	Phase phase                                        = Phase::Command;
 	size_t command_count                               = 0;
@@ -196,11 +197,24 @@ double slot_length_ms()
 	return rotation_cycle_ms() / fdc.disk->sectors;
 }
 
+double rotation_elapsed_ms()
+{
+	return std::max(0.0, PIC_FullIndex() - fdc.drives[selected_unit()].motor_started_ms);
+}
+
 double rotation_ms()
 {
-	const auto elapsed_ms = PIC_FullIndex() -
-	                        fdc.drives[selected_unit()].motor_started_ms;
-	return std::fmod(std::max(0.0, elapsed_ms), rotation_cycle_ms());
+	return std::fmod(rotation_elapsed_ms(), rotation_cycle_ms());
+}
+
+bool sample_sector_data(const FloppySector& sector, std::vector<uint8_t>& sampled)
+{
+	if (sector.weak_mask.empty()) {
+		return sector.data_crc_error;
+	}
+	const auto turn = static_cast<uint64_t>(rotation_elapsed_ms() /
+	                                        rotation_cycle_ms());
+	return sector.SampleWeakData(turn, sampled);
 }
 
 void complete_read_id(uint32_t)
@@ -268,11 +282,12 @@ void verify_sector()
 {
 	const auto* sector = fdc.track_sector;
 	assert(sector);
+	std::vector<uint8_t> sampled = {};
 	if (sector->id_crc_error) {
 		finish_data(0x20);
 	} else if (sector->data.empty()) {
 		finish_data(0x01, 0x01);
-	} else if (sector->data_crc_error) {
+	} else if (sample_sector_data(*sector, sampled)) {
 		finish_data(0x20, 0x20);
 	} else if (sector->deleted) {
 		finish_data(0, 0x40);
@@ -345,17 +360,22 @@ void transfer_track_sector(uint32_t)
 		return;
 	}
 	const auto size = size_t{128} << fdc.command[5];
-	const auto& data = size > sector.data.size() && !sector.extended_data.empty()
-	                         ? sector.extended_data
-	                         : sector.data;
+	const auto extended = size > sector.data.size() &&
+	                      !sector.extended_data.empty();
+	std::span<const uint8_t> data = extended ? sector.extended_data : sector.data;
 	if (data.size() < size) {
 		finish_data(fdc.track_status_1 | 0x01, fdc.track_status_2 | 0x01);
 		return;
 	}
-	if (sector.id_crc_error || (&data == &sector.data && sector.data_crc_error)) {
+	std::vector<uint8_t> sampled = {};
+	const auto bad_crc = !extended && sample_sector_data(sector, sampled);
+	if (!sampled.empty()) {
+		data = sampled;
+	}
+	if (sector.id_crc_error || bad_crc) {
 		fdc.track_status_1 |= 0x20;
 	}
-	if (&data == &sector.data && sector.data_crc_error) {
+	if (bad_crc) {
 		fdc.track_status_2 |= 0x20;
 	}
 	if (sector.cylinder != fdc.command[2] || sector.head != fdc.head ||
@@ -414,7 +434,7 @@ void finish_sector_transfer(const std::span<const uint8_t> write_data,
 {
 	if (!write_data.empty() && !commit_sector_write(write_data)) {
 		finish_data(0x20);
-	} else if (fdc.track_sector && fdc.track_sector->data_crc_error) {
+	} else if (fdc.sector_data_crc_error) {
 		finish_data(0x20, 0x20);
 	} else if (fdc.track_sector && fdc.track_sector->deleted) {
 		finish_data(0, 0x40);
@@ -454,6 +474,8 @@ void transfer_sector(uint32_t)
 	                                         : SectorSize;
 	const auto transfer_buffer       = std::span(buffer).first(write_size);
 	std::span<const uint8_t> data    = transfer_buffer;
+	std::vector<uint8_t> sampled     = {};
+	fdc.sector_data_crc_error        = false;
 	if (const auto* sector = fdc.track_sector) {
 		if (sector->id_crc_error) {
 			finish_data(0x20);
@@ -469,7 +491,9 @@ void transfer_sector(uint32_t)
 			return;
 		}
 		if (!writing) {
-			data = sector->data;
+			fdc.sector_data_crc_error = sample_sector_data(*sector,
+			                                               sampled);
+			data = sampled.empty() ? sector->data : sampled;
 		}
 	} else if (!writing && !fdc.disk->ReadSectorForController(fdc.head,
 	                                                          fdc.cylinder,
