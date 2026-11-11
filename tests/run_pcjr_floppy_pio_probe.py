@@ -19,16 +19,16 @@ def run_probe(dosbox, nasm, folder, image, replay, *, watchdog=False):
         options.append("-DWATCHDOG")
     if image.suffix == ".mfm":
         options.append("-DTRACK_IMAGE")
-    source = Path(__file__).with_name("pcjr_floppy_pio_probe.asm")
-    subprocess.run([nasm, "-f", "bin", *options, source, "-o", folder / "PROBE.COM"],
-                   check=True)
+    subprocess.run([nasm, "-f", "bin", *options,
+                    Path(__file__).with_name("pcjr_floppy_pio_probe.asm"),
+                    "-o", folder / "PROBE.COM"], check=True)
     report = folder / "PIO.OUT"
     report.unlink(missing_ok=True)
     access = " -ro" if replay else ""
-    args, env = launch(dosbox, folder, "pio",
-                       [f'mount c "{folder}"',
-                        f'mount a "{image}" -t floppy -fs none{access}',
-                        "c:", "probe.com", "exit"])
+    commands = [f'mount c "{folder}"', f'mount a "{image}" -t floppy -fs none{access}']
+    if image.suffix == ".mfm":
+        commands.append(f'mount b "{folder / "other.mfm"}" -t floppy -fs none -ro')
+    args, env = launch(dosbox, folder, "pio", [*commands, "c:", "probe.com", "exit"])
     config = args[-1]
     config.write_text("[dosbox]\nmachine=pcjr\n[cpu]\ncpu_cycles=3000\n"
                       + config.read_text(), encoding="ascii")
@@ -59,6 +59,8 @@ def main():
         for extension, capture in (("img", disk), ("mfm", encode(disk, deleted_sector=True))):
             image = folder / f"disk.{extension}"
             image.write_bytes(capture)
+            if extension == "mfm":
+                (folder / "other.mfm").write_bytes(capture)
             for replay in (False, True):
                 run_probe(args.dosbox.resolve(), args.nasm, folder, image, replay)
             if extension == "img":

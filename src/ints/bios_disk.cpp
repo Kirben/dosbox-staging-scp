@@ -676,6 +676,9 @@ static FloppyBiosTransferResult bios_track_sector_transfer(
         const DiskServiceRequest& request, const uint8_t unit,
         const FloppyBiosTransfer operation, const uint8_t size_code)
 {
+	if (!FLOPPY_CanStartBiosCommand()) {
+		return {0x80, 0};
+	}
 	const auto& disk = *disk_slots[unit].sector;
 	if (!request.count || size_code > 7) {
 		return {0x01, 0};
