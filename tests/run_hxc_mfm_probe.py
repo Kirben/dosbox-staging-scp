@@ -138,11 +138,23 @@ def check_fat(dosbox, directory, encode_image=encode, extension="mfm"):
 
 # pylint: disable-next=R0914
 def check_boot(dosbox, nasm, directory, encode_image=encode, extension="mfm"):
-    """Boot the fixture and check its BIOS read, verify, and write status."""
+    """Boot the fixture and check DMA and subsequent BIOS I/O."""
+    track_image = extension not in ("img", "ima")
     source = directory / "boot.asm"
     source.write_text("""
 bits 16
 org 7c00h
+    ; BOOT must have transferred the sector on DMA channel 2.
+    in al,08h
+    test al,4
+    jz done
+    out 0ch,al
+    in al,04h
+    cmp al,0
+    jne done
+    in al,04h
+    cmp al,7eh
+    jne done
     xor ax,ax
     mov ds,ax
     mov es,ax
@@ -154,6 +166,7 @@ org 7c00h
     jc done
     cmp word [8000h],1234h
     jne done
+    %ifdef TRACK_IMAGE
     mov ax,0401h
     int 13h
     jc done
@@ -167,12 +180,19 @@ org 7c00h
     jne done
     cmp word [8000h],1234h
     jne done
+    %endif
     mov word [8000h],5678h
     mov ax,0301h
     mov cx,2
     xor dh,dh
     int 13h
     jc done
+    ; Reading the written sector also flushes buffered raw-image writes.
+    mov ax,0201h
+    int 13h
+    jc done
+    cmp word [8000h],5678h
+    jne done
     ; Report success to a separate writable BIOS hard disk.
     mov word [8000h],0a712h
     mov ax,0301h
@@ -192,7 +212,8 @@ times 510-($-$$) db 0
 dw 0aa55h
 """, encoding="ascii")
     output = directory / "boot.bin"
-    subprocess.run([nasm, "-f", "bin", source, "-o", output], check=True)
+    options = ["-DTRACK_IMAGE"] if track_image else []
+    subprocess.run([nasm, *options, "-f", "bin", source, "-o", output], check=True)
     disk = bytearray(360 * 1024)
     disk[:512] = output.read_bytes()
     disk[512:514] = b"\x34\x12"
@@ -208,6 +229,7 @@ dw 0aa55h
     if extension == "scp":
         boot_cases.append(("dos-path", [f'mount c "{directory}"', "boot c:\\boot.scp"]))
     for name, commands in boot_cases:
+        image.write_bytes(original)
         overlay.unlink(missing_ok=True)
         marker.write_bytes(bytes(4 * 16 * 63 * 512))
         mount_marker = f'mount 2 "{marker}" -t hdd -fs none -chs 4,16,63'
@@ -230,9 +252,14 @@ dw 0aa55h
                 except subprocess.TimeoutExpired:
                     process.kill()
                     raise
-        assert image.read_bytes() == original
-        assert overlay.is_file()
-    print(f".{extension} BOOT, INT 13h read, verify and write status passed")
+        if track_image:
+            assert image.read_bytes() == original
+            assert overlay.is_file()
+        else:
+            expected = bytearray(original)
+            expected[512:514] = b"\x78\x56"
+            assert image.read_bytes() == expected
+    print(f".{extension} direct and mounted BOOT completed DMA and BIOS I/O")
 
 
 def check_overlay_format(dosbox, nasm, directory, extension, encoder):
@@ -247,10 +274,15 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--dosbox", required=True, type=Path)
     parser.add_argument("--nasm", default="nasm")
+    parser.add_argument("--boot-dma-raw", action="store_true")
     args = parser.parse_args()
     dosbox = args.dosbox.resolve()
     with TemporaryDirectory() as temp:
         directory = Path(temp)
+        if args.boot_dma_raw:
+            for extension in ("img", "ima"):
+                check_boot(dosbox, args.nasm, directory, bytes, extension)
+            return
         run_probe(dosbox, args.nasm, directory, "mfm", 0, 360, 9, encode)
         check_fat(dosbox, directory)
         check_boot(dosbox, args.nasm, directory)
