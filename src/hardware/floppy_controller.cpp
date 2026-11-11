@@ -791,6 +791,9 @@ void write_dor(io_port_t, const io_val_t value, io_width_t)
 {
 	const auto previous       = fdc.dor;
 	const auto unit           = selected_unit();
+	const auto writing_data   = fdc.phase == Phase::Execution &&
+	                          (fdc.command[0] & 0x1f) ==
+	                                  static_cast<int>(Command::WriteData);
 	const auto formatting_track = fdc.phase == Phase::Execution &&
 	                              fdc.disk && fdc.media &&
 	                              (fdc.command[0] & 0x1f) ==
@@ -816,6 +819,12 @@ void write_dor(io_port_t, const io_val_t value, io_width_t)
 	if ((value & ResetReleased) && formatting_track && !media_ready(unit)) {
 		PIC_RemoveEvents(format_track_sector);
 		finish_track_format(0x04);
+		return;
+	}
+	if ((value & ResetReleased) && writing_data && !media_ready(unit)) {
+		PIC_RemoveEvents(transfer_sector);
+		PIC_RemoveEvents(missing_sector);
+		finish_data(0x04);
 		return;
 	}
 	update_irq();
