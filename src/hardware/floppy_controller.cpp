@@ -7,6 +7,7 @@
 #include <cassert>
 #include <cmath>
 #include <memory>
+#include <utility>
 #include <vector>
 
 #include "cpu/callback.h"
@@ -32,6 +33,11 @@ constexpr auto StandardRevolutionMs       = 200.0;
 constexpr auto HighDensity525RevolutionMs = 1000.0 / 6;
 constexpr auto PioByteMs                  = 0.032; // 250 kbps MFM
 constexpr auto StepMs                     = 3.0;
+
+constexpr auto PcjrWatchdogEnable  = 0x20;
+constexpr auto PcjrWatchdogTrigger = 0x40;
+// IBM specifies a one-to-three-second hardware timeout.
+constexpr auto PcjrWatchdogMs = 3000.0;
 
 constexpr size_t FormatIdSize = 4;
 
@@ -91,6 +97,8 @@ struct Controller {
 
 Controller fdc    = {};
 bool irq_asserted = false;
+uint8_t pcjr_dor            = 0;
+bool pcjr_watchdog_asserted = false;
 // The latch belongs to the drive and survives controller resets.
 std::array<bool, 2> disk_changed = {};
 
@@ -996,9 +1004,29 @@ void write_dor(io_port_t, const io_val_t value, io_width_t)
 	update_irq();
 }
 
+void pcjr_watchdog_expired(uint32_t)
+{
+	if (!pcjr_watchdog_asserted) {
+		pcjr_watchdog_asserted = true;
+		PIC_ActivateIRQ(FloppyIrq);
+	}
+}
+
 // The PCjr adapter exposes one drive and uses a different DOR layout.
 void write_pcjr_dor(io_port_t, const io_val_t value, const io_width_t width)
 {
+	const auto previous = std::exchange(pcjr_dor, check_cast<uint8_t>(value));
+	if (!(pcjr_dor & PcjrWatchdogEnable)) {
+		PIC_RemoveEvents(pcjr_watchdog_expired);
+		// The PIC has already latched any edge. IRQ6 is also used by
+		// the emulated PCjr keyboard, so leave the PIC request alone.
+		pcjr_watchdog_asserted = false;
+	} else if ((previous & PcjrWatchdogTrigger) &&
+	           !(pcjr_dor & PcjrWatchdogTrigger)) {
+		PIC_RemoveEvents(pcjr_watchdog_expired);
+		PIC_AddEvent(pcjr_watchdog_expired, PcjrWatchdogMs);
+	}
+
 	const auto translated = ((value & 0x80) ? ResetReleased : 0) |
 	                        ((value & 1) ? 0x10 : 0);
 	const auto was_reset = !(fdc.dor & ResetReleased);
@@ -1381,6 +1409,9 @@ bool FLOPPY_IsDiskChanged(const size_t unit)
 
 void FLOPPY_Init()
 {
+	PIC_RemoveEvents(pcjr_watchdog_expired);
+	pcjr_dor               = 0;
+	pcjr_watchdog_asserted = false;
 	disk_changed.fill(false);
 	reset_controller();
 	update_irq();

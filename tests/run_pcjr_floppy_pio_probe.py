@@ -11,9 +11,12 @@ from tempfile import TemporaryDirectory
 from run_hxc_mfm_probe import encode, launch
 
 
-def run_probe(dosbox, nasm, folder, image, replay):
+# pylint: disable-next=R0913
+def run_probe(dosbox, nasm, folder, image, replay, *, watchdog=False):
     """Run a direct FDC probe with DMA channel 2 masked."""
     options = ["-DREPLAY"] if replay else []
+    if watchdog:
+        options.append("-DWATCHDOG")
     if image.suffix == ".mfm":
         options.append("-DTRACK_IMAGE")
     source = Path(__file__).with_name("pcjr_floppy_pio_probe.asm")
@@ -30,7 +33,7 @@ def run_probe(dosbox, nasm, folder, image, replay):
     config.write_text("[dosbox]\nmachine=pcjr\n[cpu]\ncpu_cycles=3000\n"
                       + config.read_text(), encoding="ascii")
     result = subprocess.run(args, cwd=folder, env=env, capture_output=True, text=True,
-                            check=True, timeout=15)
+                            check=True, timeout=30)
     stage = report.read_bytes() if report.exists() else b""
     if stage != b"\0":
         raise RuntimeError(f"{image.suffix} replay={replay}, stage={stage.hex()}\n"
@@ -42,10 +45,17 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--dosbox", required=True, type=Path)
     parser.add_argument("--nasm", default="nasm")
+    parser.add_argument("--watchdog", action="store_true")
     args = parser.parse_args()
     with TemporaryDirectory() as temp:
         folder = Path(temp)
         disk = b"Q" * 512 + b"R" * 512 + bytes(360 * 1024 - 1024)
+        if args.watchdog:
+            image = folder / "disk.img"
+            image.write_bytes(disk)
+            run_probe(args.dosbox.resolve(), args.nasm, folder, image, False, watchdog=True)
+            print("PCjr watchdog timeout, retrigger, cancellation, and recovery passed")
+            return
         for extension, capture in (("img", disk), ("mfm", encode(disk))):
             image = folder / f"disk.{extension}"
             image.write_bytes(capture)
