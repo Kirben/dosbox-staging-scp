@@ -15,6 +15,7 @@
 #include "gui/mapper.h"
 #include "hardware/floppy_controller.h"
 #include "hardware/memory.h"
+#include "ints/floppy_media.h"
 #include "utils/string_utils.h"
 
 static const std::vector<DiskGeometry> disk_geometry_list = {
@@ -52,7 +53,12 @@ static bool swapping_requested;
 void BIOS_SetEquipment(uint16_t equipment);
 
 /* 2 floppys and 2 harddrives, max */
-static std::array<std::shared_ptr<imageDisk>, MAX_DISK_IMAGES> disk_slots = {};
+struct BiosDiskSlot {
+	std::shared_ptr<imageDisk> sector   = {};
+	std::shared_ptr<FloppyMedia> floppy = {};
+};
+
+static std::array<BiosDiskSlot, MAX_DISK_IMAGES> disk_slots               = {};
 static BiosBootDisks boot_disks                                           = {};
 
 static size_t swap_position = 0;
@@ -60,25 +66,25 @@ static size_t swap_position = 0;
 static void update_disk_parameter_tables()
 {
 	uint32_t tmpheads, tmpcyl, tmpsect, tmpsize;
-	if (disk_slots[2]) {
+	if (disk_slots[2].sector) {
 		PhysPt dp0physaddr = CALLBACK_PhysPointer(diskparm0);
-		disk_slots[2]->Get_Geometry(&tmpheads, &tmpcyl, &tmpsect, &tmpsize);
+		disk_slots[2].sector->Get_Geometry(&tmpheads, &tmpcyl, &tmpsect, &tmpsize);
 		phys_writew(dp0physaddr, (uint16_t)tmpcyl);
 		phys_writeb(dp0physaddr + 0x2, (uint8_t)tmpheads);
 		phys_writew(dp0physaddr + 0x3, 0);
 		phys_writew(dp0physaddr + 0x5, (uint16_t)-1);
 		phys_writeb(dp0physaddr + 0x7, 0);
 		phys_writeb(dp0physaddr + 0x8,
-		            (0xc0 | (((disk_slots[2]->heads) > 8) << 3)));
+		            (0xc0 | (((disk_slots[2].sector->heads) > 8) << 3)));
 		phys_writeb(dp0physaddr + 0x9, 0);
 		phys_writeb(dp0physaddr + 0xa, 0);
 		phys_writeb(dp0physaddr + 0xb, 0);
 		phys_writew(dp0physaddr + 0xc, (uint16_t)tmpcyl);
 		phys_writeb(dp0physaddr + 0xe, (uint8_t)tmpsect);
 	}
-	if (disk_slots[3]) {
+	if (disk_slots[3].sector) {
 		PhysPt dp1physaddr = CALLBACK_PhysPointer(diskparm1);
-		disk_slots[3]->Get_Geometry(&tmpheads, &tmpcyl, &tmpsect, &tmpsize);
+		disk_slots[3].sector->Get_Geometry(&tmpheads, &tmpcyl, &tmpsect, &tmpsize);
 		phys_writew(dp1physaddr, (uint16_t)tmpcyl);
 		phys_writeb(dp1physaddr + 0x2, (uint8_t)tmpheads);
 		phys_writeb(dp1physaddr + 0xe, (uint8_t)tmpsect);
@@ -87,17 +93,23 @@ static void update_disk_parameter_tables()
 
 std::shared_ptr<imageDisk> BIOS_GetDisk(const size_t slot)
 {
-	return slot < disk_slots.size() ? disk_slots[slot] : nullptr;
+	return slot < disk_slots.size() ? disk_slots[slot].sector : nullptr;
+}
+
+std::shared_ptr<FloppyMedia> BIOS_GetFloppyMedia(const size_t slot)
+{
+	return slot < disk_slots.size() ? disk_slots[slot].floppy : nullptr;
 }
 
 static void set_disk_slot(const size_t slot, std::shared_ptr<imageDisk> disk)
 {
-	if (slot < 2 && disk_slots[slot] != disk) {
+	if (slot < 2 && disk_slots[slot].sector != disk) {
 		FLOPPY_SetDiskChanged(slot, true);
 	}
-	disk_slots[slot] = std::move(disk);
+	auto floppy      = slot < 2 && disk ? disk->GetFloppyMedia() : nullptr;
+	disk_slots[slot] = {std::move(disk), std::move(floppy)};
 	if (slot >= 2) {
-		if (!disk_slots[slot]) {
+		if (!disk_slots[slot].sector) {
 			const auto table = CALLBACK_PhysPointer(
 			        slot == 2 ? diskparm0 : diskparm1);
 			constexpr auto table_size = 16u;
@@ -112,7 +124,7 @@ static void set_disk_slot(const size_t slot, std::shared_ptr<imageDisk> disk)
 void BIOS_SetDisk(const size_t slot, std::shared_ptr<imageDisk> disk)
 {
 	assert(slot < disk_slots.size());
-	if (slot < 2 && disk_slots[slot] != disk) {
+	if (slot < 2 && disk_slots[slot].sector != disk) {
 		// Prevent a later BOOT swap from restoring an ejected image.
 		boot_disks.fill(nullptr);
 		swap_position = 0;
@@ -210,9 +222,9 @@ static void swap_disks(bool pressed)
 uint8_t imageDisk::Read_Sector(uint32_t head, uint32_t cylinder,
                                uint32_t sector, void* data)
 {
-	if (track_image) {
+	if (floppy_media) {
 		uint8_t status = 0x04;
-		for (const auto& candidate : track_image->GetTrack(cylinder, head)) {
+		for (const auto& candidate : floppy_media->GetTrack(cylinder, head)) {
 			if (candidate.cylinder != cylinder ||
 			    candidate.head != head || candidate.id != sector ||
 			    candidate.data.size() != sector_size ||
@@ -240,7 +252,7 @@ uint8_t imageDisk::Read_Sector(uint32_t head, uint32_t cylinder,
 
 uint8_t imageDisk::Read_AbsoluteSector(uint32_t sectnum, void* data)
 {
-	if (track_image) {
+	if (floppy_media) {
 		if (!sectors || sectnum >= cylinders * heads * sectors) {
 			return 0x04;
 		}
@@ -296,12 +308,12 @@ uint8_t imageDisk::read_absolute_sector(const uint32_t sectnum, void* data,
 uint8_t imageDisk::Write_Sector(uint32_t head, uint32_t cylinder,
                                 uint32_t sector, void* data)
 {
-	if (track_image) {
+	if (floppy_media) {
 		if (IsWriteProtected()) {
 			return 0x03;
 		}
 		const std::span bytes(static_cast<const uint8_t*>(data), sector_size);
-		return track_image->WriteScpSector(cylinder, head, sector, bytes)
+		return floppy_media->WriteSector(cylinder, head, sector, bytes)
 		             ? 0
 		             : 0x05;
 	}
@@ -314,7 +326,7 @@ uint8_t imageDisk::Write_Sector(uint32_t head, uint32_t cylinder,
 
 uint8_t imageDisk::Write_AbsoluteSector(uint32_t sectnum, void* data)
 {
-	if (track_image) {
+	if (floppy_media) {
 		if (!sectors || sectnum >= cylinders * heads * sectors) {
 			return 0x04;
 		}
@@ -329,14 +341,14 @@ uint8_t imageDisk::Write_AbsoluteSector(uint32_t sectnum, void* data)
 
 bool imageDisk::IsWriteProtected() const
 {
-	return read_only || (track_image && track_image->IsWriteProtected());
+	return read_only || (floppy_media && floppy_media->IsWriteProtected());
 }
 
 bool imageDisk::WriteSectorForController(const uint32_t head, const uint32_t cylinder,
                                          const uint32_t sector,
                                          const std::span<const uint8_t> data)
 {
-	if (data.size() != sector_size || track_image) {
+	if (data.size() != sector_size || floppy_media) {
 		return false;
 	}
 	const auto absolute_sector = (cylinder * heads + head) * sectors + sector - 1;
@@ -426,13 +438,15 @@ imageDisk::imageDisk(FILE* img_file, const char* img_name, uint32_t img_size_k,
 	}
 }
 
-imageDisk::imageDisk(std::unique_ptr<FloppyTrackImage> image, const std::string& name)
+imageDisk::imageDisk(std::shared_ptr<FloppyMedia> image, const std::string& name,
+                     const uint32_t head_count, const uint32_t cylinder_count,
+                     const uint32_t sectors_per_track)
         : imageDisk(nullptr, name.c_str(), 0, false)
 {
-	heads       = image->heads;
-	cylinders   = image->cylinders;
-	sectors     = image->logical_sectors;
-	track_image = std::move(image);
+	heads        = head_count;
+	cylinders    = cylinder_count;
+	sectors      = sectors_per_track;
+	floppy_media = std::move(image);
 	active      = true;
 	for (size_t i = 0; i < disk_geometry_list.size(); ++i) {
 		const auto& geometry = disk_geometry_list[i];
@@ -445,14 +459,9 @@ imageDisk::imageDisk(std::unique_ptr<FloppyTrackImage> image, const std::string&
 	incrementFDD();
 }
 
-const FloppyTrackImage* imageDisk::GetTrackImage() const
+std::shared_ptr<FloppyMedia> imageDisk::GetFloppyMedia() const
 {
-	return track_image.get();
-}
-
-FloppyTrackImage* imageDisk::GetTrackImage()
-{
-	return track_image.get();
+	return floppy_media;
 }
 
 void imageDisk::Set_Geometry(uint32_t setHeads, uint32_t setCyl,
@@ -509,26 +518,19 @@ static bool driveInactive(uint8_t driveNum)
 		CALLBACK_SCF(true);
 		return true;
 	}
-	if (!disk_slots[driveNum]) {
+	if (!disk_slots[driveNum].sector) {
 		LOG(LOG_BIOS, LOG_ERROR)("Disk %d not active", driveNum);
 		last_status = 0x01;
 		CALLBACK_SCF(true);
 		return true;
 	}
-	if (!disk_slots[driveNum]->active) {
+	if (!disk_slots[driveNum].sector->active) {
 		LOG(LOG_BIOS, LOG_ERROR)("Disk %d not active", driveNum);
 		last_status = 0x01;
 		CALLBACK_SCF(true);
 		return true;
 	}
 	return false;
-}
-
-template <typename T, size_t N>
-static bool has_image(const std::array<T, N>& arr)
-{
-	auto to_bool = [](const T& x) { return bool(x); };
-	return std::any_of(std::begin(arr), std::end(arr), to_bool);
 }
 
 static uint8_t format_floppy_track(imageDisk& disk, const uint8_t unit,
@@ -577,7 +579,8 @@ static uint8_t format_floppy_track(imageDisk& disk, const uint8_t unit,
 		ids[i] = mem_readb(address + check_cast<PhysPt>(i));
 	}
 
-	switch (FLOPPY_FormatTrack(disk, cylinder, head, ids, fill, count)) {
+	switch (FLOPPY_FormatTrack(
+	        disk, disk_slots[unit].floppy.get(), cylinder, head, ids, fill, count)) {
 	case FloppyFormatResult::Success: return 0;
 	case FloppyFormatResult::WriteProtected: return 0x03;
 	case FloppyFormatResult::InvalidLayout: return 0x04;
@@ -620,7 +623,9 @@ static Bitu INT13_DiskHandler(void)
 	Bitu t;
 	last_drive            = reg_dl;
 	drivenum              = GetDosDriveNumber(reg_dl);
-	const bool any_images = has_image(disk_slots);
+	const auto any_images = std::ranges::any_of(disk_slots, [](const auto& slot) {
+		return slot.sector != nullptr;
+	});
 
 	// unconditionally enable the interrupt flag
 	CALLBACK_SIF(true);
@@ -644,8 +649,10 @@ static Bitu INT13_DiskHandler(void)
 			if (is_machine_cga() || is_machine_pcjr()) {
 				/* those bioses call floppy drive reset for
 				 * invalid drive values */
-				if (((disk_slots[0]) && (disk_slots[0]->active)) ||
-				    ((disk_slots[1]) && (disk_slots[1]->active))) {
+				if (((disk_slots[0].sector) &&
+				     (disk_slots[0].sector->active)) ||
+				    ((disk_slots[1].sector) &&
+				     (disk_slots[1].sector->active))) {
 					if (!is_machine_pcjr() && reg_dl < 2) {
 						FLOPPY_BiosReset(reg_dl);
 					}
@@ -677,7 +684,7 @@ static Bitu INT13_DiskHandler(void)
 			CALLBACK_SCF(true);
 			return CBRET_NONE;
 		}
-		if (drivenum >= MAX_DISK_IMAGES || !disk_slots[drivenum]) {
+		if (drivenum >= MAX_DISK_IMAGES || !disk_slots[drivenum].sector) {
 			if (drivenum >= DOS_DRIVES || !Drives[drivenum] ||
 			    Drives[drivenum]->IsRemovable()) {
 				reg_ah = 0x01;
@@ -711,19 +718,18 @@ static Bitu INT13_DiskHandler(void)
 			return CBRET_NONE;
 		}
 
-		if (!is_machine_pcjr_or_tandy() &&
-		    disk_slots[drivenum]->GetTrackImage()) {
+		if (!is_machine_pcjr_or_tandy() && disk_slots[drivenum].floppy) {
 			bios_floppy_transfer(drivenum, FloppyBiosTransfer::Read);
 			break;
 		}
 
-		if (drivenum < 2 && disk_slots[drivenum]->GetTrackImage()) {
+		if (drivenum < 2 && disk_slots[drivenum].floppy) {
 			FLOPPY_BiosPosition(drivenum, reg_ch);
 		}
 		segat  = SegValue(es);
 		bufptr = reg_bx;
 		for (Bitu i = 0; i < reg_al; i++) {
-			last_status = disk_slots[drivenum]->Read_Sector(
+			last_status = disk_slots[drivenum].sector->Read_Sector(
 			        (uint32_t)reg_dh,
 			        (uint32_t)(reg_ch | ((reg_cl & 0xc0) << 2)),
 			        (uint32_t)((reg_cl & 63) + i),
@@ -752,18 +758,20 @@ static Bitu INT13_DiskHandler(void)
 			CALLBACK_SCF(true);
 			return CBRET_NONE;
 		}
-		if (const auto* track = disk_slots[drivenum]->GetTrackImage();
-		    track && track->IsScp() && !is_machine_pcjr_or_tandy()) {
+		if (const auto& track = disk_slots[drivenum].floppy;
+		    track && track->SupportsTrackWrites() &&
+		    !is_machine_pcjr_or_tandy()) {
 			bios_floppy_transfer(drivenum, FloppyBiosTransfer::Write);
 			break;
 		}
 		bufptr = reg_bx;
 		for (Bitu i = 0; i < reg_al; i++) {
-			for (t = 0; t < disk_slots[drivenum]->getSectSize(); t++) {
+			for (t = 0; t < disk_slots[drivenum].sector->getSectSize();
+			     t++) {
 				sectbuf[t] = real_readb(SegValue(es), bufptr);
 				bufptr++;
 			}
-			last_status = disk_slots[drivenum]->Write_Sector(
+			last_status = disk_slots[drivenum].sector->Write_Sector(
 			        (uint32_t)reg_dh,
 			        (uint32_t)(reg_ch | ((reg_cl & 0xc0) << 2)),
 			        (uint32_t)((reg_cl & 63) + i),
@@ -790,17 +798,16 @@ static Bitu INT13_DiskHandler(void)
 			return CBRET_NONE;
 		}
 
-		if (!is_machine_pcjr_or_tandy() &&
-		    disk_slots[drivenum]->GetTrackImage()) {
+		if (!is_machine_pcjr_or_tandy() && disk_slots[drivenum].floppy) {
 			bios_floppy_transfer(drivenum, FloppyBiosTransfer::Verify);
 			break;
 		}
-		if (disk_slots[drivenum]->GetTrackImage()) {
+		if (disk_slots[drivenum].floppy) {
 			const auto cylinder = static_cast<uint32_t>(
 			        reg_ch | ((reg_cl & 0xc0) << 2));
 			const auto first_sector = static_cast<uint32_t>(reg_cl & 0x3f);
 			for (uint8_t verified = 0; verified < reg_al; ++verified) {
-				last_status = disk_slots[drivenum]->Read_Sector(
+				last_status = disk_slots[drivenum].sector->Read_Sector(
 				        reg_dh, cylinder, first_sector + verified, sectbuf);
 				if (last_status) {
 					reg_ah = last_status;
@@ -816,13 +823,13 @@ static Bitu INT13_DiskHandler(void)
 	case 0x05: /* Format track */
 		if (driveInactive(drivenum)) {
 			last_status = 0xff;
-		} else if (disk_slots[drivenum]->hardDrive) {
+		} else if (disk_slots[drivenum].sector->hardDrive) {
 			// Preserve the existing fixed-disk BIOS behavior.
 			last_status = 0;
 		} else {
 			const auto cylinder = static_cast<uint32_t>(
 			        reg_ch | ((reg_cl & 0xc0) << 2));
-			last_status = format_floppy_track(*disk_slots[drivenum],
+			last_status = format_floppy_track(*disk_slots[drivenum].sector,
 			                                  drivenum,
 			                                  cylinder,
 			                                  reg_dh,
@@ -842,9 +849,12 @@ static Bitu INT13_DiskHandler(void)
 			return CBRET_NONE;
 		}
 		reg_ax = 0x00;
-		reg_bl = disk_slots[drivenum]->GetBiosType();
+		reg_bl = disk_slots[drivenum].sector->GetBiosType();
 		uint32_t tmpheads, tmpcyl, tmpsect, tmpsize;
-		disk_slots[drivenum]->Get_Geometry(&tmpheads, &tmpcyl, &tmpsect, &tmpsize);
+		disk_slots[drivenum].sector->Get_Geometry(&tmpheads,
+		                                          &tmpcyl,
+		                                          &tmpsect,
+		                                          &tmpsize);
 		if (tmpcyl == 0) {
 			LOG(LOG_BIOS,
 			    LOG_ERROR)("INT13 DrivParm: cylinder count zero!");
@@ -862,18 +872,18 @@ static Bitu INT13_DiskHandler(void)
 		last_status = 0x00;
 		if (reg_dl & 0x80) { // harddisks
 			reg_dl = 0;
-			if (disk_slots[2]) {
+			if (disk_slots[2].sector) {
 				reg_dl++;
 			}
-			if (disk_slots[3]) {
+			if (disk_slots[3].sector) {
 				reg_dl++;
 			}
 		} else { // floppy disks
 			reg_dl = 0;
-			if (disk_slots[0]) {
+			if (disk_slots[0].sector) {
 				reg_dl++;
 			}
-			if (disk_slots[1]) {
+			if (disk_slots[1].sector) {
 				reg_dl++;
 			}
 		}
@@ -895,10 +905,10 @@ static Bitu INT13_DiskHandler(void)
 			}
 
 			uint32_t tmpheads, tmpcyl, tmpsect, tmpsize;
-			disk_slots[drivenum]->Get_Geometry(&tmpheads,
-			                                   &tmpcyl,
-			                                   &tmpsect,
-			                                   &tmpsize);
+			disk_slots[drivenum].sector->Get_Geometry(&tmpheads,
+			                                          &tmpcyl,
+			                                          &tmpsect,
+			                                          &tmpsize);
 			// Store intermediate calculations in 64-bit to avoid
 			// accidental integer overflow on temporary value:
 			uint64_t largesize = tmpheads;
@@ -945,7 +955,7 @@ static Bitu INT13_DiskHandler(void)
 		if (reg_dl >= 2) {
 			last_status = 0x01;
 		} else {
-			const auto& disk = disk_slots[reg_dl];
+			const auto& disk = disk_slots[reg_dl].sector;
 			last_status = !disk || !disk->active
 			                    ? 0x80
 			                    : (FLOPPY_IsDiskChanged(reg_dl) ? 0x06
@@ -1003,7 +1013,7 @@ void BIOS_SetupDisks(void)
 	RealSetVec(0x13, CALLBACK_RealPointer(call_int13));
 
 	// Clean any the numbered images
-	disk_slots.fill(nullptr);
+	disk_slots.fill({});
 
 	// Clear any raw disk images
 	boot_disks.fill(nullptr);

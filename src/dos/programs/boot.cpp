@@ -331,7 +331,7 @@ void BOOT::Run(void)
 		return;
 	}
 
-	if (!boot_disk->GetTrackImage() && (bootarea.rawdata[0] == 0x50) &&
+	if (!boot_disk->GetFloppyMedia() && (bootarea.rawdata[0] == 0x50) &&
 	    (bootarea.rawdata[1] == 0x43) && (bootarea.rawdata[2] == 0x6a) &&
 	    (bootarea.rawdata[3] == 0x72)) {
 		if (!is_machine_pcjr()) {

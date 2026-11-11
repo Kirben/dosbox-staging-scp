@@ -16,7 +16,6 @@
 #include "dos/dos.h"
 #include "hardware/memory.h"
 #include "ints/bios.h"
-#include "ints/floppy_track_image.h"
 #include "ints/sector_media.h"
 
 /* The Section handling Bios Disk Access */
@@ -32,6 +31,8 @@ struct DiskGeometry {
 };
 
 const std::vector<DiskGeometry>& BIOS_GetDiskGeometryList();
+
+class FloppyMedia;
 
 class imageDisk final : public SectorMedia {
 public:
@@ -61,10 +62,10 @@ public:
 
 	imageDisk(FILE* img_file, const char* img_name, uint32_t img_size_k,
 	          bool is_hdd, bool read_only = false);
-	imageDisk(std::unique_ptr<FloppyTrackImage> track_image,
-	          const std::string& name);
-	const FloppyTrackImage* GetTrackImage() const;
-	FloppyTrackImage* GetTrackImage();
+	imageDisk(std::shared_ptr<FloppyMedia> media, const std::string& name,
+	          const uint32_t head_count, const uint32_t cylinder_count,
+	          const uint32_t sectors_per_track);
+	std::shared_ptr<FloppyMedia> GetFloppyMedia() const;
 	imageDisk(const imageDisk&) = delete; // prevent copy
 	imageDisk& operator=(const imageDisk&) = delete; // prevent assignment
 
@@ -87,7 +88,7 @@ private:
 	uint8_t write_absolute_sector(const uint32_t sector, const void* data,
 	                              const bool controller_write);
 	bool read_only                                = false;
-	std::unique_ptr<FloppyTrackImage> track_image = {};
+	std::shared_ptr<FloppyMedia> floppy_media     = {};
 	uint8_t read_absolute_sector(const uint32_t sector, void* data,
 	                             const bool controller_read);
 	cross_off_t current_fpos;
@@ -103,6 +104,7 @@ void incrementFDD(void);
 using BiosBootDisks = std::array<std::shared_ptr<imageDisk>, MAX_SWAPPABLE_DISKS>;
 
 std::shared_ptr<imageDisk> BIOS_GetDisk(const size_t slot);
+std::shared_ptr<FloppyMedia> BIOS_GetFloppyMedia(const size_t slot);
 void BIOS_SetDisk(const size_t slot, std::shared_ptr<imageDisk> disk);
 void BIOS_SetBootDisks(BiosBootDisks disks);
 

@@ -14,6 +14,7 @@
 #include "hardware/pic.h"
 #include "hardware/port.h"
 #include "ints/bios_disk.h"
+#include "ints/floppy_media.h"
 #include "utils/checks.h"
 
 CHECK_NARROWING();
@@ -61,6 +62,7 @@ struct Controller {
 	uint8_t track_status_2                             = 0;
 	size_t formatted_ids                               = 0;
 	std::shared_ptr<imageDisk> disk  = {};
+	std::shared_ptr<FloppyMedia> media                 = {};
 	const FloppySector* track_sector = nullptr;
 	Phase phase                      = Phase::Command;
 	size_t command_count             = 0;
@@ -143,6 +145,7 @@ void finish_data(const uint8_t status_1, const uint8_t status_2 = 0,
 	                             : static_cast<uint8_t>(SectorSizeCode)};
 	fdc.track_sector   = nullptr;
 	fdc.disk.reset();
+	fdc.media.reset();
 	if (is_machine_pcjr() &&
 	    (fdc.command[0] & 0x1f) == static_cast<int>(Command::ReadTrack)) {
 		// PCjr reserves IRQ6 for its keyboard. Signal the disk
@@ -155,7 +158,7 @@ void finish_data(const uint8_t status_1, const uint8_t status_2 = 0,
 
 double rotation_cycle_ms()
 {
-	if (const auto* track = fdc.disk->GetTrackImage()) {
+	if (const auto& track = fdc.media) {
 		return track->GetCycleMs(fdc.cylinder, fdc.head);
 	}
 	// The 1.2 MB 5.25-inch drive spins at 360 RPM.
@@ -192,7 +195,7 @@ void missing_sector(uint32_t)
 	finish_data(0x04);
 }
 
-void schedule_track_sector(const FloppyTrackImage& image, const bool read_id)
+void schedule_track_sector(const FloppyMedia& image, const bool read_id)
 {
 	const auto track       = image.GetTrack(fdc.cylinder, fdc.head);
 	const auto position_ms = rotation_ms();
@@ -223,7 +226,7 @@ void schedule_track_sector(const FloppyTrackImage& image, const bool read_id)
 
 void schedule_next_sector()
 {
-	if (const auto* track = fdc.disk->GetTrackImage()) {
+	if (const auto& track = fdc.media) {
 		schedule_track_sector(*track, false);
 	} else {
 		PIC_AddEvent(transfer_sector, slot_length_ms());
@@ -256,8 +259,7 @@ void transfer_track_sector(uint32_t)
 		finish_data(0x04);
 		return;
 	}
-	const auto track = fdc.disk->GetTrackImage()->GetTrack(fdc.cylinder,
-	                                                       fdc.head);
+	const auto track = fdc.media->GetTrack(fdc.cylinder, fdc.head);
 	if (fdc.track_offset >= track.size() ||
 	    track[fdc.track_offset].revolution != 0) {
 		finish_data(fdc.track_status_1 | 0x04, fdc.track_status_2);
@@ -311,8 +313,7 @@ void transfer_track_sector(uint32_t)
 		        fdc.track_offset < track.size() &&
 		                        track[fdc.track_offset].revolution == 0
 		                ? track[fdc.track_offset].cycle_fraction * cycle
-		                : fdc.disk->GetTrackImage()->GetFormatCycleMs(
-		                          fdc.cylinder, fdc.head);
+		                : fdc.media->GetFormatCycleMs(fdc.cylinder, fdc.head);
 		PIC_AddEvent(transfer_track_sector,
 		             std::max(0.0, next_ms - offset_ms));
 	}
@@ -374,8 +375,11 @@ void transfer_sector(uint32_t)
 		finish_data(0x10);
 	} else if (writing &&
 	           !(fdc.track_sector
-	                     ? fdc.disk->GetTrackImage()->WriteScpSector(
-	                               fdc.cylinder, fdc.head, fdc.sector, buffer, fdc.track_sector)
+	                     ? fdc.media->WriteSector(fdc.cylinder,
+	                                              fdc.head,
+	                                              fdc.sector,
+	                                              buffer,
+	                                              fdc.track_sector)
 	                     : fdc.disk->WriteSectorForController(
 	                               fdc.head, fdc.cylinder, fdc.sector, buffer))) {
 		finish_data(0x20);
@@ -417,8 +421,13 @@ uint8_t format_status(const FloppyFormatResult result)
 uint8_t commit_scp_format()
 {
 	const auto ids = std::span(fdc.format_ids).first(fdc.formatted_ids * FormatIdSize);
-	return format_status(FLOPPY_FormatTrack(
-	        *fdc.disk, fdc.cylinder, fdc.head, ids, fdc.command[5], fdc.command[3]));
+	return format_status(FLOPPY_FormatTrack(*fdc.disk,
+	                                        fdc.media.get(),
+	                                        fdc.cylinder,
+	                                        fdc.head,
+	                                        ids,
+	                                        fdc.command[5],
+	                                        fdc.command[3]));
 }
 
 void finish_scp_format(const uint8_t status)
@@ -440,8 +449,7 @@ void finish_scp_format(const uint8_t status)
 
 double scp_format_slot_ms()
 {
-	return fdc.disk->GetTrackImage()->GetFormatCycleMs(fdc.cylinder, fdc.head) /
-	       fdc.command[3];
+	return fdc.media->GetFormatCycleMs(fdc.cylinder, fdc.head) / fdc.command[3];
 }
 
 void format_scp_sector(uint32_t)
@@ -495,6 +503,7 @@ void format_raw_track(uint32_t)
 	}
 
 	const auto result = FLOPPY_FormatTrack(*fdc.disk,
+	                                       nullptr,
 	                                       fdc.cylinder,
 	                                       fdc.head,
 	                                       std::span(ids).first(count),
@@ -510,6 +519,7 @@ void start_data(const Command command)
 {
 	const auto unit = selected_unit();
 	fdc.disk        = BIOS_GetDisk(unit);
+	fdc.media       = BIOS_GetFloppyMedia(unit);
 	fdc.head        = (fdc.command[1] >> 2) & 1;
 	fdc.cylinder = unit < fdc.drives.size() ? fdc.drives[unit].cylinder : 0;
 	fdc.sector = (command == Command::ReadId || command == Command::FormatTrack)
@@ -529,14 +539,13 @@ void start_data(const Command command)
 	}
 	// Support the single-track, end-of-track form used by the BIOS.
 	if (command == Command::Verify &&
-	    (!fdc.disk->GetTrackImage() || (fdc.command[0] & 0xa0) ||
-	     (fdc.command[1] & 0x80))) {
+	    (!fdc.media || (fdc.command[0] & 0xa0) || (fdc.command[1] & 0x80))) {
 		finish_data(0x04);
 		return;
 	}
 	fdc.phase = Phase::Execution;
 	if (command == Command::FormatTrack) {
-		const auto raw = !fdc.disk->GetTrackImage();
+		const auto raw = !fdc.media;
 		if (fdc.command[3] == 0 || fdc.command[2] > 7 ||
 		    (raw && (fdc.command[2] != SectorSizeCode ||
 		             fdc.command[3] != fdc.disk->sectors ||
@@ -556,7 +565,7 @@ void start_data(const Command command)
 		return;
 	}
 	if (command == Command::ReadTrack) {
-		const auto* image = fdc.disk->GetTrackImage();
+		const auto& image = fdc.media;
 		if (!image || fdc.command[5] > 7 || !fdc.command[6]) {
 			finish_data(0x04);
 			return;
@@ -571,7 +580,7 @@ void start_data(const Command command)
 		             cycle - rotation_ms() + first * cycle);
 		return;
 	}
-	if (const auto* track = fdc.disk->GetTrackImage()) {
+	if (const auto& track = fdc.media) {
 		if (command != Command::ReadId &&
 		    (fdc.command[3] != fdc.head || fdc.sector > fdc.command[6] ||
 		     (command == Command::WriteData &&
@@ -757,7 +766,7 @@ void write_dor(io_port_t, const io_val_t value, io_width_t)
 	const auto previous = fdc.dor;
 	const auto unit     = selected_unit();
 	const auto formatting_scp = fdc.phase == Phase::Execution && fdc.disk &&
-	                            fdc.disk->GetTrackImage() &&
+	                            fdc.media &&
 	                            (fdc.command[0] & 0x1f) ==
 	                                    static_cast<int>(Command::FormatTrack) &&
 	                            media_ready(unit);
@@ -788,8 +797,8 @@ void write_dor(io_port_t, const io_val_t value, io_width_t)
 
 } // namespace
 
-FloppyFormatResult FLOPPY_FormatTrack(imageDisk& disk, const uint32_t cylinder,
-                                      const uint32_t head,
+FloppyFormatResult FLOPPY_FormatTrack(imageDisk& disk, FloppyMedia* media,
+                                      const uint32_t cylinder, const uint32_t head,
                                       const std::span<const uint8_t> ids,
                                       const uint8_t fill, const uint8_t requested)
 {
@@ -803,13 +812,13 @@ FloppyFormatResult FLOPPY_FormatTrack(imageDisk& disk, const uint32_t cylinder,
 		return Result::InvalidLayout;
 	}
 
-	if (auto* track = disk.GetTrackImage()) {
-		using ScpResult = FloppyTrackImage::FormatResult;
-		switch (track->FormatScpTrack(check_cast<uint8_t>(cylinder),
-		                              check_cast<uint8_t>(head),
-		                              ids,
-		                              fill,
-		                              requested)) {
+	if (media) {
+		using ScpResult = FloppyMedia::FormatResult;
+		switch (media->FormatTrack(check_cast<uint8_t>(cylinder),
+		                           check_cast<uint8_t>(head),
+		                           ids,
+		                           fill,
+		                           requested)) {
 		case ScpResult::Success: return Result::Success;
 		case ScpResult::InvalidLayout: return Result::InvalidLayout;
 		case ScpResult::WriteError: return Result::WriteError;
@@ -889,7 +898,7 @@ BiosCommandResult bios_command(const uint8_t unit, const uint32_t cylinder,
 	FLOPPY_BiosPosition(unit, check_cast<uint8_t>(cylinder));
 	fdc.non_dma = false;
 
-	const auto* track   = disk->GetTrackImage();
+	const auto track    = BIOS_GetFloppyMedia(unit);
 	const auto cycle_ms = track ? track->GetCycleMs(cylinder, head)
 	                            : StandardRevolutionMs;
 	const auto deadline = PIC_FullIndex() + revolutions * cycle_ms;

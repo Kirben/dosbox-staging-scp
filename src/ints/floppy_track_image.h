@@ -12,21 +12,9 @@
 #include <string>
 #include <vector>
 
-struct FloppySector {
-	uint8_t cylinder          = 0;
-	uint8_t head              = 0;
-	uint8_t id                = 0;
-	uint8_t size_code         = 0;
-	double cycle_fraction     = 0;
-	bool id_crc_error         = false;
-	bool data_crc_error       = false;
-	bool deleted              = false;
-	size_t revolution         = 0;
-	std::vector<uint8_t> data = {};
-	std::vector<uint8_t> extended_data = {};
-};
+#include "ints/floppy_media.h"
 
-class FloppyTrackImage {
+class FloppyTrackImage final : public FloppyMedia {
 public:
 	static std::unique_ptr<FloppyTrackImage> LoadHxcMfm(FILE* file);
 	static std::unique_ptr<FloppyTrackImage> LoadScp(FILE* file,
@@ -37,21 +25,20 @@ public:
 	static std::unique_ptr<FloppyTrackImage> Load86f(FILE* file,
 	                                                 std::string& error);
 
-	double GetCycleMs(const uint32_t cylinder, const uint32_t head) const;
-	double GetFormatCycleMs(const uint32_t cylinder, const uint32_t head) const;
+	double GetCycleMs(const uint32_t cylinder, const uint32_t head) const override;
+	double GetFormatCycleMs(const uint32_t cylinder,
+	                        const uint32_t head) const override;
 
 	std::span<const FloppySector> GetTrack(const uint32_t cylinder,
-	                                       const uint32_t head) const;
-	bool IsScp() const;
-	bool IsWriteProtected() const;
-	bool WriteScpSector(const uint32_t cylinder, const uint32_t head,
-	                    const uint32_t sector,
-	                    const std::span<const uint8_t> data,
-	                    const FloppySector* selected = nullptr);
-	enum class FormatResult { Success, InvalidLayout, WriteError };
-	FormatResult FormatScpTrack(const uint8_t cylinder, const uint8_t head,
-	                            const std::span<const uint8_t> ids,
-	                            const uint8_t fill, const uint8_t requested);
+	                                       const uint32_t head) const override;
+	bool SupportsTrackWrites() const override;
+	bool IsWriteProtected() const override;
+	bool WriteSector(const uint32_t cylinder, const uint32_t head,
+	                 const uint32_t sector, const std::span<const uint8_t> data,
+	                 const FloppySector* selected) override;
+	FormatResult FormatTrack(const uint8_t cylinder, const uint8_t head,
+	                         const std::span<const uint8_t> ids,
+	                         const uint8_t fill, const uint8_t requested) override;
 
 	uint32_t cylinders       = 0;
 	uint32_t heads           = 0;
