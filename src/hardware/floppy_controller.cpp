@@ -898,7 +898,7 @@ BiosCommandResult bios_command(const uint8_t unit, const uint32_t cylinder,
                                const uint32_t address, const uint32_t size,
                                const bool writing, const int revolutions)
 {
-	if (fdc.phase != Phase::Command || fdc.command_count || fdc.irq_pending) {
+	if (!FLOPPY_CanStartBiosCommand()) {
 		return {.error = 0x80};
 	}
 	const auto disk = BIOS_GetDisk(unit);
@@ -1147,6 +1147,11 @@ uint8_t FLOPPY_BiosDmaFormat(const uint8_t unit, const uint32_t cylinder,
 		return 0x04;
 	}
 	return transfer.transferred == size ? 0 : 0x08;
+}
+
+bool FLOPPY_CanStartBiosCommand()
+{
+	return fdc.phase == Phase::Command && !fdc.command_count && !fdc.irq_pending;
 }
 
 void FLOPPY_BiosPosition(const uint8_t unit, const uint8_t cylinder)

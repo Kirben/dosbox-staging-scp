@@ -585,6 +585,10 @@ static uint8_t format_floppy_track(imageDisk& disk, const uint8_t unit,
 		        unit, cylinder, head, size_code, count, gap, fill, address);
 	}
 
+	// A pending FDC command can hold a pointer into the track being formatted.
+	if (!FLOPPY_CanStartBiosCommand()) {
+		return 0x80;
+	}
 	std::array<uint8_t, UINT8_MAX * IdSize> buffer = {};
 	const auto ids = std::span(buffer).first(table_size);
 	for (size_t i = 0; i < ids.size(); ++i) {
