@@ -128,7 +128,8 @@ std::unique_ptr<FloppyTrackImage> FloppyTrackImage::Load86f(FILE* file,
 		const int64_t cells = total_count
 		                            ? int64_t{encoded_count}
 		                            : static_cast<int64_t>(base_cells) + extra;
-		const int64_t storage = total_count ? cells : stored_bits + extra;
+		const auto storage       = total_count ? cells
+		                                       : int64_t{stored_bits} + extra;
 		const size_t index = le32(pos + track_header - 4);
 		if (cells <= 0 || cells > storage || storage > 850'000 ||
 		    index >= static_cast<size_t>(cells)) {
