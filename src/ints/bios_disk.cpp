@@ -1146,6 +1146,16 @@ void BIOS_SetupDisks(void)
 		            defaults[i]);
 	}
 
+	// Booters can restore INT 1Eh to the IBM PC ROM address after using
+	// their own parameter table, without saving the original vector.
+	constexpr std::array<uint8_t, 11> legacy_defaults = {
+	        0xdf, 0x02, 0x25, 0x02, 0x08, 0x2a, 0xff, 0x50, 0xf6, 0x19, 0x04};
+	const auto legacy_params = RealToPhysical(RealMake(0xf000, 0xefc7));
+	for (size_t i = 0; i < legacy_defaults.size(); ++i) {
+		phys_writeb(legacy_params + check_cast<PhysPt>(i),
+		            legacy_defaults[i]);
+	}
+
 	FLOPPY_Init();
 	if (!is_machine_pcjr()) {
 		const auto irq6 = CALLBACK_Allocate();
