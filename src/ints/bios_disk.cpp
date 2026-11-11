@@ -16,6 +16,7 @@
 #include "gui/mapper.h"
 #include "hardware/floppy_controller.h"
 #include "hardware/memory.h"
+#include "hardware/pic.h"
 #include "ints/floppy_media.h"
 #include "utils/string_utils.h"
 
@@ -1161,6 +1162,7 @@ void BIOS_SetupDisks(void)
 		const auto irq6 = CALLBACK_Allocate();
 		CALLBACK_Setup(irq6, floppy_irq6, CB_IRET_EOI_PIC1, "IRQ 6 Floppy");
 		RealSetVec(0x0e, CALLBACK_RealPointer(irq6));
+		PIC_SetIRQMask(6, false);
 	}
 	/* TODO Start the time correctly */
 	call_int13 = CALLBACK_Allocate();

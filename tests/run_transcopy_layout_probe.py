@@ -14,7 +14,8 @@ from run_hxc_mfm_probe import MFM, launch
 from run_transcopy_attachment_probe import encode_transcopy
 
 
-def run_guest(dosbox, nasm, directory, image, checks, expected=b"", extra_commands=()):
+def run_guest(dosbox, nasm, directory, image, checks, expected=b"", extra_commands=(),
+              machine=None):
     """Run BIOS checks and report the first failing stage."""
     source = directory / "probe.asm"
     (directory / "EXPECTED.BIN").write_bytes(expected)
@@ -57,6 +58,10 @@ expected incbin 'EXPECTED.BIN'
         f'mount c "{directory}"', f'mount 0 "{image}" -t floppy -fs none -ro',
         *extra_commands, "c:", "probe.com", "exit",
     ])
+    if machine:
+        config = command[-1]
+        config.write_text(f"[dosbox]\nmachine={machine}\n" + config.read_text(),
+                          encoding="ascii")
     run = subprocess.run(command, cwd=directory, env=env, timeout=30,
                          capture_output=True, text=True, check=True)
     result = report.read_bytes() if report.exists() else b""
