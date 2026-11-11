@@ -13,6 +13,7 @@ from run_raw_floppy_read_probe import run_probe
 
 
 def encode_86f(disk, verify_errors=False):
+    """Encode the raw fixture as an 86Box track image."""
     image = bytearray(8 + 512 * 4)
     # Two-sided DD, surface arrays, explicit extra cells, little-endian words.
     pack_into("<4sHH", image, 0, b"86BF", 0x020c, 0x0889)
@@ -32,6 +33,7 @@ def encode_86f(disk, verify_errors=False):
 
 
 def main():
+    """Run the 86F guest checks."""
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--dosbox", required=True, type=Path)
     parser.add_argument("--nasm", default="nasm")

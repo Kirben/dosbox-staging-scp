@@ -17,7 +17,9 @@ BIT_STRINGS = tuple(f"{value:08b}" for value in range(256))
 TRANSITION = re.compile("1")
 
 
+# pylint: disable-next=R0914
 def encode_scp(disk, different_turns=False, duplicate_id=False, verify_errors=False):
+    """Encode the raw fixture as a multi-revolution SCP capture."""
     image = bytearray(0x2b0)
     image[:3] = b"SCP"
     image[3:9] = bytes((0x10, 0x31, 2, 0, 79, 1))
@@ -54,7 +56,9 @@ def encode_scp(disk, different_turns=False, duplicate_id=False, verify_errors=Fa
     return image
 
 
+# pylint: disable-next=R0914,R0912,R0915
 def main():
+    """Run SCP attachment, write, and format scenarios."""
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--dosbox", required=True, type=Path)
     parser.add_argument("--nasm", default="nasm")

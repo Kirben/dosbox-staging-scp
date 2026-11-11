@@ -17,6 +17,7 @@ from run_scp_attachment_probe import encode_scp
 
 
 def timing_fixture():
+    """Create a FAT12 disk with distinct data at a track boundary."""
     disk = fat12()
     for offset in (512, 1536):
         disk[offset + 3:offset + 9] = bytes.fromhex("03 40 00 05 f0 ff")
@@ -28,6 +29,7 @@ def timing_fixture():
 
 
 def measure(dosbox, folder, program, image, speed):
+    """Run the guest probe and convert its PIT counts to milliseconds."""
     folder.mkdir()
     config = folder / "timing.conf"
     config.write_text(f"""[sdl]
@@ -64,6 +66,7 @@ exit
 
 
 def check_timings(extension, maximum, slow):
+    """Check the configured FAT delay and controller timing."""
     assert len(maximum) == len(slow) == 5, (extension, maximum, slow)
     print(f".{extension} maximum {maximum}, slow {slow}", flush=True)
     # 4096 bytes at 30 KiB/s adds 133.33 ms to the DOS FAT read.
@@ -82,6 +85,7 @@ def check_timings(extension, maximum, slow):
 
 
 def main():
+    """Measure each floppy format at maximum and slow speeds."""
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--dosbox", required=True, type=Path)
     parser.add_argument("--nasm", default="nasm")

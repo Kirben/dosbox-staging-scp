@@ -16,6 +16,7 @@ from run_scp_attachment_probe import encode_scp
 
 
 def make_fixtures(folder, marker, odd_geometry):
+    """Create matching reporting fixtures in all supported formats."""
     folder.mkdir(exist_ok=True)
     disk = fat12()
     disk[3072:3584] = bytes([marker]) * 512
@@ -32,6 +33,7 @@ def make_fixtures(folder, marker, odd_geometry):
 
 def make_iso(path):
     # A minimal ISO 9660 volume with an empty root directory.
+    """Create a minimal disc image for the ATAPI control."""
     sector = 2048
     iso = bytearray(19 * sector)
     root = pack("<BBI", 34, 0, 18) + pack(">I", 18)
@@ -51,7 +53,9 @@ def make_iso(path):
     path.write_bytes(iso)
 
 
+# pylint: disable-next=R0914
 def verify_report(path, slots):
+    """Compare guest BIOS, CMOS, FDC, and ATAPI data to the expected state."""
     data = path.read_bytes()
     assert len(data) == 40, (path, data.hex())
     equipment, cmos_type, cmos_equipment, ide_id = unpack_from("<HBBH", data)
@@ -87,7 +91,9 @@ def verify_report(path, slots):
             assert (carry, status) == (1, 7), (path, unit, carry, status)
 
 
+# pylint: disable-next=R0914
 def run_probe(exe, nasm, out):
+    """Check reporting across the mount and ejection sequence."""
     make_fixtures(out / "first", 0x31, False)
     make_fixtures(out / "second", 0x62, True)
     make_iso(out / "ide.iso")
@@ -147,6 +153,7 @@ def run_probe(exe, nasm, out):
 
 
 def main():
+    """Run reporting checks in an isolated workspace."""
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--dosbox", type=Path, required=True)
     parser.add_argument("--nasm", default="nasm")
