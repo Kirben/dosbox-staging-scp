@@ -14,7 +14,7 @@ from run_hxc_mfm_probe import MFM, launch
 from run_transcopy_attachment_probe import encode_transcopy
 
 
-def run_guest(dosbox, nasm, directory, image, checks, expected=b""):
+def run_guest(dosbox, nasm, directory, image, checks, expected=b"", extra_commands=()):
     """Run BIOS checks and report the first failing stage."""
     source = directory / "probe.asm"
     (directory / "EXPECTED.BIN").write_bytes(expected)
@@ -55,7 +55,7 @@ expected incbin 'EXPECTED.BIN'
     report.unlink(missing_ok=True)
     command, env = launch(dosbox, directory, "layout", [
         f'mount c "{directory}"', f'mount 0 "{image}" -t floppy -fs none -ro',
-        "c:", "probe.com", "exit",
+        *extra_commands, "c:", "probe.com", "exit",
     ])
     run = subprocess.run(command, cwd=directory, env=env, timeout=30,
                          capture_output=True, text=True, check=True)
@@ -208,15 +208,91 @@ def check_fields(dosbox, nasm, directory):
               "payload, CRC status and Verify passed")
 
 
+def check_sector_ids(dosbox, nasm, directory):
+    """Preserve eight-bit floppy IDs and ten-bit fixed-disk cylinders."""
+    image = directory / "ids.tc"
+    original, _ = encode_field_fixture(False)
+    image.write_bytes(original)
+    checks = """
+    push es
+    xor ax,ax
+    mov es,ax
+    les bx,[es:78h]
+    mov byte [es:bx+3],2
+    pop es
+    mov ax,0201h
+    mov bx,buffer
+    mov cx,0bbh
+    xor dx,dx
+    int 13h
+    jc done
+    cmp ax,1
+    jne done
+    inc byte [stage]
+    mov si,buffer
+    mov cx,512
+check_data:
+    lodsb
+    cmp al,77h
+    jne done
+    loop check_data
+    mov ax,0401h
+    mov cx,0bbh
+    xor dx,dx
+    int 13h
+    jc done
+    cmp ax,1
+    jne done
+    inc byte [stage]
+    mov ax,0402h
+    mov cx,0bbh
+    xor dx,dx
+    int 13h
+    jnc done
+    cmp ax,0401h
+    jne done
+    inc byte [stage]
+    ; Fixed disks retain CL's high cylinder bits: C256 H1 R2.
+    mov ax,0201h
+    mov bx,buffer
+    mov cx,0042h
+    mov dx,0180h
+    int 13h
+    jc done
+    cmp ah,0
+    jne done
+    mov si,buffer
+    mov cx,512
+check_hdd:
+    lodsb
+    cmp al,91h
+    jne done
+    loop check_hdd
+"""
+    hard_disk = directory / "fixed.img"
+    with hard_disk.open("wb") as file:
+        file.truncate(300 * 4 * 16 * 512)
+        file.seek(((256 * 4 + 1) * 16 + 1) * 512)
+        file.write(b"\x91" * 512)
+    commands = [f'mount 2 "{hard_disk}" -t hdd -fs none -size 512,16,4,300']
+    run_guest(dosbox, nasm, directory, image, checks, extra_commands=commands)
+    assert image.read_bytes() == original
+    print("BIOS: full-byte floppy ID, Verify partial count and fixed-disk CHS passed")
+
+
 def main():
     """Run the native table regression."""
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--dosbox", type=Path, required=True)
     parser.add_argument("--nasm", default="nasm")
-    parser.add_argument("--fields", action="store_true")
+    modes = parser.add_mutually_exclusive_group()
+    modes.add_argument("--fields", action="store_true")
+    modes.add_argument("--sector-ids", action="store_true")
     args = parser.parse_args()
     with TemporaryDirectory() as temp:
         check = check_fields if args.fields else check_mapping
+        if args.sector_ids:
+            check = check_sector_ids
         check(args.dosbox.resolve(), args.nasm, Path(temp))
 
 

@@ -1092,13 +1092,16 @@ static DiskServiceResult run_disk_service(const DiskServiceRequest& request)
 
 static Bitu INT13_DiskHandler()
 {
+	// Floppy IDs use all of CL; only fixed disks pack cylinder bits into it.
+	const auto floppy   = reg_dl < 0x80;
+	const auto sector   = floppy ? reg_cl : reg_cl & 0x3f;
+	const auto cylinder = floppy ? reg_ch : reg_ch | ((reg_cl & 0xc0) << 2);
 	const DiskServiceRequest request = {reg_ah,
 	                                    reg_dl,
 	                                    reg_al,
 	                                    reg_dh,
-	                                    check_cast<uint8_t>(reg_cl & 0x3f),
-	                                    check_cast<uint16_t>(
-	                                            reg_ch | ((reg_cl & 0xc0) << 2)),
+	                                    check_cast<uint8_t>(sector),
+	                                    check_cast<uint16_t>(cylinder),
 	                                    RealMake(SegValue(es), reg_bx)};
 	CALLBACK_SIF(true);
 	const auto result = run_disk_service(request);
