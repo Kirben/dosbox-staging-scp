@@ -71,7 +71,7 @@ def check_read_track(dosbox, nasm, disk):
     start = 4 * 9 * 512
     disk[start:start + 512] = bytes(range(256)) * 2
     disk[start + 511] = 0xf7
-    capture = encode(disk, malformed_id=True)
+    capture = encode(disk, malformed_id=True, verify_errors=True)
     with TemporaryDirectory() as temp:
         directory = Path(temp)
         image = directory / "readtrack.mfm"
@@ -83,7 +83,7 @@ def check_read_track(dosbox, nasm, disk):
             run_probe(dosbox, nasm, directory, image, 0, options,
                       machine=machine, tandy_standard=machine == "tandy")
             print(f"{machine}: malformed ID, Read Track DMA payload, "
-                  "terminal count and status passed")
+                  "terminal count and accumulated overrun status passed")
             if machine == "tandy":
                 print("tandy: 96 KB BIOS memory report and four video RAM aliases passed")
 
