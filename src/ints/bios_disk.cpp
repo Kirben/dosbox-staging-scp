@@ -583,6 +583,33 @@ static uint8_t format_floppy_track(imageDisk& disk, const uint8_t unit,
 	return 0x20;
 }
 
+static void bios_floppy_dma_transfer(const Bitu drivenum,
+                                     const FloppyBiosTransfer operation)
+{
+	auto result = FloppyBiosTransferResult{0x04, 0};
+	if (operation == FloppyBiosTransfer::Write || !killRead) {
+		const auto parameters = RealToPhysical(RealGetVec(0x1e));
+		result                = FLOPPY_BiosDmaTransfer(
+		        operation,
+		        check_cast<uint8_t>(drivenum),
+		        reg_ch | ((reg_cl & 0xc0) << 2),
+		        reg_dh,
+		        check_cast<uint8_t>(reg_cl & 0x3f),
+		        mem_readb(parameters + 3),
+		        reg_al,
+		        mem_readb(parameters + 5),
+		        RealToPhysical(RealMake(SegValue(es), reg_bx)));
+	}
+	if (operation == FloppyBiosTransfer::Read) {
+		killRead = false;
+	}
+	last_status = result.status;
+	mem_writeb(BIOS_DISK_STATUS, result.status);
+	reg_ah = result.status;
+	reg_al = result.sectors;
+	CALLBACK_SCF(result.status != 0);
+}
+
 static Bitu INT13_DiskHandler(void)
 {
 	uint16_t segat, bufptr;
@@ -684,25 +711,7 @@ static Bitu INT13_DiskHandler(void)
 
 		if (!is_machine_pcjr_or_tandy() &&
 		    disk_slots[drivenum]->GetTrackImage()) {
-			FloppyBiosReadResult result = {0x04, 0};
-			if (!killRead) {
-				const auto parameters = RealGetVec(0x1e);
-				result                = FLOPPY_BiosDmaRead(
-				        check_cast<uint8_t>(drivenum),
-				        reg_ch | ((reg_cl & 0xc0) << 2),
-				        reg_dh,
-				        reg_cl & 0x3f,
-				        mem_readb(RealToPhysical(parameters) + 3),
-				        reg_al,
-				        mem_readb(RealToPhysical(parameters) + 5),
-				        RealToPhysical(RealMake(SegValue(es), reg_bx)));
-			}
-			killRead    = false;
-			last_status = result.status;
-			mem_writeb(BIOS_DISK_STATUS, result.status);
-			reg_ah = result.status;
-			reg_al = result.sectors;
-			CALLBACK_SCF(result.status != 0);
+			bios_floppy_dma_transfer(drivenum, FloppyBiosTransfer::Read);
 			break;
 		}
 
@@ -734,6 +743,11 @@ static Bitu INT13_DiskHandler(void)
 			reg_ah = 0xff;
 			CALLBACK_SCF(true);
 			return CBRET_NONE;
+		}
+		if (const auto* track = disk_slots[drivenum]->GetTrackImage();
+		    track && track->IsScp() && !is_machine_pcjr_or_tandy()) {
+			bios_floppy_dma_transfer(drivenum, FloppyBiosTransfer::Write);
+			break;
 		}
 		bufptr = reg_bx;
 		for (Bitu i = 0; i < reg_al; i++) {

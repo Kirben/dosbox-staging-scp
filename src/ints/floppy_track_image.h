@@ -41,6 +41,7 @@ public:
 
 	std::span<const FloppySector> GetTrack(const uint32_t cylinder,
 	                                       const uint32_t head) const;
+	bool IsScp() const;
 	bool IsWriteProtected() const;
 	bool WriteScpSector(const uint32_t cylinder, const uint32_t head,
 	                    const uint32_t sector,
