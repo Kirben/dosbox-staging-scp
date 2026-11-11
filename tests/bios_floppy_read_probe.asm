@@ -27,6 +27,7 @@ org 100h
     jmp cross_track
 %endif
 %ifdef VERIFY_TEST
+%ifdef TRACK_IMAGE
     mov cx,0202h
     mov dx,0002h
     call check_verify
@@ -46,6 +47,45 @@ org 100h
     mov cx,0208h
     mov dx,0400h
     call check_verify
+%else
+    ; Cross from head 0 to head 1, then cross a cylinder boundary.
+    mov byte [verify_head],0
+    mov cx,0209h
+    mov dx,0002h
+    call check_verify
+    inc byte [stage]
+    mov byte [verify_head],1
+    mov cx,0209h
+    mov dx,0002h
+    call check_verify
+    inc byte [stage]
+    ; The final sector verifies, but the next cylinder is outside the image.
+    mov cx,2709h
+    mov dx,0401h
+    call check_verify
+    inc byte [stage]
+    mov dx,0400h
+    mov cx,2801h
+    call check_verify
+    inc byte [stage]
+    mov cx,020ah
+    mov dx,0400h
+    call check_verify
+    inc byte [stage]
+    mov cx,0200h
+    mov dx,0400h
+    call check_verify
+    inc byte [stage]
+    mov byte [verify_head],2
+    mov cx,0201h
+    mov dx,0400h
+    call check_verify
+    inc byte [stage]
+    mov byte [verify_head],0
+    mov byte [verify_count],0
+    mov dx,0100h
+    call check_verify
+%endif
 %else
 
     mov bx,1100h
@@ -87,8 +127,10 @@ check_verify:
     pop cx
     in al,08h
     mov byte [interrupts],0
-    mov ax,0402h
-    mov dx,0100h | UNIT
+    mov ah,04h
+    mov al,[verify_count]
+    mov dh,[verify_head]
+    mov dl,UNIT
     int 13h
     pushf
     pop si
@@ -104,7 +146,33 @@ check_verify:
     test si,1
     jnz report
 .check_result:
+%ifdef TRACK_IMAGE
     cmp byte [interrupts],1
+    jne report
+%else
+    cmp byte [interrupts],0
+    jne report
+    mov al,0ah
+    out 20h,al
+    in al,20h
+    test al,40h
+    jnz report
+%endif
+    push es
+    xor ax,ax
+    mov es,ax
+    cmp [es:0441h],dh
+    pop es
+    jne report
+    mov ah,01h
+    mov dl,UNIT
+    int 13h
+    pushf
+    pop cx
+    xor cx,si
+    test cx,1
+    jnz report
+    cmp ah,dh
     jne report
     in al,08h
     test al,04h
@@ -684,6 +752,8 @@ old_irq6 dd 0
 saved_mask db 0
 interrupts db 0
 pic_irq6 db 0
+verify_head db 1
+verify_count db 2
 sector_count db 0
 stage db 1
 filename db 'BIOS.OUT',0
