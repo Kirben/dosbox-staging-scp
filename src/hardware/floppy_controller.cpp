@@ -283,18 +283,22 @@ bool format_dma_ready(const DmaChannel* dma)
 	       !fdc.non_dma && (fdc.dor & InterruptEnabled);
 }
 
-uint8_t commit_scp_format()
+uint8_t format_status(const FloppyFormatResult result)
 {
-	using Result = FloppyTrackImage::FormatResult;
-	const auto ids = std::span(fdc.format_ids).first(fdc.formatted_ids * FormatIdSize);
-	const auto result = fdc.disk->GetTrackImage()->FormatScpTrack(
-	        fdc.cylinder, fdc.head, ids, fdc.command[5], fdc.command[3]);
 	switch (result) {
-	case Result::Success: return 0;
-	case Result::InvalidLayout: return 0x04;
-	case Result::WriteError: return 0x20;
+	case FloppyFormatResult::Success: return 0;
+	case FloppyFormatResult::WriteProtected: return 0x02;
+	case FloppyFormatResult::InvalidLayout: return 0x04;
+	case FloppyFormatResult::WriteError: return 0x20;
 	}
 	return 0x20;
+}
+
+uint8_t commit_scp_format()
+{
+	const auto ids = std::span(fdc.format_ids).first(fdc.formatted_ids * FormatIdSize);
+	return format_status(FLOPPY_FormatTrack(
+	        *fdc.disk, fdc.cylinder, fdc.head, ids, fdc.command[5], fdc.command[3]));
 }
 
 void finish_scp_format(const uint8_t status)
@@ -370,27 +374,16 @@ void format_raw_track(uint32_t)
 		return;
 	}
 
-	// Raw images only represent a full track with sequential, fixed-size IDs.
-	for (size_t i = 0; i < count; i += FormatIdSize) {
-		if (ids[i] != fdc.cylinder || ids[i + 1] != fdc.head ||
-		    ids[i + 2] != i / FormatIdSize + 1 ||
-		    ids[i + 3] != SectorSizeCode) {
-			finish_data(0x04);
-			return;
-		}
+	const auto result = FLOPPY_FormatTrack(*fdc.disk,
+	                                       fdc.cylinder,
+	                                       fdc.head,
+	                                       std::span(ids).first(count),
+	                                       fdc.command[5],
+	                                       fdc.command[3]);
+	if (result == FloppyFormatResult::Success) {
+		fdc.sector = fdc.command[3];
 	}
-
-	std::array<uint8_t, SectorSize> fill = {};
-	fill.fill(fdc.command[5]);
-	for (unsigned sector = 1; sector <= fdc.command[3]; ++sector) {
-		fdc.sector = check_cast<uint8_t>(sector);
-		if (!fdc.disk->WriteSectorForController(
-		            fdc.head, fdc.cylinder, fdc.sector, fill)) {
-			finish_data(0x20);
-			return;
-		}
-	}
-	finish_data(0);
+	finish_data(format_status(result));
 }
 
 void start_data(const Command command)
@@ -635,6 +628,58 @@ void write_dor(io_port_t, const io_val_t value, io_width_t)
 }
 
 } // namespace
+
+FloppyFormatResult FLOPPY_FormatTrack(imageDisk& disk, const uint32_t cylinder,
+                                      const uint32_t head,
+                                      const std::span<const uint8_t> ids,
+                                      const uint8_t fill, const uint8_t requested)
+{
+	using Result = FloppyFormatResult;
+	if (disk.IsWriteProtected()) {
+		return Result::WriteProtected;
+	}
+	if (disk.hardDrive || cylinder > UINT8_MAX || cylinder >= disk.cylinders ||
+	    head >= disk.heads || head > UINT8_MAX || ids.empty() ||
+	    ids.size() % FormatIdSize || ids.size() / FormatIdSize > requested) {
+		return Result::InvalidLayout;
+	}
+
+	if (auto* track = disk.GetTrackImage()) {
+		using ScpResult = FloppyTrackImage::FormatResult;
+		switch (track->FormatScpTrack(check_cast<uint8_t>(cylinder),
+		                              check_cast<uint8_t>(head),
+		                              ids,
+		                              fill,
+		                              requested)) {
+		case ScpResult::Success: return Result::Success;
+		case ScpResult::InvalidLayout: return Result::InvalidLayout;
+		case ScpResult::WriteError: return Result::WriteError;
+		}
+		return Result::WriteError;
+	}
+
+	// Raw images only represent a full track with sequential, fixed-size IDs.
+	if (requested != disk.sectors || ids.size() / FormatIdSize != requested ||
+	    disk.getSectSize() != SectorSize) {
+		return Result::InvalidLayout;
+	}
+	for (size_t i = 0; i < ids.size(); i += FormatIdSize) {
+		if (ids[i] != cylinder || ids[i + 1] != head ||
+		    ids[i + 2] != i / FormatIdSize + 1 ||
+		    ids[i + 3] != SectorSizeCode) {
+			return Result::InvalidLayout;
+		}
+	}
+
+	std::array<uint8_t, SectorSize> data = {};
+	data.fill(fill);
+	for (uint32_t sector = 1; sector <= requested; ++sector) {
+		if (!disk.WriteSectorForController(head, cylinder, sector, data)) {
+			return Result::WriteError;
+		}
+	}
+	return Result::Success;
+}
 
 void FLOPPY_Init()
 {
