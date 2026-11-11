@@ -14,7 +14,7 @@
 #include "dos/drives.h"
 #include "gui/mapper.h"
 #include "gui/titlebar.h"
-#include "hardware/dma.h"
+#include "hardware/floppy_controller.h"
 #include "hardware/input/mouse.h"
 #include "hardware/virtualbox.h"
 #include "hardware/vmware.h"
@@ -528,8 +528,19 @@ void BOOT::Run(void)
 			}
 		}
 	} else {
+		constexpr uint16_t boot_address = 0x7c00;
+		const auto use_floppy_dma = drive == 'A' && !boot_disk->hardDrive &&
+		                            !is_machine_pcjr_or_tandy();
+		if (use_floppy_dma &&
+		    !BIOS_ReadFloppyBootSector(boot_disk, boot_address)) {
+			WriteOut(MSG_Get("PROGRAM_BOOT_UNABLE"), drive);
+			return;
+		}
 		if (boot_disk_count) {
 			BIOS_SetBootDisks(std::move(boot_disks));
+			if (use_floppy_dma) {
+				FLOPPY_SetDiskChanged(0, false);
+			}
 		}
 		DisableUmbXmsEms();
 		MEM_RemoveEMSPageFrame();
@@ -537,19 +548,18 @@ void BOOT::Run(void)
 		NotifyBooting();
 		WriteOut(MSG_Get("PROGRAM_BOOT_BOOT"), drive);
 
-		for (i = 0; i < 512; i++)
-			real_writeb(0, 0x7c00 + i, bootarea.rawdata[i]);
-
-		/* create appearance of floppy drive DMA usage (Demon's Forge) */
-		if (!is_machine_pcjr_or_tandy() && floppysize != 0)
-			DMA_GetChannel(2)->has_reached_terminal_count = true;
+		if (!use_floppy_dma) {
+			MEM_BlockWrite(boot_address,
+			               bootarea.rawdata,
+			               sizeof(bootarea.rawdata));
+		}
 
 		/* revector some dos-allocated interrupts */
 		real_writed(0, 0x01 * 4, 0xf000ff53);
 		real_writed(0, 0x03 * 4, 0xf000ff53);
 
 		SegSet16(cs, 0);
-		reg_ip = 0x7c00;
+		reg_ip = boot_address;
 		SegSet16(ds, 0);
 		SegSet16(es, 0);
 		/* set up stack at a safe place */
@@ -559,8 +569,8 @@ void BOOT::Run(void)
 		reg_ecx = 1;
 		reg_ebp = 0;
 		reg_eax = 0;
-		reg_edx = 0;      // Head 0 drive 0
-		reg_ebx = 0x7c00; // Real code probably uses bx to load the image
+		reg_edx = 0; // Head 0 drive 0
+		reg_ebx = boot_address;
 	}
 }
 

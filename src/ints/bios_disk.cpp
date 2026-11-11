@@ -195,6 +195,31 @@ void BIOS_SetBootDisks(BiosBootDisks disks)
 	load_boot_disks(swap_position);
 }
 
+bool BIOS_ReadFloppyBootSector(const std::shared_ptr<imageDisk>& disk,
+                               const PhysPt address)
+{
+	constexpr uint8_t unit  = 0;
+	const auto old_slot     = std::exchange(disk_slots[unit],
+                                            BiosDiskSlot{disk,
+                                                         disk->GetFloppyMedia()});
+	const auto disk_changed = FLOPPY_IsDiskChanged(unit);
+
+	// A failed DMA read can still modify the destination before reporting CRC.
+	std::array<uint8_t, 512> previous = {};
+	MEM_BlockRead(address, previous.data(), previous.size());
+	const auto result = FLOPPY_BiosTransfer(
+	        FloppyBiosTransfer::Read, unit, 0, 0, 1, 2, 1, 0x2a, address);
+	const auto success = result.status == 0 && result.sectors == 1;
+	if (!success) {
+		MEM_BlockWrite(address, previous.data(), previous.size());
+	}
+	disk_slots[unit] = old_slot;
+	if (!success || old_slot.sector != disk) {
+		FLOPPY_SetDiskChanged(unit, disk_changed);
+	}
+	return success;
+}
+
 bool getSwapRequest(void)
 {
 	bool sreq          = swapping_requested;

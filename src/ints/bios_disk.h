@@ -107,6 +107,7 @@ std::shared_ptr<imageDisk> BIOS_GetDisk(const size_t slot);
 std::shared_ptr<FloppyMedia> BIOS_GetFloppyMedia(const size_t slot);
 void BIOS_SetDisk(const size_t slot, std::shared_ptr<imageDisk> disk);
 void BIOS_SetBootDisks(BiosBootDisks disks);
+bool BIOS_ReadFloppyBootSector(const std::shared_ptr<imageDisk>& disk, PhysPt address);
 
 extern uint16_t imgDTASeg; /* Real memory location of temporary DTA pointer for fat image disk access */
 extern RealPt imgDTAPtr; /* Real memory location of temporary DTA pointer for fat image disk access */
