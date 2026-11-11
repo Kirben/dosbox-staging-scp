@@ -12,12 +12,12 @@ from run_hxc_mfm_probe import check_boot, check_fat, encode_track
 from run_raw_floppy_read_probe import run_probe
 
 
-def encode_86f(disk):
+def encode_86f(disk, verify_errors=False):
     image = bytearray(8 + 512 * 4)
     # Two-sided DD, surface arrays, explicit extra cells, little-endian words.
     pack_into("<4sHH", image, 0, b"86BF", 0x020c, 0x0889)
     for track in range(80):
-        cells = encode_track(disk, track).ljust(25_000, b"\0")
+        cells = encode_track(disk, track, verify_errors=verify_errors).ljust(25_000, b"\0")
         little_endian = bytearray(len(cells))
         little_endian[0::2] = cells[1::2]
         little_endian[1::2] = cells[0::2]
