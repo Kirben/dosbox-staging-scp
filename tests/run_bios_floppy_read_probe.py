@@ -14,7 +14,7 @@ from run_scp_attachment_probe import encode_scp
 
 
 def run_probe(dosbox, nasm, directory, image, unit, options, read_only=True,
-              machine=None):
+              machine=None, tandy_standard=False):
     source = Path(__file__).with_name("bios_floppy_read_probe.asm")
     (directory / "BIOS.OUT").unlink(missing_ok=True)
     subprocess.run(
@@ -26,14 +26,16 @@ def run_probe(dosbox, nasm, directory, image, unit, options, read_only=True,
     access = " -ro" if read_only else ""
     commands = [f'mount c "{directory}"',
                 f'mount {letter} "{image}" -t floppy -fs none{access}', "c:"]
-    if machine:
+    if "-DKEYBOARD_TEST" in options:
         commands.append("autotype -w 2 k")
     commands.extend(("probe.com", "exit"))
     command, env = launch(dosbox, directory, "bios", commands)
     if machine:
         config = command[-1]
-        config.write_text(f"[dosbox]\nmachine={machine}\n" + config.read_text(),
-                          encoding="ascii")
+        settings = f"[dosbox]\nmachine={machine}\n"
+        if tandy_standard:
+            settings += "[dos]\ntandy_memory_config=standard\n"
+        config.write_text(settings + config.read_text(), encoding="ascii")
     run = subprocess.run(command, cwd=directory, env=env, timeout=30,
                          capture_output=True, text=True, check=True)
     report = directory / "BIOS.OUT"
@@ -61,6 +63,26 @@ def check_scp_write(dosbox, nasm, disk):
             print(f".scp drive {letter}: DMA write, IRQ6, page boundary and restart passed")
 
 
+def check_read_track(dosbox, nasm, disk):
+    start = 4 * 9 * 512
+    disk[start:start + 512] = bytes(range(256)) * 2
+    disk[start + 511] = 0xf7
+    capture = encode(disk, malformed_id=True)
+    with TemporaryDirectory() as temp:
+        directory = Path(temp)
+        image = directory / "readtrack.mfm"
+        image.write_bytes(capture)
+        for machine in ("pcjr", "tandy"):
+            options = ["-DREAD_TRACK_TEST"]
+            if machine == "pcjr":
+                options.append("-DPCJR_IRQ_TEST")
+            run_probe(dosbox, nasm, directory, image, 0, options,
+                      machine=machine, tandy_standard=machine == "tandy")
+            print(f"{machine}: malformed ID, Read Track DMA payload, terminal count and status passed")
+            if machine == "tandy":
+                print("tandy: 96 KB BIOS memory report and four video RAM aliases passed")
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--dosbox", type=Path, required=True)
@@ -70,6 +92,7 @@ def main():
     modes.add_argument("--verify", action="store_true")
     modes.add_argument("--cross-track", action="store_true")
     modes.add_argument("--irq-reset", action="store_true")
+    modes.add_argument("--read-track", action="store_true")
     args = parser.parse_args()
     dosbox = args.dosbox.resolve()
 
@@ -77,6 +100,10 @@ def main():
     for sector in (3, 4):
         offset = (5 * 9 + sector - 1) * 512
         disk[offset:offset + 512] = bytes([0x50 + sector]) * 512
+
+    if args.read_track:
+        check_read_track(dosbox, args.nasm, disk)
+        return
 
     if args.cross_track:
         for track, sector, value in ((2, 9, 0x19), (3, 1, 0x21),

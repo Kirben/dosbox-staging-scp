@@ -17,6 +17,9 @@ org 100h
     out 21h,al
 %endif
     cld
+%ifdef READ_TRACK_TEST
+    jmp read_track_test
+%endif
 %ifdef IRQ_RESET_TEST
     jmp irq_reset_test
 %endif
@@ -478,6 +481,160 @@ irq_reset_test:
 %endif
     mov byte [stage],0
     jmp report
+%endif
+
+%ifdef READ_TRACK_TEST
+read_track_test:
+    ; BIOS Read Sectors must reject the 256-byte ID and leave the buffer alone.
+    mov ax,6000h
+    mov es,ax
+    mov di,10ffh
+    mov cx,514
+    mov al,0a5h
+    rep stosb
+    mov bx,1100h
+    mov ax,0201h
+    mov cx,0201h
+    xor dx,dx
+    int 13h
+    jnc report
+    cmp ah,04h
+    jne report
+    mov di,10ffh
+    mov cx,514
+    mov al,0a5h
+    repe scasb
+    jne report
+
+    inc byte [stage]
+    ; Program DMA channel 2 for exactly one 512-byte field at 61100h.
+    mov al,6
+    out 0ah,al
+    out 0ch,al
+    mov al,46h
+    out 0bh,al
+    xor al,al
+    out 04h,al
+    mov al,11h
+    out 04h,al
+    mov al,0ffh
+    out 05h,al
+    mov al,1
+    out 05h,al
+    mov al,6
+    out 81h,al
+    in al,08h
+    mov al,2
+    out 0ah,al
+
+    mov ax,40h
+    mov es,ax
+    and byte [es:3eh],7fh
+    mov byte [interrupts],0
+%ifndef PCJR_IRQ_TEST
+    in al,21h
+    and al,0bfh
+    out 21h,al
+%endif
+    mov si,read_track_command
+    mov cx,9
+    mov dx,3f5h
+.send:
+    lodsb
+    out dx,al
+    loop .send
+    mov dx,3f4h
+.wait:
+    in al,dx
+    and al,0d0h
+    cmp al,0d0h
+    jne .wait
+    test byte [es:3eh],80h
+    jz .wait
+%ifdef PCJR_IRQ_TEST
+    cmp byte [interrupts],0
+%else
+    cmp byte [interrupts],1
+%endif
+    jne report
+
+    inc byte [stage]
+    mov dx,3f5h
+    mov si,read_track_result
+    mov cx,7
+.result:
+    in al,dx
+    cmp al,[si]
+    jne report
+    inc si
+    loop .result
+    mov dx,3f4h
+    in al,dx
+    cmp al,80h
+    jne report
+    in al,08h
+    test al,04h
+    jz report
+
+    inc byte [stage]
+    mov ax,6000h
+    mov es,ax
+    cmp byte [es:10ffh],0a5h
+    jne report
+    cmp byte [es:1300h],0a5h
+    jne report
+    mov di,1100h
+    mov cx,511
+    xor al,al
+.payload:
+    scasb
+    jne report
+    inc al
+    loop .payload
+    cmp byte [es:di],0f7h
+    jne report
+
+%ifndef PCJR_IRQ_TEST
+    inc byte [stage]
+    int 12h
+    cmp ax,96
+    jne report
+    mov ax,9
+    int 10h
+    mov ax,0b800h
+    mov es,ax
+    mov ax,1800h
+    mov ds,ax
+    xor bx,bx
+    mov cx,4
+    mov al,35h
+.alias:
+    mov [bx],al
+    cmp [es:bx],al
+    jne .restore_ds
+    inc al
+    mov [es:bx],al
+    cmp [bx],al
+    jne .restore_ds
+    inc al
+    add bx,2000h
+    loop .alias
+    push cs
+    pop ds
+%endif
+    mov byte [stage],0
+    jmp report
+
+%ifndef PCJR_IRQ_TEST
+.restore_ds:
+    push cs
+    pop ds
+    jmp report
+%endif
+
+read_track_command db 42h,0,2,0,1,2,9,2ah,0ffh
+; Terminal count ends the command normally. ST1 retains ID CRC and size mismatch.
+read_track_result db 00h,24h,00h,02h,00h,01h,01h
 %endif
 
 report:
