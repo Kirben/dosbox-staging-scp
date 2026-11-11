@@ -12,7 +12,6 @@ branch, and merging to a branch.
 | Workflow                    | Purpose
 | ---                         | ---
 | `linting.yml`               | Shellcheck, pylint, markdownlint, appstream-util
-| `pvs-studio.yml`            | PVS-Studio static analysis
 
 ## Build workflows
 
@@ -82,9 +81,6 @@ Third-party services the CI touches that can flake or go down:
 - **Ubuntu apt mirrors** -- distro packages on `ubuntu-22.04` and
   `ubuntu-slim` runners
 
-- **`files.pvs-studio.com`** -- non-standard apt repo for the PVS-Studio
-  static analyser, configured at the start of `pvs-studio.yml`
-
 ## Caching strategy
 
 Four caches are configured across the workflows. The two vcpkg caches
@@ -95,7 +91,7 @@ are layered and complementary; the rest are independent.
 | vcpkg source downloads | `actions/setup-vcpkg/action.yml`           | `vcpkg_downloads` (workspace)      | vcpkg short hash + manifest + overlay + `runner.os`                       |
 | vcpkg binary outputs   | `actions/setup-vcpkg/action.yml`           | `vcpkg_bin_cache` (workspace)      | vcpkg short hash + manifest + overlay + compiler + ImageOS + ImageVersion |
 | pip downloads          | `workflows/deploy-website.yml`             | `~/.cache/pip`                     | hash of `mkdocs-package-requirements.txt`                                 |
-| apt packages           | `workflows/{linting,linux,pvs-studio}.yml` | (managed by cache-apt-pkgs-action) | package list + `version:` field                                           |
+| apt packages           | `workflows/{linting,linux}.yml`            | (managed by cache-apt-pkgs-action) | package list + `version:` field                                           |
 
 How the two vcpkg caches interact:
 
@@ -137,10 +133,6 @@ flakes:
   or the equivalent `wget --tries=5 --waitretry=10 --retry-connrefused`.
 
 - `pip3 install --retries 5 --timeout 60` in `deploy-website.yml`.
-
-- `apt-get update` / `apt-get install pvs-studio` in `pvs-studio.yml`,
-  wrapped by the `./.github/actions/retry` composite action.
-
 
 ### Observability
 
