@@ -22,5 +22,6 @@ void IDE_CDROM_Detach_Ret(int8_t &indexret, bool &slaveret, int8_t drive_index);
 void IDE_Hard_Disk_Attach(int8_t index, bool slave, uint8_t bios_disk_index);
 void IDE_Hard_Disk_Detach(uint8_t bios_disk_index);
 void IDE_ResetDiskByBIOS(uint8_t disk);
+uint8_t IDE_ReadPrimaryDriveAddress();
 
 #endif
