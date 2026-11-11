@@ -373,7 +373,7 @@ imageDisk::imageDisk(FILE* img_file, const char* img_name, uint32_t img_size_k,
 	}
 }
 
-imageDisk::imageDisk(std::unique_ptr<HxcMfmImage> image, const std::string& name)
+imageDisk::imageDisk(std::unique_ptr<FloppyTrackImage> image, const std::string& name)
         : imageDisk(nullptr, name.c_str(), 0, false)
 {
 	heads       = image->heads;
@@ -392,7 +392,7 @@ imageDisk::imageDisk(std::unique_ptr<HxcMfmImage> image, const std::string& name
 	incrementFDD();
 }
 
-const HxcMfmImage* imageDisk::GetTrackImage() const
+const FloppyTrackImage* imageDisk::GetTrackImage() const
 {
 	return track_image.get();
 }

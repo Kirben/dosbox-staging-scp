@@ -17,11 +17,11 @@ std::shared_ptr<imageDisk> OpenSectorDiskImage(const std::string& path,
                                                bool& read_only,
                                                const std::optional<bool> hard_disk)
 {
-	const auto is_mfm = IsHxcMfmPath(path);
-	if (is_mfm && hard_disk.value_or(false)) {
+	const auto is_track_image = IsFloppyTrackImagePath(path);
+	if (is_track_image && hard_disk.value_or(false)) {
 		return {};
 	}
-	read_only |= is_mfm;
+	read_only |= is_track_image;
 	const auto close_file = [](FILE* file) { fclose(file); };
 	std::unique_ptr<FILE, decltype(close_file)> file(
 	        fopen_wrap_ro_fallback(path, read_only), close_file);
@@ -29,8 +29,8 @@ std::shared_ptr<imageDisk> OpenSectorDiskImage(const std::string& path,
 		return {};
 	}
 
-	if (is_mfm) {
-		return LoadHxcMfmDisk(file.get(), path);
+	if (is_track_image) {
+		return LoadFloppyTrackDisk(file.get(), path);
 	}
 
 	const auto size_kb = stdio_size_kb(file.get());
@@ -47,16 +47,28 @@ std::shared_ptr<imageDisk> OpenSectorDiskImage(const std::string& path,
 	return disk;
 }
 
-bool IsHxcMfmPath(const std::string_view path)
+bool IsFloppyTrackImagePath(const std::string_view path)
 {
-	return path.size() >= 4 && iequals(path.substr(path.size() - 4), ".mfm");
+	if (path.size() < 4) {
+		return false;
+	}
+	const auto extension = path.substr(path.size() - 4);
+	return iequals(extension, ".mfm") || iequals(extension, ".scp");
 }
 
-std::shared_ptr<imageDisk> LoadHxcMfmDisk(FILE* file, const std::string& path)
+std::shared_ptr<imageDisk> LoadFloppyTrackDisk(FILE* file, const std::string& path)
 {
-	auto image = HxcMfmImage::Load(file);
+	std::string error = {};
+	const auto is_scp = path.size() >= 4 &&
+	                    iequals(std::string_view(path).substr(path.size() - 4),
+	                            ".scp");
+	auto image = is_scp ? FloppyTrackImage::LoadScp(file, error)
+	                    : FloppyTrackImage::LoadHxcMfm(file);
 	if (!image) {
-		LOG_WARNING("Invalid HxC MFM image '%s'", path.c_str());
+		LOG_WARNING("Could not load floppy track image '%s'", path.c_str());
+		if (!error.empty()) {
+			LOG_WARNING("SCP: %s", error.c_str());
+		}
 		return {};
 	}
 	return std::make_shared<imageDisk>(std::move(image), path);

@@ -6,6 +6,8 @@ target_sources(dosboxcommon PRIVATE
   disk_image_factory.cpp
   ems.cpp
   hxc_mfm_image.cpp
+  scp_capture.cpp
+  scp_track_image.cpp
   int10.cpp
   int10_char.cpp
   int10_memory.cpp
