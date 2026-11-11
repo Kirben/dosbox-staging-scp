@@ -274,6 +274,51 @@ org 100h
 
 %ifdef FORMAT_TEST
     mov byte [stage],11
+%ifdef BIOS_FORMAT
+    mov ax,351eh
+    int 21h
+    cmp byte [es:bx+8],0f6h
+    jne finish
+    mov byte [es:bx+8],0e5h
+%ifndef FORMAT_PROTECTED
+    ; A table at physical 6fff0h crosses the DMA page boundary.
+    mov ax,6000h
+    mov es,ax
+    mov bx,0fff0h
+    mov ax,0500h + SECTORS
+    mov cx,0200h
+    mov dx,0100h + UNIT
+    int 13h
+    jnc finish
+    cmp ah,09h
+    jne finish
+%endif
+    ; Alias 61000h with a wrapping segment offset on the same DMA page.
+    mov ax,6000h
+    mov es,ax
+    mov di,1000h
+    mov si,format_ids
+    mov cx,SECTORS * 4
+    rep movsb
+    mov ax,5101h
+    mov es,ax
+    mov bx,0fff0h
+    mov ax,0500h + SECTORS
+    mov cx,0200h
+    mov dx,0100h + UNIT
+    int 13h
+%ifdef FORMAT_PROTECTED
+    jnc finish
+    cmp ah,03h
+%elifdef FORMAT_INVALID
+    jnc finish
+    cmp ah,04h
+%else
+    jc finish
+    test ah,ah
+%endif
+    jne finish
+%else
     ; Channel 2 transfers four CHRN bytes per sector.
     mov di,1200h
     mov si,format_ids
@@ -391,6 +436,7 @@ format_interrupt_recovery:
 %endif
     mov byte [stage],13
     call read_id
+%endif
 %endif
 %endif
     mov byte [stage],0
