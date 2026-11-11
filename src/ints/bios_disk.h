@@ -48,6 +48,8 @@ public:
 	                             const uint32_t sector,
 	                             const std::span<uint8_t> data);
 
+	bool VerifyRawSector(uint32_t sector, std::span<uint8_t> scratch);
+
 	bool IsWriteProtected() const;
 	bool WriteSectorForController(const uint32_t head, const uint32_t cylinder,
 	                              const uint32_t sector,
@@ -89,8 +91,8 @@ private:
 	                              const bool controller_write);
 	bool read_only                            = false;
 	std::shared_ptr<FloppyMedia> floppy_media = {};
-	uint8_t read_absolute_sector(const uint32_t sector, void* data,
-	                             const bool controller_read);
+	enum class RawReadMode { Normal, Controller, Verify };
+	uint8_t read_absolute_sector(uint32_t sector, void* data, RawReadMode mode);
 	cross_off_t current_fpos;
 	enum { NONE,READ,WRITE } last_action;
 };

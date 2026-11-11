@@ -126,7 +126,7 @@ def main():
     formats = {"img": None, "ima": None, "scp": encode_scp,
                "mfm": encode, "86f": encode_86f}
     for extension, encoder in formats.items():
-        if (args.verify or args.cross_track) and encoder is None:
+        if args.cross_track and encoder is None:
             continue
         image_bytes = (
             encoder(disk, verify_errors=args.verify or args.cross_track) if encoder else disk
@@ -167,8 +167,9 @@ def main():
                     options.append("-DVERIFY_TEST")
                 run_probe(dosbox, args.nasm, directory, image, unit, options)
                 if args.verify:
+                    irq = "IRQ6" if encoder else "no IRQ6"
                     print(f".{extension} drive {letter.upper()}: "
-                          "Verify status, count, IRQ6 and buffer passed")
+                          f"Verify status, count, {irq} and buffer passed")
                     continue
                 mode = "DMA boundary and IRQ6" if encoder else "legacy sector path"
                 print(f".{extension} drive {letter.upper()}: data and {mode} passed")
