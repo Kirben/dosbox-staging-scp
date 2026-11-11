@@ -450,6 +450,11 @@ const FloppyTrackImage* imageDisk::GetTrackImage() const
 	return track_image.get();
 }
 
+FloppyTrackImage* imageDisk::GetTrackImage()
+{
+	return track_image.get();
+}
+
 void imageDisk::Set_Geometry(uint32_t setHeads, uint32_t setCyl,
                              uint32_t setSect, uint32_t setSectSize)
 {
