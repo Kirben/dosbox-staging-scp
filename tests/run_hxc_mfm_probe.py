@@ -27,7 +27,8 @@ def mfm_word(previous, value):
 MFM = tuple(tuple(mfm_word(p, v) for v in range(256)) for p in (0, 1))
 
 
-def encode_track(disk, track, duplicate_id=False, verify_errors=False):
+def encode_track(disk, track, duplicate_id=False, verify_errors=False,
+                 malformed_id=False):
     cells = bytearray()
     previous = 0
 
@@ -52,7 +53,10 @@ def encode_track(disk, track, duplicate_id=False, verify_errors=False):
         if verify_errors and (track, sector) in ((5, 8), (6, 2)):
             continue
         sector_id = 6 if duplicate_id and track == 5 and sector == 5 else sector
-        field(bytes((0xfe, track // 2, track % 2, sector_id, 2)), inject and sector == 6)
+        damaged = malformed_id and (track, sector) == (4, 1)
+        size_code = 1 if damaged else 2
+        field(bytes((0xfe, track // 2, track % 2, sector_id, size_code)),
+              damaged or (inject and sector == 6))
         append(b"\x4e" * 22)
         offset = (track * 9 + sector - 1) * 512
         field(b"\xfb" + disk[offset:offset + 512], inject and sector == 4)
@@ -61,11 +65,12 @@ def encode_track(disk, track, duplicate_id=False, verify_errors=False):
     return cells
 
 
-def encode(disk, verify_errors=False):
+def encode(disk, verify_errors=False, malformed_id=False):
     image = bytearray(19 + 80 * 11)
     pack_into("<7sHBHHBI", image, 0, b"HXCMFM", 40, 2, 300, 250, 7, 19)
     for track in range(80):
-        cells = encode_track(disk, track, verify_errors=verify_errors)
+        cells = encode_track(disk, track, verify_errors=verify_errors,
+                             malformed_id=malformed_id)
         pack_into("<HBII", image, 19 + 11 * track, track // 2, track % 2,
                   len(cells), len(image))
         image.extend(cells)
