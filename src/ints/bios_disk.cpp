@@ -528,6 +528,53 @@ static bool has_image(const std::array<T, N>& arr)
 	return std::any_of(std::begin(arr), std::end(arr), to_bool);
 }
 
+static uint8_t format_floppy_track(imageDisk& disk, const uint32_t cylinder,
+                                   const uint8_t head, const uint8_t count,
+                                   const RealPt table)
+{
+	if (!count) {
+		return 0x01;
+	}
+	if (disk.IsWriteProtected()) {
+		return 0x03;
+	}
+
+	constexpr size_t IdSize = 4;
+	const auto table_size   = count * IdSize;
+	const auto address      = RealToPhysical(table);
+	if (!is_machine_pcjr_or_tandy() &&
+	    table_size > 0x10000u - (address & 0xffff)) {
+		return 0x09;
+	}
+
+	const auto parameter_table = RealGetVec(0x1e);
+	if (!parameter_table) {
+		return 0x01;
+	}
+	const auto params    = RealToPhysical(parameter_table);
+	const auto size_code = mem_readb(params + 3);
+	const auto fill      = mem_readb(params + 8);
+	if (size_code > 7) {
+		return 0x01;
+	}
+	std::array<uint8_t, UINT8_MAX * IdSize> buffer = {};
+	const auto ids = std::span(buffer).first(table_size);
+	for (size_t i = 0; i < ids.size(); ++i) {
+		ids[i] = mem_readb(address + check_cast<PhysPt>(i));
+		if (i % IdSize == IdSize - 1 && ids[i] != size_code) {
+			return 0x04;
+		}
+	}
+
+	switch (FLOPPY_FormatTrack(disk, cylinder, head, ids, fill, count)) {
+	case FloppyFormatResult::Success: return 0;
+	case FloppyFormatResult::WriteProtected: return 0x03;
+	case FloppyFormatResult::InvalidLayout: return 0x04;
+	case FloppyFormatResult::WriteError: return 0x20;
+	}
+	return 0x20;
+}
+
 static Bitu INT13_DiskHandler(void)
 {
 	uint16_t segat, bufptr;
@@ -706,12 +753,23 @@ static Bitu INT13_DiskHandler(void)
 		break;
 	case 0x05: /* Format track */
 		if (driveInactive(drivenum)) {
-			reg_ah = 0xff;
-			CALLBACK_SCF(true);
-			return CBRET_NONE;
+			last_status = 0xff;
+		} else if (disk_slots[drivenum]->hardDrive) {
+			// Preserve the existing fixed-disk BIOS behavior.
+			last_status = 0;
+		} else {
+			const auto cylinder = static_cast<uint32_t>(
+			        reg_ch | ((reg_cl & 0xc0) << 2));
+			last_status = format_floppy_track(*disk_slots[drivenum],
+			                                  cylinder,
+			                                  reg_dh,
+			                                  reg_al,
+			                                  RealMake(SegValue(es),
+			                                           reg_bx));
+			mem_writeb(BIOS_DISK_STATUS, last_status);
 		}
-		reg_ah = 0x00;
-		CALLBACK_SCF(false);
+		reg_ah = last_status;
+		CALLBACK_SCF(last_status != 0);
 		break;
 	case 0x08: /* Get drive parameters */
 		if (driveInactive(drivenum)) {
@@ -840,6 +898,16 @@ static Bitu INT13_DiskHandler(void)
 
 void BIOS_SetupDisks(void)
 {
+	// INT 1Eh points to the guest-writable floppy parameter table.
+	const auto floppy_params = RealMake(0x40, 0xe0);
+	RealSetVec(0x1e, floppy_params);
+	constexpr std::array<uint8_t, 11> defaults = {
+	        0xdf, 0x02, 0x25, 0x02, 0x12, 0x1b, 0xff, 0x6c, 0xf6, 0x0f, 0x08};
+	for (size_t i = 0; i < defaults.size(); ++i) {
+		phys_writeb(RealToPhysical(floppy_params) + static_cast<PhysPt>(i),
+		            defaults[i]);
+	}
+
 	FLOPPY_Init();
 	/* TODO Start the time correctly */
 	call_int13 = CALLBACK_Allocate();

@@ -58,10 +58,23 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--dosbox", required=True, type=Path)
     parser.add_argument("--nasm", default="nasm")
+    parser.add_argument("--bios-format", action="store_true")
     args = parser.parse_args()
     dosbox = args.dosbox.resolve()
     with TemporaryDirectory() as temp:
         directory = Path(temp)
+        if args.bios_format:
+            for unit in (0, 1):
+                overlay = directory / "disk.scp.overlay"
+                overlay.unlink(missing_ok=True)
+                for mode in ("format-protected", "format-invalid", "format", "format-readback"):
+                    run_probe(dosbox, args.nasm, directory, "scp", unit, 360, 9,
+                              encode_scp, write_mode=mode, bios_format=True)
+                    if mode in ("format-protected", "format-invalid"):
+                        assert not overlay.exists()
+                    else:
+                        assert overlay.is_file()
+            return
         run_probe(dosbox, args.nasm, directory, "scp", 0, 360, 9,
                   lambda disk: encode_scp(disk, different_turns=True))
         print(".scp successive reads returned different recorded revolutions")

@@ -12,7 +12,7 @@ from tempfile import TemporaryDirectory
 
 def run_probe(dosbox, nasm, directory, extension, unit, size_kb, sectors, encode=None,
               write_mode=None, partial_format=False, format_reset=None,
-              format_motor=None):
+              format_motor=None, bios_format=False):
     image = directory / f"disk.{extension}"
     data = bytearray(size_kb * 1024)
     for sector in (3, 4):
@@ -52,6 +52,8 @@ def run_probe(dosbox, nasm, directory, extension, unit, size_kb, sectors, encode
         options.append("-DDUPLICATE_WRITE")
     if write_mode in ("format", "format-invalid", "format-protected"):
         options.append("-DFORMAT_TEST")
+        if bios_format:
+            options.append("-DBIOS_FORMAT")
     if write_mode in ("format-invalid", "format-protected", "format-readback"):
         options.append("-D" + write_mode.upper().replace("-", "_"))
     if extension == "scp" and write_mode and write_mode.startswith("format"):
@@ -101,7 +103,9 @@ def run_probe(dosbox, nasm, directory, extension, unit, size_kb, sectors, encode
         if format_motor:
             phase = {1: "before", 2: "during", 3: "after"}[format_motor]
             mode = f"{mode}, motor off {phase}"
-        print(f".{extension} {size_kb} KB drive {'AB'[unit]} {mode}: DMA and IRQ6 passed")
+        result = ("INT 13h status passed" if bios_format and write_mode != "format-readback"
+                  else "DMA and IRQ6 passed")
+        print(f".{extension} {size_kb} KB drive {'AB'[unit]} {mode}: {result}")
         return
     print(f".{extension} {size_kb} KB drive {'AB'[unit]}: seek, Read ID, DMA and IRQ6 passed")
 
@@ -112,6 +116,7 @@ def main():
     parser.add_argument("--nasm", default="nasm")
     parser.add_argument("--write", action="store_true")
     parser.add_argument("--format", action="store_true")
+    parser.add_argument("--bios-format", action="store_true")
     args = parser.parse_args()
     for extension in ("img", "ima"):
         for size_kb, sectors in ((360, 9), (1200, 15)):
@@ -123,11 +128,12 @@ def main():
                         for mode in ("protected", "write", "readback"):
                             run_probe(args.dosbox.resolve(), args.nasm, Path(temporary),
                                       extension, unit, size_kb, sectors, write_mode=mode)
-                    if args.format:
+                    if args.format or args.bios_format:
                         for mode in ("format-protected", "format-invalid",
                                      "format", "format-readback"):
                             run_probe(args.dosbox.resolve(), args.nasm, Path(temporary),
-                                      extension, unit, size_kb, sectors, write_mode=mode)
+                                      extension, unit, size_kb, sectors, write_mode=mode,
+                                      bios_format=args.bios_format)
 
 
 if __name__ == "__main__":
