@@ -16,6 +16,7 @@ from run_raw_floppy_read_probe import run_probe
 
 
 def mfm_word(previous, value):
+    """Encode one byte and its clock bits as an MFM word."""
     word = 0
     for bit in range(7, -1, -1):
         data = (value >> bit) & 1
@@ -27,8 +28,10 @@ def mfm_word(previous, value):
 MFM = tuple(tuple(mfm_word(p, v) for v in range(256)) for p in (0, 1))
 
 
+# pylint: disable-next=R0914
 def encode_track(disk, track, duplicate_id=False, verify_errors=False,
                  malformed_id=False):
+    """Build a synthetic MFM track with optional protection cases."""
     cells = bytearray()
     previous = 0
 
@@ -66,6 +69,7 @@ def encode_track(disk, track, duplicate_id=False, verify_errors=False,
 
 
 def encode(disk, verify_errors=False, malformed_id=False):
+    """Encode the complete disk as an HxC MFM image."""
     image = bytearray(19 + 80 * 11)
     pack_into("<7sHBHHBI", image, 0, b"HXCMFM", 40, 2, 300, 250, 7, 19)
     for track in range(80):
@@ -78,6 +82,7 @@ def encode(disk, verify_errors=False, malformed_id=False):
 
 
 def launch(dosbox, directory, name, commands):
+    """Write the guest configuration and return its command and environment."""
     config = directory / (name + ".conf")
     config.write_text("[sdl]\noutput=texture\n[mixer]\nnosound=true\n"
                       "[autoexec]\n" + "\n".join(commands) + "\n",
@@ -88,6 +93,7 @@ def launch(dosbox, directory, name, commands):
 
 
 def check_fat(dosbox, directory, encode_image=encode, extension="mfm"):
+    """Read the fixture's marker file through DOS FAT."""
     disk = bytearray(360 * 1024)
     disk[:11] = b"\xeb\x3c\x90MSDOS5.0"
     pack_into("<HBHBHHBHHH", disk, 11, 512, 2, 1, 2, 16, 720, 0xfd, 2, 9, 2)
@@ -131,7 +137,9 @@ def check_fat(dosbox, directory, encode_image=encode, extension="mfm"):
         print(".scp DOS FAT file and allocation changes survived restart")
 
 
+# pylint: disable-next=R0914
 def check_boot(dosbox, nasm, directory, encode_image=encode, extension="mfm"):
+    """Boot the fixture and check its BIOS read, verify, and write status."""
     source = directory / "boot.asm"
     source.write_text("""
 bits 16
@@ -207,9 +215,9 @@ dw 0aa55h
         mount_marker = f'mount 2 "{marker}" -t hdd -fs none -chs 4,16,63'
         args, env = launch(dosbox, directory, name, [mount_marker, *commands])
         log = directory / (name + ".log")
-        with log.open("wb") as stream:
-            process = subprocess.Popen(args, cwd=directory, env=env,
-                                       stdout=stream, stderr=subprocess.STDOUT)
+        with log.open("wb") as stream, subprocess.Popen(
+            args, cwd=directory, env=env, stdout=stream, stderr=subprocess.STDOUT
+        ) as process:
             try:
                 deadline = time.monotonic() + 10
                 while marker.read_bytes()[:2] != b"\x12\xa7":
@@ -219,7 +227,11 @@ dw 0aa55h
             finally:
                 if process.poll() is None:
                     process.terminate()
-                process.wait(timeout=10)
+                try:
+                    process.wait(timeout=10)
+                except subprocess.TimeoutExpired:
+                    process.kill()
+                    raise
         assert image.read_bytes() == original
         if extension == "scp":
             assert overlay.is_file()
@@ -227,6 +239,7 @@ dw 0aa55h
 
 
 def main():
+    """Run the HxC MFM attachment checks."""
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--dosbox", required=True, type=Path)
     parser.add_argument("--nasm", default="nasm")

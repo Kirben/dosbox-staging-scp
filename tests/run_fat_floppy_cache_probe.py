@@ -15,6 +15,7 @@ from run_scp_attachment_probe import encode_scp
 
 
 def fat12():
+    """Build a minimal FAT12 disk with a marker file."""
     disk = bytearray(360 * 1024)
     disk[:11] = b"\xeb\x3c\x90MSDOS5.0"
     pack_into("<HBHBHHBHHH", disk, 11, 512, 2, 1, 2, 16, 720, 0xfd, 2, 9, 2)
@@ -28,6 +29,7 @@ def fat12():
 
 
 def fat_cache_fixture():
+    """Add files and cluster chains used by the cache checks."""
     disk = fat12()
     # Two sectors per cluster. CHAIN.DAT starts in cluster 3, and its last
     # two bytes initially live in cluster 4. Clusters 5 and 6 are replacements.
@@ -45,7 +47,9 @@ def fat_cache_fixture():
 
 
 
+# pylint: disable-next=R0913,R0917,R0914
 def run_probe(dosbox, nasm, directory, extension, encoder, unit, writable):
+    """Check one image for cache coherence and persistence."""
     image = directory / f"disk.{extension}"
     capture = encoder(fat_cache_fixture())
     image.write_bytes(capture)
@@ -89,6 +93,7 @@ def run_probe(dosbox, nasm, directory, extension, encoder, unit, writable):
 
 
 def main():
+    """Run the FAT cache probe for each supported format."""
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--dosbox", type=Path, required=True)
     parser.add_argument("--nasm", default="nasm")

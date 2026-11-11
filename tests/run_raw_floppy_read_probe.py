@@ -10,9 +10,11 @@ import subprocess
 from tempfile import TemporaryDirectory
 
 
+# pylint: disable-next=R0913,R0917,R0914,R0912,R0915
 def run_probe(dosbox, nasm, directory, extension, unit, size_kb, sectors, encode=None,
               write_mode=None, partial_format=False, format_reset=None,
               format_motor=None, bios_format=False):
+    """Check a raw or encoded image with the selected controller scenario."""
     image = directory / f"disk.{extension}"
     data = bytearray(size_kb * 1024)
     for sector in (3, 4):
@@ -111,6 +113,7 @@ def run_probe(dosbox, nasm, directory, extension, unit, size_kb, sectors, encode
 
 
 def main():
+    """Run the requested raw controller scenarios for both drive slots."""
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--dosbox", required=True, type=Path)
     parser.add_argument("--nasm", default="nasm")

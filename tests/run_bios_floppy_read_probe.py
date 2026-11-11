@@ -13,8 +13,10 @@ from run_hxc_mfm_probe import encode, launch
 from run_scp_attachment_probe import encode_scp
 
 
+# pylint: disable-next=R0913,R0917,R0914
 def run_probe(dosbox, nasm, directory, image, unit, options, read_only=True,
               machine=None, tandy_standard=False):
+    """Assemble and run one BIOS guest probe."""
     source = Path(__file__).with_name("bios_floppy_read_probe.asm")
     (directory / "BIOS.OUT").unlink(missing_ok=True)
     subprocess.run(
@@ -46,6 +48,7 @@ def run_probe(dosbox, nasm, directory, image, unit, options, read_only=True,
 
 
 def check_scp_write(dosbox, nasm, disk):
+    """Verify SCP BIOS writes and overlay persistence."""
     capture = encode_scp(disk)
     for unit, letter in enumerate("AB"):
         with TemporaryDirectory() as temp:
@@ -64,6 +67,7 @@ def check_scp_write(dosbox, nasm, disk):
 
 
 def check_read_track(dosbox, nasm, disk):
+    """Verify DMA Read Track on PCjr and Tandy."""
     start = 4 * 9 * 512
     disk[start:start + 512] = bytes(range(256)) * 2
     disk[start + 511] = 0xf7
@@ -78,12 +82,15 @@ def check_read_track(dosbox, nasm, disk):
                 options.append("-DPCJR_IRQ_TEST")
             run_probe(dosbox, nasm, directory, image, 0, options,
                       machine=machine, tandy_standard=machine == "tandy")
-            print(f"{machine}: malformed ID, Read Track DMA payload, terminal count and status passed")
+            print(f"{machine}: malformed ID, Read Track DMA payload, "
+                  "terminal count and status passed")
             if machine == "tandy":
                 print("tandy: 96 KB BIOS memory report and four video RAM aliases passed")
 
 
+# pylint: disable-next=R0914,R0912,R0915
 def main():
+    """Select BIOS scenarios and run them across the applicable formats."""
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--dosbox", type=Path, required=True)
     parser.add_argument("--nasm", default="nasm")
@@ -121,7 +128,9 @@ def main():
     for extension, encoder in formats.items():
         if (args.verify or args.cross_track) and encoder is None:
             continue
-        image_bytes = encoder(disk, verify_errors=args.verify or args.cross_track) if encoder else disk
+        image_bytes = (
+            encoder(disk, verify_errors=args.verify or args.cross_track) if encoder else disk
+        )
         for unit, letter in enumerate("ab"):
             with TemporaryDirectory() as temp:
                 directory = Path(temp)
@@ -151,13 +160,15 @@ def main():
                                   options + ["-DCROSS_READBACK"])
                         if image.read_bytes() != image_bytes:
                             raise RuntimeError("SCP capture changed after writes")
-                    print(f".{extension} drive {letter.upper()}: track crossing, partial counts and IRQ6 passed")
+                    print(f".{extension} drive {letter.upper()}: "
+                          "track crossing, partial counts and IRQ6 passed")
                     continue
                 if args.verify:
                     options.append("-DVERIFY_TEST")
                 run_probe(dosbox, args.nasm, directory, image, unit, options)
                 if args.verify:
-                    print(f".{extension} drive {letter.upper()}: Verify status, count, IRQ6 and buffer passed")
+                    print(f".{extension} drive {letter.upper()}: "
+                          "Verify status, count, IRQ6 and buffer passed")
                     continue
                 mode = "DMA boundary and IRQ6" if encoder else "legacy sector path"
                 print(f".{extension} drive {letter.upper()}: data and {mode} passed")

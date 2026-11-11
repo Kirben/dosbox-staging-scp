@@ -13,7 +13,9 @@ from run_hxc_mfm_probe import encode, launch
 from run_scp_attachment_probe import encode_scp
 
 
+# pylint: disable-next=R0913,R0917
 def check_changes(dosbox, nasm, directory, first, second, unit):
+    """Check disk change reporting while replacing and ejecting a disk."""
     source = Path(__file__).with_name("floppy_disk_change_probe.asm")
     subprocess.run(
         [nasm, "-f", "bin", f"-DUNIT={unit}", source, "-o", directory / "PROBE.COM"],
@@ -41,6 +43,7 @@ def check_changes(dosbox, nasm, directory, first, second, unit):
 
 
 def main():
+    """Run disk change checks for the supported floppy formats."""
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--dosbox", type=Path, required=True)
     parser.add_argument("--nasm", default="nasm")
