@@ -48,14 +48,10 @@ def fat_cache_fixture():
 
 
 
-# pylint: disable-next=R0913,R0917,R0914
-def run_probe(dosbox, nasm, directory, extension, encoder, unit, writable):
-    """Check one image for cache coherence and persistence."""
-    image = directory / f"disk.{extension}"
-    capture = encoder(fat_cache_fixture())
-    image.write_bytes(capture)
+# pylint: disable-next=R0913,R0917
+def run_guest(dosbox, nasm, directory, image, unit, options):
+    """Mount an image and check the FAT guest's result."""
     source = Path(__file__).with_name("fat_floppy_cache_probe.asm")
-    options = [] if writable else ["-DFAT_CACHE_READ_ONLY"]
     subprocess.run([nasm, "-f", "bin", f"-DFAT_UNIT={unit}", *options,
                     source, "-o", directory / "PROBE.COM"], check=True)
     letter = "ab"[unit]
@@ -67,8 +63,19 @@ def run_probe(dosbox, nasm, directory, extension, encoder, unit, writable):
     report = directory / "FAT.OUT"
     stage = report.read_bytes() if report.exists() else b""
     if stage != b"\0":
-        raise RuntimeError(f".{extension} cache probe failed at stage {stage.hex()}\n"
+        raise RuntimeError(f"{image.suffix} cache probe {options} failed at stage {stage.hex()}\n"
                            f"{run.stdout}{run.stderr}")
+
+
+# pylint: disable-next=R0913,R0917
+def run_probe(dosbox, nasm, directory, extension, encoder, unit, writable):
+    """Check one image for cache coherence and persistence."""
+    image = directory / f"disk.{extension}"
+    capture = encoder(fat_cache_fixture())
+    image.write_bytes(capture)
+    run_guest(dosbox, nasm, directory, image, unit,
+              [] if writable else ["-DFAT_CACHE_READ_ONLY"])
+    letter = "ab"[unit]
     if not writable:
         assert image.read_bytes() == capture
         assert not image.with_suffix(f".{extension}.overlay").exists()
@@ -93,12 +100,33 @@ def run_probe(dosbox, nasm, directory, extension, encoder, unit, writable):
     print(f".{extension}: open file data, directory and FAT chain refreshed, restart passed")
 
 
+def check_directory_error(dosbox, nasm, directory):
+    """Place an open directory entry across a physical track boundary."""
+    disk = fat12()
+    pack_into("<H", disk, 14, 4)  # Four reserved sectors.
+    pack_into("<H", disk, 17, 32)  # Two root directory sectors.
+    for start in (4 * 512, 6 * 512):
+        disk[start:start + 3] = b"\xfd\xff\xff"
+    for index in range(16):
+        disk[8 * 512 + index * 32] = 0xe5
+    entry = 9 * 512
+    disk[entry:entry + 12] = b"CHECK   DAT\x20"
+    pack_into("<HI", disk, entry + 26, 6, 512)
+    disk[18 * 512:19 * 512] = b"1" * 512
+    image = directory / "directory.mfm"
+    image.write_bytes(encode(disk))
+    run_guest(dosbox, nasm, directory, image, 0, ["-DFAT_DIRECTORY_ERROR"])
+    print(".mfm: open DOS handle rejects a missing directory sector")
+
+
 def main():
     """Run the FAT cache probe for each supported format."""
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--dosbox", type=Path, required=True)
     parser.add_argument("--nasm", default="nasm")
     args = parser.parse_args()
+    with TemporaryDirectory() as directory:
+        check_directory_error(args.dosbox.resolve(), args.nasm, Path(directory))
     for extension, encoder, unit, writable in (
         ("img", bytes, 0, True), ("ima", bytes, 1, True),
         ("scp", encode_scp, 0, True), ("mfm", encode, 0, True),

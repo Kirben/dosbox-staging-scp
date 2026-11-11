@@ -1539,12 +1539,13 @@ bool fatDrive::directoryBrowse(uint32_t dirClustNumber, direntry *useEntry, int3
 		if(dirClustNumber==0) {
 			if(dirPos >= bootbuffer.rootdirentries) return false;
 			tmpsector = firstRootDirSect+logentsector;
-			readSector(tmpsector,sectbuf);
 		} else {
 			tmpsector = getAbsoluteSectFromChain(dirClustNumber, logentsector);
 			/* A zero sector number can't happen */
 			if(tmpsector == 0) return false;
-			readSector(tmpsector,sectbuf);
+		}
+		if (readSector(tmpsector, sectbuf)) {
+			return false;
 		}
 		dirPos++;
 

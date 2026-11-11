@@ -12,9 +12,13 @@ org 100h
     mov al,0ch | FAT_UNIT | (10h << FAT_UNIT)
     out dx,al
 
+%ifdef FAT_DIRECTORY_ERROR
+    call check_directory_error
+%else
     call check_open_data
     inc byte [stage]
     call fat_check_metadata
+%endif
     mov byte [stage],0
 fail:
     mov dx,report
@@ -31,6 +35,61 @@ fail:
 .exit:
     mov ax,4c00h
     int 21h
+
+%ifdef FAT_DIRECTORY_ERROR
+check_directory_error:
+    mov dx,data_filename
+    mov ax,3d00h
+    int 21h
+    jc fail
+    mov [data_handle],ax
+    inc byte [stage]
+
+    ; Copy the open entry to slot zero, then remove the sector containing
+    ; the actual entry. A failed directory read must reject the handle.
+    mov bx,scratch
+    mov ax,0201h
+    mov cx,1
+    mov dx,0100h
+    call fat_int13
+    jc fail
+    mov di,scratch+32
+    mov al,0e5h
+    mov cx,15
+.deleted_slots:
+    stosb
+    add di,31
+    loop .deleted_slots
+    mov ax,0301h
+    mov cx,9
+    xor dx,dx
+    call fat_int13
+    jc fail
+    mov bx,format_id
+    mov ax,0501h
+    xor cx,cx
+    mov dx,0100h
+    call fat_int13
+    jc fail
+    mov bx,scratch
+    mov ax,0201h
+    mov cx,1
+    mov dx,0100h
+    call fat_int13
+    jnc fail
+    inc byte [stage]
+    mov bx,[data_handle]
+    mov dx,cache_data
+    mov cx,1
+    mov ah,3fh
+    int 21h
+    jnc fail
+    cmp ax,5
+    jne fail
+    jmp fat_close
+
+format_id db 0,1,2,2
+%endif
 
 check_open_data:
     mov dx,data_filename
