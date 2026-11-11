@@ -1,0 +1,63 @@
+#!/usr/bin/env python3
+# SPDX-License-Identifier: GPL-2.0-or-later
+
+"""Exercise the PCjr floppy adapter through its native non-DMA ports."""
+
+import argparse
+from pathlib import Path
+import subprocess
+from tempfile import TemporaryDirectory
+
+from run_hxc_mfm_probe import encode, launch
+
+
+def run_probe(dosbox, nasm, folder, image, replay):
+    """Run a direct FDC probe with DMA channel 2 masked."""
+    options = ["-DREPLAY"] if replay else []
+    if image.suffix == ".mfm":
+        options.append("-DTRACK_IMAGE")
+    source = Path(__file__).with_name("pcjr_floppy_pio_probe.asm")
+    subprocess.run([nasm, "-f", "bin", *options, source, "-o", folder / "PROBE.COM"],
+                   check=True)
+    report = folder / "PIO.OUT"
+    report.unlink(missing_ok=True)
+    access = " -ro" if replay else ""
+    args, env = launch(dosbox, folder, "pio",
+                       [f'mount c "{folder}"',
+                        f'mount a "{image}" -t floppy -fs none{access}',
+                        "c:", "probe.com", "exit"])
+    config = args[-1]
+    config.write_text("[dosbox]\nmachine=pcjr\n[cpu]\ncpu_cycles=3000\n"
+                      + config.read_text(), encoding="ascii")
+    result = subprocess.run(args, cwd=folder, env=env, capture_output=True, text=True,
+                            check=True, timeout=15)
+    stage = report.read_bytes() if report.exists() else b""
+    if stage != b"\0":
+        raise RuntimeError(f"{image.suffix} replay={replay}, stage={stage.hex()}\n"
+                           f"{result.stdout}{result.stderr}")
+
+
+def main():
+    """Verify direct read, write, result status and persistence."""
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--dosbox", required=True, type=Path)
+    parser.add_argument("--nasm", default="nasm")
+    args = parser.parse_args()
+    with TemporaryDirectory() as temp:
+        folder = Path(temp)
+        disk = b"Q" * 512 + b"R" * 512 + bytes(360 * 1024 - 1024)
+        for extension, capture in (("img", disk), ("mfm", encode(disk))):
+            image = folder / f"disk.{extension}"
+            image.write_bytes(capture)
+            for replay in (False, True):
+                run_probe(args.dosbox.resolve(), args.nasm, folder, image, replay)
+            if extension == "img":
+                assert image.read_bytes() == b"\xa7" * 512 + b"\xb8" * 512 + disk[1024:]
+            else:
+                assert image.read_bytes() == capture
+                assert image.with_suffix(".mfm.overlay").is_file()
+            print(f".{extension}: PCjr non-DMA reads, writes, and restart passed")
+
+
+if __name__ == "__main__":
+    main()
