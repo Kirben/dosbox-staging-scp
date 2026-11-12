@@ -654,7 +654,7 @@ bool FloppyTrackImage::WriteSector(const uint32_t cylinder, const uint32_t head,
 	} else if (selected) {
 		const auto track = GetTrack(cylinder, head);
 		const auto& ends = tracks[cylinder * heads + head].revolution_ends;
-		std::vector<std::vector<uint32_t>> copies(ends.size());
+		std::vector<std::vector<const FloppySector*>> copies(ends.size());
 		uint32_t selected_slot = 0;
 		for (size_t i = 0; i < track.size(); ++i) {
 			const auto& candidate = track[i];
@@ -664,7 +664,7 @@ bool FloppyTrackImage::WriteSector(const uint32_t cylinder, const uint32_t head,
 			    candidate.size_code == size_code) {
 				const auto slot = check_cast<uint32_t>(
 				        candidate.overlay_slot);
-				copies[candidate.revolution].push_back(slot);
+				copies[candidate.revolution].push_back(&candidate);
 				if (&candidate == selected) {
 					selected_slot = slot;
 				}
@@ -673,19 +673,36 @@ bool FloppyTrackImage::WriteSector(const uint32_t cylinder, const uint32_t head,
 		if (!selected_slot || selected->id_crc_error) {
 			return false;
 		}
-		const auto& turn      = copies[selected->revolution];
-		const auto occurrence = static_cast<size_t>(
-		        std::find(turn.begin(), turn.end(), selected_slot) -
-		        turn.begin());
+		const auto& turn = copies[selected->revolution];
+		const auto phase = [&](const FloppySector& field) {
+			const auto start = field.revolution
+			                         ? ends[field.revolution - 1]
+			                         : 0;
+			return (field.cycle_fraction - start) /
+			       (ends[field.revolution] - start);
+		};
+		const auto selected_phase = phase(*selected);
+		const auto distance       = [&](const FloppySector* field) {
+			const auto difference = std::abs(phase(*field) -
+			                                 selected_phase);
+			return std::min(difference, 1.0 - difference);
+		};
 		// A missing ID makes the occurrence ambiguous on the other turns.
 		if (std::all_of(copies.begin(), copies.end(), [&](const auto& other) {
 			    return other.size() == turn.size();
 		    })) {
 			for (const auto& other : copies) {
+				// Index jitter can move an ID from the start of
+				// one recorded turn to its end. Match angular
+				// position, not the ID's ordinal in the sorted
+				// track table.
+				const auto closest = std::ranges::min_element(
+				        other, {}, distance);
 				const OverlayKey key = {cylinder,
 				                        head,
 				                        0,
-				                        other[occurrence],
+				                        check_cast<uint32_t>(
+				                                (*closest)->overlay_slot),
 				                        size_code};
 				if (CanOverlaySector(key)) {
 					targets.push_back(key);
@@ -699,7 +716,7 @@ bool FloppyTrackImage::WriteSector(const uint32_t cylinder, const uint32_t head,
 		return false;
 	}
 	const OverlaySector updated(data.begin(), data.end());
-	auto entries = overlay;
+	auto entries       = overlay;
 	const auto ordered = HasOverlappingFields(cylinder, head);
 	for (const auto& key : targets) {
 		if (!ordered) {
