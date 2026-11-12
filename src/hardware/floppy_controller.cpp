@@ -330,6 +330,21 @@ void schedule_track_sector(const FloppyMedia& image, const bool read_id)
 	const auto event = fdc.track_sector
 	                         ? (read_id ? complete_read_id : transfer_sector)
 	                         : missing_sector;
+	if (fdc.track_sector && (read_id || fdc.track_sector->id_crc_error)) {
+		const auto& sector = *fdc.track_sector;
+		const auto start = sector.revolution ? ends[sector.revolution - 1]
+		                                     : 0;
+		const auto bit_ms = sector.mfm_track
+		                          ? (ends[sector.revolution] - start) *
+		                                    cycle_ms /
+		                                    static_cast<double>(
+		                                            sector.mfm_track->bit_count)
+		                          : pio_byte_ms / 16;
+		// The rotational ID position is the first A1 sync cell.
+		// Read all three sync bytes, FE, CHRN and CRC before reporting
+		// Read ID results or rejecting a data command's bad ID CRC.
+		delay_ms += 160 * bit_ms;
+	}
 	PIC_AddEvent(event, delay_ms);
 }
 
