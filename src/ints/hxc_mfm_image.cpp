@@ -5,6 +5,7 @@
 #include <algorithm>
 #include <array>
 #include <cassert>
+#include <cmath>
 #include <map>
 
 #include "utils/checks.h"
@@ -221,7 +222,8 @@ void FloppySector::UpdateTrackData()
 
 std::vector<FloppySector> FloppyTrackImage::DecodeMfmTrack(
         const std::span<const uint8_t> bytes, const size_t bit_count,
-        const size_t index, const bool detect_weak)
+        const size_t index, const bool detect_weak,
+        std::shared_ptr<FloppyMfmTrack> captured)
 {
 	constexpr auto SyncWord    = 0x4489;
 	constexpr auto IdMark      = 0xfe;
@@ -235,11 +237,14 @@ std::vector<FloppySector> FloppyTrackImage::DecodeMfmTrack(
 		return {};
 	}
 	const MfmBitstream track = {bytes, track_bits};
-	auto captured            = std::make_shared<FloppyMfmTrack>();
-	captured->cells.assign(bytes.begin(), bytes.end());
-	captured->bit_count            = track_bits;
-	captured->weak_cells           = detect_weak ? find_weak_cells(track)
-	                                             : std::vector<bool>{};
+	if (!captured) {
+		captured = std::make_shared<FloppyMfmTrack>();
+		captured->cells.assign(bytes.begin(), bytes.end());
+		captured->bit_count  = track_bits;
+		captured->index      = index;
+		captured->weak_cells = detect_weak ? find_weak_cells(track)
+		                                   : std::vector<bool>{};
+	}
 	const auto& weak_cells         = captured->weak_cells;
 	std::vector<AddressMark> marks = {};
 	auto word                      = read_word(track, 0);
@@ -270,6 +275,7 @@ std::vector<FloppySector> FloppyTrackImage::DecodeMfmTrack(
 		const auto id_crc = (read_byte(track, id_field + 4 * ByteBits) << 8) |
 		                    read_byte(track, id_field + 5 * ByteBits);
 		FloppySector sector   = {};
+		sector.id_bit         = id.bit;
 		sector.cylinder       = chrn[0];
 		sector.head           = chrn[1];
 		sector.id             = chrn[2];
@@ -374,13 +380,114 @@ std::vector<FloppySector> FloppyTrackImage::DecodeMfmTrack(
 	return sectors;
 }
 
+std::vector<FloppySector> FloppyTrackImage::FormatMfmTrack(
+        const std::span<const FloppySector> previous, const size_t revolution,
+        const double duration_ms, const TrackFormat& format)
+{
+	const auto found = std::ranges::find_if(previous, [&](const auto& sector) {
+		return sector.revolution == revolution && sector.mfm_track;
+	});
+	const auto source = found != previous.end() ? found->mfm_track : nullptr;
+	const auto bits = source ? source->bit_count
+	                         : check_cast<size_t>(std::lround(duration_ms * 500));
+	auto captured       = std::make_shared<FloppyMfmTrack>();
+	captured->bit_count = bits;
+	captured->cells.resize((bits + 7) / 8);
+	const auto count   = format.ids.size() / 4;
+	const auto partial = count < format.requested;
+	const auto cutoff  = bits * count / format.requested;
+	if (partial && source && !source->weak_cells.empty()) {
+		captured->weak_cells.resize(bits);
+	}
+	// Keep the original suffix on an interrupted format, normalized to index.
+	for (size_t bit = 0; bit < bits; ++bit) {
+		const auto old      = source ? (bit + source->index) % bits : 0;
+		const auto preserve = partial && source && bit >= cutoff;
+		const auto value = preserve ? bit_at({source->cells, bits}, old)
+		                            : (0x9254u >> (15 - bit % 16)) & 1u;
+		captured->cells[bit / 8] |= check_cast<uint8_t>(value
+		                                                << (7 - bit % 8));
+		if (preserve && !captured->weak_cells.empty()) {
+			captured->weak_cells[bit] = source->weak_cells[old];
+		}
+	}
+	size_t position      = 0;
+	bool last_data       = false;
+	const auto write_bit = [&](const bool value) {
+		if (!partial || position < cutoff) {
+			const auto mask = check_cast<uint8_t>(0x80u >>
+			                                      (position % 8));
+			auto& byte      = captured->cells[position / 8];
+			byte            = check_cast<uint8_t>(
+			        value ? byte | mask
+			              : byte & static_cast<uint8_t>(~mask));
+			if (!captured->weak_cells.empty()) {
+				captured->weak_cells[position] = false;
+			}
+		}
+		// A partial field must not overwrite the surviving suffix or
+		// wrap back into the committed prefix.
+		position = partial ? position + 1 : (position + 1) % bits;
+	};
+	const auto append = [&](const uint8_t byte) {
+		for (int bit = 7; bit >= 0; --bit) {
+			const auto data = ((byte >> bit) & 1) != 0;
+			write_bit(!(last_data || data));
+			write_bit(data);
+			last_data = data;
+		}
+	};
+	const auto sync = [&]() {
+		for (auto byte = 0; byte < 3; ++byte) {
+			for (auto bit = 15; bit >= 0; --bit) {
+				write_bit(((0x4489u >> bit) & 1u) != 0);
+			}
+		}
+		last_data = true;
+	};
+	const auto append_crc = [&](const uint16_t crc) {
+		append(check_cast<uint8_t>(crc >> 8));
+		append(static_cast<uint8_t>(crc));
+	};
+	for (size_t i = 0; i < count; ++i) {
+		position = i * bits / format.requested;
+		sync();
+		append(0xfe);
+		auto crc      = update_crc(SyncCrc, 0xfe);
+		const auto id = std::span(format.ids).subspan(i * 4, 4);
+		for (const auto byte : id) {
+			append(byte);
+			crc = update_crc(crc, byte);
+		}
+		append_crc(crc);
+		for (auto gap = 0; gap < 22; ++gap) {
+			append(0x4e);
+		}
+		for (auto gap = 0; gap < 12; ++gap) {
+			append(0);
+		}
+		sync();
+		append(0xfb);
+		crc = update_crc(SyncCrc, 0xfb);
+		// Command N controls the data field; ID N is just an ID byte.
+		const auto size_code = format.size_code == 0xff ? id[3]
+		                                                : format.size_code;
+		for (size_t byte = 0; byte < (size_t{128} << size_code); ++byte) {
+			append(format.fill);
+			crc = update_crc(crc, format.fill);
+		}
+		append_crc(crc);
+	}
+	return DecodeMfmTrack(captured->cells, bits, 0, false, captured);
+}
+
 std::unique_ptr<FloppyTrackImage> FloppyTrackImage::LoadHxcMfm(
         FILE* file, const std::string& path, const bool read_only, std::string& error)
 {
-	constexpr size_t HeaderSize   = 19;
-	constexpr size_t EntrySize    = 11;
-	constexpr long MaxImageSize   = 16 * 1024 * 1024;
-	constexpr size_t MaxTrackSize = 64 * 1024;
+	constexpr size_t HeaderSize                = 19;
+	constexpr size_t EntrySize                 = 11;
+	constexpr long MaxImageSize                = 16 * 1024 * 1024;
+	constexpr size_t MaxTrackSize              = 64 * 1024;
 	constexpr std::array<uint8_t, 7> Signature = {'H', 'X', 'C', 'M', 'F', 'M', 0};
 
 	if (fseek(file, 0, SEEK_END) != 0) {
@@ -468,7 +575,55 @@ std::span<const FloppySector> FloppyTrackImage::GetTrack(const uint32_t cylinder
 	if (cylinder >= cylinders || head >= heads) {
 		return {};
 	}
-	return tracks[cylinder * heads + head].sectors;
+	const auto& track = tracks[cylinder * heads + head];
+	if (track.dirty) {
+		// Keep the original slots stable for overlay addresses, but
+		// rebuild the visible IDs and data from the cells changed by a
+		// write.
+		std::map<const FloppyMfmTrack*, std::vector<FloppySector>> decoded = {};
+		track.visible_sectors.clear();
+		for (size_t i = 0; i < track.sectors.size(); ++i) {
+			const auto& original = track.sectors[i];
+			auto sector          = original;
+			auto raw             = original.mfm_track;
+			if (!raw && track.cells_changed) {
+				const auto same_turn = std::ranges::find_if(
+				        track.sectors, [&](const auto& other) {
+					        return other.revolution ==
+					                       original.revolution &&
+					               other.mfm_track;
+				        });
+				if (same_turn != track.sectors.end()) {
+					raw = same_turn->mfm_track;
+				}
+			}
+			if (raw && track.cells_changed) {
+				auto [entry,
+				      inserted] = decoded.try_emplace(raw.get());
+				if (inserted) {
+					entry->second = DecodeMfmTrack(raw->cells,
+					                               raw->bit_count,
+					                               raw->index,
+					                               false,
+					                               raw);
+				}
+				const auto found =
+				        std::ranges::find(entry->second,
+				                          original.id_bit,
+				                          &FloppySector::id_bit);
+				if (found == entry->second.end()) {
+					continue;
+				}
+				sector                = *found;
+				sector.revolution     = original.revolution;
+				sector.cycle_fraction = original.cycle_fraction;
+			}
+			sector.overlay_slot = i + 1;
+			track.visible_sectors.push_back(std::move(sector));
+		}
+		track.dirty = false;
+	}
+	return track.visible_sectors;
 }
 
 double FloppyTrackImage::GetCycleMs(const uint32_t cylinder, const uint32_t head) const
