@@ -151,15 +151,10 @@ org 100h
     jne finish
     cmp byte [result+2],0
     jne finish
-    cmp word [result+3],0102h
+    ; Successful TC reports the next cylinder and sector after EOT.
+    cmp word [result+3],0103h
     jne finish
-%ifdef READBACK
-    cmp word [result+5],0206h
-%elifdef SCP_FORMAT_READBACK
-    cmp word [result+5],020bh
-%else
-    cmp word [result+5],0204h
-%endif
+    cmp word [result+5],0201h
     jne finish
 
     mov byte [stage],6
@@ -290,7 +285,9 @@ org 100h
 %else
     cmp word [result],DRIVE_HEAD
     jne finish
-    cmp word [result+5],0206h
+    cmp word [result+3],0103h
+    jne finish
+    cmp word [result+5],0201h
     jne finish
     in al,08h
     test al,4
@@ -323,7 +320,9 @@ org 100h
     call read_result
     cmp word [result],DRIVE_HEAD
     jne finish
-    cmp word [result+5],0207h
+    cmp word [result+3],0103h
+    jne finish
+    cmp word [result+5],0201h
     jne finish
     mov di,1200h
     mov cx,512
@@ -749,9 +748,9 @@ transfer_duplicate:
     jne finish
     cmp byte [result+2],0
     jne finish
-    cmp word [result+3],0102h
+    cmp word [result+3],0103h
     jne finish
-    cmp word [result+5],0206h
+    cmp word [result+5],0201h
     jne finish
     in al,08h
     test al,4
