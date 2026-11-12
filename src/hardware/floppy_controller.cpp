@@ -439,7 +439,11 @@ void transfer_track_sector(uint32_t)
 	const auto track = fdc.media->GetTrack(fdc.cylinder, fdc.head);
 	if (fdc.track_offset >= track.size() ||
 	    track[fdc.track_offset].revolution != fdc.track_revolution) {
-		finish_data(fdc.track_status_1 | 0x04, fdc.track_status_2);
+		const auto has_id = std::ranges::any_of(track, [](const auto& sector) {
+			return sector.revolution == fdc.track_revolution;
+		});
+		finish_data(fdc.track_status_1 | (has_id ? 0x04 : 0x01),
+		            fdc.track_status_2);
 		return;
 	}
 	const auto& sector = track[fdc.track_offset];
