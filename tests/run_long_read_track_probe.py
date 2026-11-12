@@ -7,7 +7,7 @@ import argparse
 from bisect import bisect_right
 from binascii import crc_hqx
 from pathlib import Path
-from struct import pack, pack_into
+from struct import pack_into
 from tempfile import TemporaryDirectory
 
 from run_hxc_mfm_probe import MFM, encode_track
@@ -289,6 +289,7 @@ def encoded_cells(disk):
     return cells + b"\x92"
 
 
+# pylint: disable-next=too-many-locals
 def main():
     """Exercise full DMA, early terminal count, PIO and overlay replay."""
     parser = argparse.ArgumentParser(description=__doc__)
