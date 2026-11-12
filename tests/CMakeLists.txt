@@ -15,6 +15,7 @@ add_executable(dosbox_tests
     dosbox_restart_tests.cpp
     dosbox_test_fixture.h
     drives_tests.cpp
+    floppy_track_data_tests.cpp
     fraction_tests.cpp
     fs_utils_tests.cpp
     i8042_wide_read_tests.cpp
