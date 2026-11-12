@@ -4,7 +4,7 @@
 """Check command-sized Read Track fields across IDs and index."""
 
 import argparse
-from bisect import bisect_left, bisect_right
+from bisect import bisect_right
 from binascii import crc_hqx
 from pathlib import Path
 from struct import pack, pack_into
@@ -242,23 +242,12 @@ def expected_stream(cells, start=None):
                 start = mark + 64
                 break
             start = mark + 1
-    marks = []
-    for pattern in (sync, f"{0x5224:016b}" * 3):
-        cursor = 0
-        while (cursor := ring.find(pattern, cursor)) >= 0:
-            marks.append(cursor)
-            cursor += 1
-    marks.sort()
     data = bytearray()
     for _ in range(8194):
-        next_mark = bisect_left(marks, start)
-        if next_mark < len(marks) and marks[next_mark] < start + 16:
-            start = marks[next_mark]
         data.append(int(ring[start:start + 16][1::2], 2))
         start += 16
     assert crc_hqx(b"\xa1" * 3 + b"\xfb" + data[:8192], 0xffff) != int.from_bytes(
         data[8192:], "big")
-    assert data[:8192].count(data[:512]) >= 2
     return data[:8192]
 
 
@@ -318,6 +307,7 @@ def main():
             original = make_image(cells, extension)
             image.write_bytes(original)
             expected = expected_stream(cells)
+            assert expected[:512] == disk[:512]
             for length, pio in ((8192, False), (1024, False), (8192, True), (16384, False)):
                 blocks = 2 if length == 16384 else 1
                 options = f"%define LENGTH {length}\n%define BLOCKS {blocks}\n"

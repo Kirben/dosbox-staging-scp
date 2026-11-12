@@ -151,17 +151,9 @@ bool FloppySector::ReadTrackData(const size_t size, const uint64_t turn,
 	auto crc    = update_crc(SyncCrc, deleted ? 0xf8 : 0xfb);
 	auto offset = data_bit;
 	for (size_t i = 0; i < size + 2; ++i) {
-		// A capture's index splice need not preserve byte alignment.
-		// Missing-clock A1/C2 sync bytes re-establish the byte boundary.
-		for (size_t shift = 0; shift < 16; ++shift) {
-			const auto word = read_word(track, offset + shift);
-			if ((word == 0x4489 || word == 0x5224) &&
-			    read_word(track, offset + shift + 16) == word &&
-			    read_word(track, offset + shift + 32) == word) {
-				offset += shift;
-				break;
-			}
-		}
+		// The data field keeps its byte cadence until the commanded
+		// size is complete. Embedded address marks and index do not
+		// resync it.
 		const auto byte = read_byte(track, offset);
 		if (i < size) {
 			field.data[i] = byte;
