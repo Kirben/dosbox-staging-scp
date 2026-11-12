@@ -332,16 +332,17 @@ void FloppyTrackImage::ApplyOverlaySector(const OverlayKey& key,
                                           const OverlaySector& data)
 {
 	const auto [cylinder, head, id, slot, size_code] = key;
-	auto& sectors    = tracks[cylinder * heads + head].sectors;
+	auto& sectors = tracks[cylinder * heads + head].sectors;
 	tracks[cylinder * heads + head].dirty = true;
 	const auto apply                      = [&](FloppySector& sector) {
+		const auto create_data_mark = sector.data.empty();
 		tracks[cylinder * heads + head].cells_changed |= bool(sector.mfm_track);
 		sector.data.assign(data.begin(), data.end());
 		sector.data_crc_error = false;
 		sector.deleted        = false;
 		sector.weak_mask.clear();
 		sector.extended_data.clear();
-		sector.UpdateTrackData();
+		sector.UpdateTrackData(create_data_mark);
 	};
 	if (slot) {
 		apply(sectors[slot - 1]);

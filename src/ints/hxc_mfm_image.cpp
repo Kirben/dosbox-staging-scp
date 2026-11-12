@@ -181,7 +181,7 @@ bool FloppySector::ReadTrackData(const size_t size, const uint64_t turn,
 	return true;
 }
 
-void FloppySector::UpdateTrackData()
+void FloppySector::UpdateTrackData(const bool create_data_mark)
 {
 	if (!mfm_track) {
 		return;
@@ -192,7 +192,7 @@ void FloppySector::UpdateTrackData()
 		const auto mask = check_cast<uint8_t>(0x80u >> (position % 8));
 		auto& byte      = track.cells[position / 8];
 		byte            = check_cast<uint8_t>(
-                        value ? byte | mask : byte & static_cast<uint8_t>(~mask));
+		        value ? byte | mask : byte & static_cast<uint8_t>(~mask));
 		if (!track.weak_cells.empty()) {
 			track.weak_cells[position] = false;
 		}
@@ -207,6 +207,22 @@ void FloppySector::UpdateTrackData()
 			previous = value;
 		}
 	};
+	if (create_data_mark) {
+		// Write Data creates the sync field and DAM even if the old
+		// track contained only an ID field.
+		position = (data_bit + track.bit_count - (256 % track.bit_count)) %
+		           track.bit_count;
+		previous = false;
+		for (auto byte = 0; byte < 12; ++byte) {
+			append(0);
+		}
+		for (auto byte = 0; byte < 3; ++byte) {
+			for (auto bit = 15; bit >= 0; --bit) {
+				write_bit(((0x4489u >> bit) & 1u) != 0);
+			}
+		}
+		previous = true;
+	}
 	const auto mark = deleted ? uint8_t{0xf8} : uint8_t{0xfb};
 	auto crc        = update_crc(SyncCrc, mark);
 	append(mark);
@@ -285,6 +301,11 @@ std::vector<FloppySector> FloppyTrackImage::DecodeMfmTrack(
 		                                track_bits) /
 		                        static_cast<double>(track_bits);
 		sector.id_crc_error = crc != id_crc;
+		sector.mfm_track    = captured;
+		// A write to an ID-only sector creates the standard Gap 2
+		// sync and data field following its ID and CRC.
+		sector.data_delay_bits = 48 * ByteBits;
+		sector.data_bit = (id.bit + sector.data_delay_bits) % track_bits;
 
 		const auto data = marks[(i + 1) % marks.size()];
 		if (data.type != IdMark && sector.size_code <= 7) {
