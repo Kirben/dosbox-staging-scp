@@ -84,6 +84,7 @@ struct Controller {
 	bool pio_ready                                     = false;
 	bool pio_writing                                   = false;
 	bool pio_waiting_crc                               = false;
+	bool pio_underrun                                  = false;
 	bool sector_data_crc_error                         = false;
 	bool sector_transfer_ready                         = false;
 	double sector_end_ms                               = 0;
@@ -168,10 +169,11 @@ void finish_data(const uint8_t status_1, const uint8_t status_2 = 0,
 	PIC_RemoveEvents(pio_byte_event);
 	fdc.pio_data.clear();
 	fdc.pio_ready       = false;
+	fdc.pio_underrun    = false;
 	const auto status_0 = check_cast<uint8_t>(
 	        (((status_1 || status_2) && !terminal_count) ? 0x40 : 0) |
 	        (fdc.head << 2) | selected_unit());
-	const auto* sector = fdc.track_sector;
+	const auto* sector   = fdc.track_sector;
 	const auto command   = static_cast<Command>(fdc.command[0] & 0x1f);
 	const auto size_code = command == Command::FormatTrack ? fdc.command[2]
 	                     : command == Command::ReadId ? uint8_t{SectorSizeCode}
@@ -392,8 +394,9 @@ void start_pio_transfer(const size_t size, const std::span<const uint8_t> source
 	if (!source.empty()) {
 		std::copy(source.begin(), source.end(), fdc.pio_data.begin());
 	}
-	fdc.pio_offset     = 0;
+	fdc.pio_offset      = 0;
 	fdc.pio_waiting_crc = false;
+	fdc.pio_underrun = false;
 	fdc.pio_started_ms = PIC_FullIndex();
 	fdc.pio_ready      = true;
 	fdc.irq_pending    = true;
@@ -923,6 +926,11 @@ void pio_byte_event(uint32_t)
 		finish_data(0x04);
 		return;
 	}
+	if (fdc.pio_underrun) {
+		const auto written = commit_sector_write(fdc.pio_data);
+		finish_data(written ? 0x10 : 0x20);
+		return;
+	}
 	if (fdc.pio_ready) {
 		const auto command = static_cast<Command>(fdc.command[0] & 0x1f);
 		if (command == Command::ReadTrack) {
@@ -930,10 +938,19 @@ void pio_byte_event(uint32_t)
 		} else if (command == Command::FormatTrack && fdc.media) {
 			finish_track_format(0x10);
 		} else {
-			// A write underrun completes the field with zeroes.
-			if (command == Command::WriteData &&
-			    !commit_sector_write(fdc.pio_data)) {
-				finish_data(0x20);
+			if (command == Command::WriteData) {
+				// Stop requesting bytes, but clock the
+				// zero-filled remainder and CRC before
+				// committing the write. Reset and motor loss
+				// can still abort it meanwhile.
+				fdc.pio_underrun = true;
+				fdc.pio_ready    = false;
+				fdc.irq_pending  = false;
+				update_irq();
+				PIC_AddEvent(pio_byte_event,
+				             std::max(0.0,
+				                      fdc.sector_end_ms -
+				                              PIC_FullIndex()));
 			} else {
 				finish_data(0x10);
 			}
