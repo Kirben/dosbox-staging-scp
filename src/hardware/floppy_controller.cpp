@@ -561,7 +561,28 @@ void finish_sector_transfer(const std::span<const uint8_t> write_data,
 	} else if (deleted) {
 		finish_data(0, 0x40);
 	} else if (terminal_count) {
+		// Normal Read/Write Data completion reports the next logical
+		// position (82077AA table 5-6), without physically seeking.
+		auto cylinder = fdc.command[2];
+		auto head     = fdc.command[3];
+		auto sector   = fdc.sector;
+		if (sector < fdc.command[6]) {
+			++sector;
+		} else {
+			sector                 = 1;
+			const auto multi_track = (fdc.command[0] & 0x80) != 0;
+			if (!multi_track || fdc.head == 1) {
+				// The on-wire cylinder counter wraps at 255.
+				cylinder = static_cast<uint8_t>(cylinder + 1u);
+			}
+			if (multi_track) {
+				head ^= 1;
+			}
+		}
 		finish_data(0);
+		fdc.result[3] = cylinder;
+		fdc.result[4] = head;
+		fdc.result[5] = sector;
 	} else {
 		advance_data_sector();
 	}

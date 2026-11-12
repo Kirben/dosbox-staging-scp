@@ -57,6 +57,9 @@ def guest_checks():
             st0 = 0x40 if status else 0
             st1 = 0x20 if bad_crc else 0
             st2 = (0x40 if deleted else 0) | (0x20 if bad_crc else 0)
+            # Normal DMA TC at EOT advances the reported cylinder;
+            # Verify and abnormal completion retain the current ID.
+            result_cylinder = 1 if operation == 2 and not status else 0
             checks += f"""
     mov byte [stage],{stage}
     push es
@@ -97,7 +100,7 @@ data_{stage}:
 """
             checks += f"""
     jmp next_{stage}
-result_{stage} db {st0},{st1},{st2},0,0,{sector},2
+result_{stage} db {st0},{st1},{st2},{result_cylinder},0,{sector},2
 next_{stage}:
 """
     return checks
