@@ -68,7 +68,7 @@ struct Controller {
 	std::array<uint8_t, FormatIdSize * 255> format_ids = {};
 	size_t track_revolution                            = 0;
 	size_t track_remaining                             = 0;
-	bool track_long_transfer                           = false;
+	bool track_physical_transfer                       = false;
 	bool track_dma_ready                               = false;
 	double track_transfer_ms                           = 0;
 	uint64_t track_sample_turn                         = 0;
@@ -83,8 +83,13 @@ struct Controller {
 	double pio_started_ms                              = 0;
 	bool pio_ready                                     = false;
 	bool pio_writing                                   = false;
+	bool pio_waiting_crc                               = false;
 	bool sector_data_crc_error                         = false;
+	bool sector_transfer_ready                         = false;
+	double sector_end_ms                               = 0;
+	uint64_t sector_sample_turn                        = 0;
 	const FloppySector* track_sector                   = nullptr;
+	const FloppySector* wrong_cylinder_sector          = nullptr;
 	Phase phase                                        = Phase::Command;
 	size_t command_count                               = 0;
 	size_t result_count                                = 0;
@@ -99,6 +104,7 @@ struct Controller {
 	bool irq_pending                                   = false;
 	bool seek_pending                                  = false;
 	bool skipped_deleted                               = false;
+	bool missing_address_mark                          = false;
 	bool non_dma                                       = false;
 };
 
@@ -166,14 +172,17 @@ void finish_data(const uint8_t status_1, const uint8_t status_2 = 0,
 	        (((status_1 || status_2) && !terminal_count) ? 0x40 : 0) |
 	        (fdc.head << 2) | selected_unit());
 	const auto* sector = fdc.track_sector;
-	fdc.result         = {status_0,
-	                      status_1,
-	                      check_cast<uint8_t>(status_2 | (fdc.skipped_deleted ? 0x40 : 0)),
-                      sector ? sector->cylinder : fdc.cylinder,
-                      sector ? sector->head : fdc.head,
-                      sector ? sector->id : fdc.sector,
-                      sector ? sector->size_code
-	                             : static_cast<uint8_t>(SectorSizeCode)};
+	const auto command   = static_cast<Command>(fdc.command[0] & 0x1f);
+	const auto size_code = command == Command::FormatTrack ? fdc.command[2]
+	                     : command == Command::ReadId ? uint8_t{SectorSizeCode}
+	                                                  : fdc.command[5];
+	fdc.result = {status_0,
+	              status_1,
+	              check_cast<uint8_t>(status_2 | (fdc.skipped_deleted ? 0x40 : 0)),
+	              sector ? sector->cylinder : fdc.cylinder,
+	              sector ? sector->head : fdc.head,
+	              sector ? sector->id : fdc.sector,
+	              sector ? sector->size_code : size_code};
 	fdc.track_sector   = nullptr;
 	fdc.disk.reset();
 	fdc.media.reset();
@@ -212,14 +221,21 @@ double rotation_ms()
 	return std::fmod(rotation_elapsed_ms(), rotation_cycle_ms());
 }
 
-bool sample_sector_data(const FloppySector& sector, std::vector<uint8_t>& sampled)
+bool sample_sector_data(const FloppySector& sector,
+                        std::vector<uint8_t>& sampled, const uint64_t turn)
 {
 	if (sector.weak_mask.empty()) {
 		return sector.data_crc_error;
 	}
-	const auto turn = static_cast<uint64_t>(rotation_elapsed_ms() /
-	                                        rotation_cycle_ms());
 	return sector.SampleWeakData(turn, sampled);
+}
+
+bool sample_sector_data(const FloppySector& sector, std::vector<uint8_t>& sampled)
+{
+	return sample_sector_data(sector,
+	                          sampled,
+	                          static_cast<uint64_t>(rotation_elapsed_ms() /
+	                                                rotation_cycle_ms()));
 }
 
 void complete_read_id(uint32_t)
@@ -236,27 +252,63 @@ void transfer_sector(uint32_t);
 
 void missing_sector(uint32_t)
 {
-	finish_data(0x04);
+	if (!media_ready(selected_unit())) {
+		finish_data(0x04);
+		return;
+	}
+	if (!fdc.wrong_cylinder_sector) {
+		finish_data(fdc.missing_address_mark ? 0x01 : 0x04);
+		return;
+	}
+	fdc.track_sector = fdc.wrong_cylinder_sector;
+	finish_data(0x04, 0x10 | (fdc.track_sector->cylinder == 0xff ? 0x02 : 0));
 }
 
 void schedule_track_sector(const FloppyMedia& image, const bool read_id)
 {
-	const auto track       = image.GetTrack(fdc.cylinder, fdc.head);
-	const auto position_ms = rotation_ms();
-	const auto cycle_ms    = image.GetCycleMs(fdc.cylinder, fdc.head);
-	auto delay_ms          = cycle_ms;
-	fdc.track_sector       = nullptr;
+	fdc.sector_transfer_ready = false;
+	const auto track          = image.GetTrack(fdc.cylinder, fdc.head);
+	const auto position_ms    = rotation_ms();
+	const auto cycle_ms       = image.GetCycleMs(fdc.cylinder, fdc.head);
+	const auto ends  = image.GetRevolutionEnds(fdc.cylinder, fdc.head);
+	const auto next  = std::upper_bound(ends.begin(),
+	                                    ends.end() - 1,
+	                                    position_ms / cycle_ms);
+	const auto index = check_cast<size_t>(next - ends.begin());
+	// Search through two physical index pulses, not one capture cycle.
+	// A capture can contain several distinct recorded revolutions.
+	const auto second_index = index + 1 < ends.size()
+	                                ? ends[index + 1] * cycle_ms
+	                                : (1 + ends[(index + 1) % ends.size()]) *
+	                                          cycle_ms;
+	const auto timeout_ms     = second_index - position_ms;
+	auto delay_ms             = timeout_ms;
+	fdc.track_sector          = nullptr;
+	fdc.missing_address_mark  = true;
+	fdc.wrong_cylinder_sector = nullptr;
+	auto wrong_delay_ms       = timeout_ms;
 	for (const auto& candidate : track) {
-		if (!read_id &&
-		    (candidate.cylinder != fdc.command[2] ||
-		     candidate.head != fdc.head || candidate.id != fdc.sector ||
-		     candidate.size_code != fdc.command[5])) {
+		const auto offset_ms = candidate.cycle_fraction * cycle_ms;
+		const auto wait_ms = offset_ms > position_ms
+		                           ? offset_ms - position_ms
+		                           : cycle_ms + offset_ms - position_ms;
+		if (wait_ms >= timeout_ms) {
 			continue;
 		}
-		const auto offset_ms = candidate.cycle_fraction * cycle_ms;
-		const auto wait_ms   = offset_ms > position_ms
-		                             ? offset_ms - position_ms
-		                             : cycle_ms + offset_ms - position_ms;
+		fdc.missing_address_mark = false;
+		if (!read_id && (candidate.head != fdc.command[3] ||
+		                 candidate.id != fdc.sector ||
+		                 candidate.size_code != fdc.command[5])) {
+			continue;
+		}
+		if (!read_id && candidate.cylinder != fdc.command[2]) {
+			if (!candidate.id_crc_error &&
+			    (!fdc.wrong_cylinder_sector || wait_ms < wrong_delay_ms)) {
+				fdc.wrong_cylinder_sector = &candidate;
+				wrong_delay_ms            = wait_ms;
+			}
+			continue;
+		}
 		if (!fdc.track_sector || wait_ms < delay_ms) {
 			fdc.track_sector = &candidate;
 			delay_ms         = wait_ms;
@@ -270,6 +322,7 @@ void schedule_track_sector(const FloppyMedia& image, const bool read_id)
 
 void schedule_next_sector()
 {
+	fdc.sector_transfer_ready = false;
 	if (const auto& track = fdc.media) {
 		schedule_track_sector(*track, false);
 	} else {
@@ -292,7 +345,7 @@ void verify_sector()
 		finish_data(0x20);
 	} else if (sector->data.empty()) {
 		finish_data(0x01, 0x01);
-	} else if (sample_sector_data(*sector, sampled)) {
+	} else if (sample_sector_data(*sector, sampled, fdc.sector_sample_turn)) {
 		finish_data(0x20, 0x20 | (sector->deleted ? 0x40 : 0));
 	} else if (sector->deleted) {
 		finish_data(0, 0x40);
@@ -312,6 +365,7 @@ void start_pio_transfer(const size_t size, const std::span<const uint8_t> source
 		std::copy(source.begin(), source.end(), fdc.pio_data.begin());
 	}
 	fdc.pio_offset     = 0;
+	fdc.pio_waiting_crc = false;
 	fdc.pio_started_ms = PIC_FullIndex();
 	fdc.pio_ready      = true;
 	fdc.irq_pending    = true;
@@ -329,7 +383,7 @@ void finish_track_sector(const bool terminal_count, const double elapsed_ms)
 		finish_data(fdc.track_status_1, fdc.track_status_2, true);
 	} else if (--fdc.track_remaining == 0) {
 		finish_data(fdc.track_status_1 | 0x80, fdc.track_status_2);
-	} else if (fdc.track_long_transfer) {
+	} else if (fdc.track_physical_transfer) {
 		// A command-sized field can pass other IDs or even cross index.
 		// Resume searching at the physical position reached by the read.
 		const auto cycle    = rotation_cycle_ms();
@@ -383,11 +437,11 @@ void transfer_track_sector(uint32_t)
 		finish_data(fdc.track_status_1 | 0x10, fdc.track_status_2);
 		return;
 	}
-	const auto size         = size_t{128} << fdc.command[5];
-	fdc.track_long_transfer = size > sector.data.size() && sector.mfm_track;
-	if (fdc.track_long_transfer && !fdc.non_dma && !fdc.track_dma_ready) {
+	const auto size             = size_t{128} << fdc.command[5];
+	fdc.track_physical_transfer = sector.mfm_track != nullptr;
+	if (fdc.track_physical_transfer && !fdc.non_dma && !fdc.track_dma_ready) {
 		const auto ends  = fdc.media->GetRevolutionEnds(fdc.cylinder,
-                                                               fdc.head);
+		                                                fdc.head);
 		const auto start = fdc.track_revolution
 		                         ? ends[fdc.track_revolution - 1]
 		                         : 0;
@@ -408,7 +462,9 @@ void transfer_track_sector(uint32_t)
 	std::span<const uint8_t> data = extended ? sector.extended_data : sector.data;
 	std::vector<uint8_t> sampled = {};
 	bool bad_crc                 = false;
-	if (fdc.track_long_transfer) {
+	if (fdc.track_physical_transfer) {
+		// Read Track checks the CRC after the commanded byte count,
+		// even when the ID advertises a different data-field size.
 		const auto turn = fdc.non_dma ? static_cast<uint64_t>(
 		                                        rotation_elapsed_ms() /
 		                                        rotation_cycle_ms())
@@ -434,7 +490,7 @@ void transfer_track_sector(uint32_t)
 	if (bad_crc) {
 		fdc.track_status_2 |= 0x20;
 	}
-	if (sector.cylinder != fdc.command[2] || sector.head != fdc.head ||
+	if (sector.cylinder != fdc.command[2] || sector.head != fdc.command[3] ||
 	    sector.size_code != fdc.command[5]) {
 		fdc.track_status_1 |= 0x04;
 	}
@@ -456,8 +512,8 @@ void transfer_track_sector(uint32_t)
 	} else {
 		fdc.track_dma_ready = false;
 		finish_track_sector(count == remaining,
-		                    fdc.track_long_transfer ? fdc.track_transfer_ms
-		                                            : 0);
+		                    fdc.track_physical_transfer ? fdc.track_transfer_ms
+		                                                : 0);
 	}
 }
 
@@ -481,6 +537,7 @@ void advance_data_sector()
 		schedule_next_sector();
 	} else if ((fdc.command[0] & 0x80) && fdc.head == 0 && fdc.disk->heads > 1) {
 		fdc.head   = 1;
+		fdc.command[3] ^= 1;
 		fdc.sector = 1;
 		schedule_next_sector();
 	} else {
@@ -491,12 +548,13 @@ void advance_data_sector()
 void finish_sector_transfer(const std::span<const uint8_t> write_data,
                             const bool terminal_count)
 {
+	const auto deleted = write_data.empty() && fdc.track_sector &&
+	                     fdc.track_sector->deleted;
 	if (!write_data.empty() && !commit_sector_write(write_data)) {
 		finish_data(0x20);
 	} else if (fdc.sector_data_crc_error) {
-		const auto deleted = fdc.track_sector && fdc.track_sector->deleted;
 		finish_data(0x20, 0x20 | (deleted ? 0x40 : 0));
-	} else if (fdc.track_sector && fdc.track_sector->deleted) {
+	} else if (deleted) {
 		finish_data(0, 0x40);
 	} else if (terminal_count) {
 		finish_data(0);
@@ -513,6 +571,45 @@ void transfer_sector(uint32_t)
 	}
 
 	const auto command = static_cast<Command>(fdc.command[0] & 0x1f);
+	const auto* field  = fdc.track_sector;
+	const auto skip    = command == Command::ReadData && field &&
+	                     field->deleted && (fdc.command[0] & 0x20);
+	if (!fdc.sector_transfer_ready && !skip &&
+	    (!field || (!field->id_crc_error && !field->data.empty()))) {
+		// The ID identifies a sector; completion follows its data and
+		// CRC. PIO transfers start at the data field instead of its
+		// end.
+		auto bit_ms      = pio_byte_ms / 16;
+		auto header_ms   = 0.0;
+		const auto bytes = field ? field->data.size() : SectorSize;
+		if (!fdc.media) {
+			const auto rate = fdc.disk->sectors >= 36 ? 1000
+			                : fdc.disk->sectors >= 15 ? 500
+			                                          : 250;
+			bit_ms          = 1.0 / (2 * rate);
+		}
+		if (field && field->mfm_track) {
+			const auto ends = fdc.media->GetRevolutionEnds(fdc.cylinder,
+			                                               fdc.head);
+			const auto start = field->revolution
+			                         ? ends[field->revolution - 1]
+			                         : 0;
+			bit_ms = (ends[field->revolution] - start) *
+			         rotation_cycle_ms() /
+			         static_cast<double>(field->mfm_track->bit_count);
+			header_ms = static_cast<double>(field->data_delay_bits) *
+			            bit_ms;
+		}
+		const auto data_ms = static_cast<double>((bytes + 2) * 16) * bit_ms;
+		fdc.sector_end_ms      = PIC_FullIndex() + header_ms + data_ms;
+		fdc.sector_sample_turn = static_cast<uint64_t>(
+		        rotation_elapsed_ms() / rotation_cycle_ms());
+		fdc.sector_transfer_ready = true;
+		const auto pio = fdc.non_dma && command != Command::Verify &&
+		                 (fdc.command[5] || fdc.command[8]);
+		PIC_AddEvent(transfer_sector, header_ms + (pio ? 0 : data_ms));
+		return;
+	}
 	if (command == Command::Verify) {
 		verify_sector();
 		return;
@@ -551,8 +648,8 @@ void transfer_sector(uint32_t)
 			return;
 		}
 		if (!writing) {
-			fdc.sector_data_crc_error = sample_sector_data(*sector,
-			                                               sampled);
+			fdc.sector_data_crc_error = sample_sector_data(
+			        *sector, sampled, fdc.sector_sample_turn);
 			data = sampled.empty() ? sector->data : sampled;
 		}
 	} else if (!writing && !fdc.disk->ReadSectorForController(fdc.head,
@@ -563,13 +660,21 @@ void transfer_sector(uint32_t)
 		return;
 	}
 
+	const auto host_size = fdc.command[5] == 0
+	                             ? std::min(data.size(), size_t{fdc.command[8]})
+	                             : data.size();
+	if (!host_size) {
+		finish_sector_transfer({}, false);
+		return;
+	}
 	if (fdc.non_dma) {
-		start_pio_transfer(data.size(),
-		                   writing ? std::span<const uint8_t>{} : data);
+		start_pio_transfer(host_size,
+		                   writing ? std::span<const uint8_t>{}
+		                           : data.first(host_size));
 		return;
 	}
 	const auto remaining = static_cast<size_t>(dma->curr_count) + 1;
-	const auto count     = std::min(remaining, data.size());
+	const auto count     = std::min(remaining, host_size);
 	dma->RaiseRequest();
 	// DMA Write copies from the source buffer without modifying it.
 	const auto transferred =
@@ -611,7 +716,8 @@ uint8_t commit_track_format()
 	                                        fdc.head,
 	                                        ids,
 	                                        fdc.command[5],
-	                                        fdc.command[3]));
+	                                        fdc.command[3],
+	                                        fdc.command[2]));
 }
 
 void finish_track_format(const uint8_t status)
@@ -676,7 +782,8 @@ void finish_raw_format(const std::span<const uint8_t> ids)
 	                                       fdc.head,
 	                                       ids,
 	                                       fdc.command[5],
-	                                       fdc.command[3]);
+	                                       fdc.command[3],
+	                                       fdc.command[2]);
 	if (result == FloppyFormatResult::Success) {
 		fdc.sector = fdc.command[3];
 	}
@@ -715,6 +822,14 @@ void format_raw_track(uint32_t)
 void finish_pio_transfer()
 {
 	const auto command    = static_cast<Command>(fdc.command[0] & 0x1f);
+	if ((command == Command::ReadData || command == Command::WriteData) &&
+	    !fdc.pio_waiting_crc && PIC_FullIndex() < fdc.sector_end_ms) {
+		// Defer once: rounding at the target timestamp must not queue
+		// an endless sequence of events with effectively zero delay.
+		fdc.pio_waiting_crc = true;
+		PIC_AddEvent(pio_byte_event, fdc.sector_end_ms - PIC_FullIndex());
+		return;
+	}
 	const auto elapsed_ms = PIC_FullIndex() - fdc.pio_started_ms;
 	const auto data       = std::move(fdc.pio_data);
 	fdc.pio_data.clear();
@@ -784,6 +899,7 @@ void acknowledge_pio_byte()
 void start_data(const Command command)
 {
 	fdc.skipped_deleted = false;
+	fdc.wrong_cylinder_sector = nullptr;
 	const auto unit = selected_unit();
 	fdc.disk        = BIOS_GetDisk(unit);
 	fdc.media       = BIOS_GetFloppyMedia(unit);
@@ -871,7 +987,7 @@ void start_data(const Command command)
 	}
 	if (const auto& track = fdc.media) {
 		if (command != Command::ReadId &&
-		    (fdc.command[3] != fdc.head || fdc.sector > fdc.command[6] ||
+		    (fdc.sector > fdc.command[6] ||
 		     (command == Command::WriteData &&
 		      !IsFloppyOverlaySizeCode(fdc.command[5])))) {
 			finish_data(0x04);
@@ -1065,7 +1181,10 @@ void reset_controller()
 	PIC_RemoveEvents(format_track_sector);
 	PIC_RemoveEvents(missing_sector);
 	PIC_RemoveEvents(pio_byte_event);
+	const auto drives = fdc.drives;
 	fdc = {};
+	// Resetting the controller does not move the physical drive heads.
+	fdc.drives = drives;
 }
 
 void write_dor(io_port_t, const io_val_t value, io_width_t)
@@ -1088,8 +1207,7 @@ void write_dor(io_port_t, const io_val_t value, io_width_t)
 	}
 	fdc.dor = check_cast<uint8_t>(value);
 	for (size_t unit = 0; unit < fdc.drives.size(); ++unit) {
-		if (motor_on(unit) &&
-		    (!(value & ResetReleased) || !(previous & (0x10u << unit)))) {
+		if (motor_on(unit) && !(previous & (0x10u << unit))) {
 			fdc.drives[unit].motor_started_ms = PIC_FullIndex();
 		}
 	}
@@ -1152,15 +1270,17 @@ void write_pcjr_dor(io_port_t, const io_val_t value, const io_width_t width)
 FloppyFormatResult FLOPPY_FormatTrack(imageDisk& disk, FloppyMedia* media,
                                       const uint32_t cylinder, const uint32_t head,
                                       const std::span<const uint8_t> ids,
-                                      const uint8_t fill, const uint8_t requested)
+                                      const uint8_t fill, const uint8_t requested,
+                                      const uint8_t size_code)
 {
 	using Result = FloppyFormatResult;
 	if (disk.IsWriteProtected()) {
 		return Result::WriteProtected;
 	}
-	if (disk.hardDrive || cylinder > UINT8_MAX || cylinder >= disk.cylinders ||
-	    head >= disk.heads || head > UINT8_MAX || ids.empty() ||
-	    ids.size() % FormatIdSize || ids.size() / FormatIdSize > requested) {
+	if (disk.hardDrive || cylinder > UINT8_MAX ||
+	    cylinder >= disk.cylinders || head >= disk.heads ||
+	    head > UINT8_MAX || ids.empty() || ids.size() % FormatIdSize ||
+	    ids.size() / FormatIdSize > requested || size_code > 7) {
 		return Result::InvalidLayout;
 	}
 
@@ -1170,7 +1290,8 @@ FloppyFormatResult FLOPPY_FormatTrack(imageDisk& disk, FloppyMedia* media,
 		                           check_cast<uint8_t>(head),
 		                           ids,
 		                           fill,
-		                           requested)) {
+		                           requested,
+		                           size_code)) {
 		case ScpResult::Success: return Result::Success;
 		case ScpResult::InvalidLayout: return Result::InvalidLayout;
 		case ScpResult::WriteError: return Result::WriteError;
@@ -1308,8 +1429,8 @@ static FloppyBiosTransferResult bios_transfer_track(
         const uint32_t address)
 {
 	const auto last_sector = sector + count - 1;
-	if (!sector || !count || last_sector > UINT8_MAX || size_code > 7 ||
-	    unit > 1 || cylinder > UINT8_MAX || head > 1) {
+	if (!count || last_sector > UINT8_MAX || size_code > 7 || unit > 1 ||
+	    cylinder > UINT8_MAX || head > 1) {
 		return {0x04, 0};
 	}
 
@@ -1376,7 +1497,7 @@ FloppyBiosTransferResult FLOPPY_BiosTransfer(
         const uint32_t address)
 {
 	const auto disk = BIOS_GetDisk(unit);
-	if (!disk || !sector || !count || size_code > 7 || head >= disk->heads) {
+	if (!disk || !count || size_code > 7 || head >= disk->heads) {
 		return {0x04, 0};
 	}
 
@@ -1386,9 +1507,9 @@ FloppyBiosTransferResult FLOPPY_BiosTransfer(
 		return {0x09, 0};
 	}
 
-	// IDs beyond the logical geometry can belong to a protection track.
-	// Requests starting at such an ID stay on that track.
-	if (sector > disk->sectors) {
+	// IDs outside the logical geometry, including zero, can belong to a
+	// protection track. Even a missing ID must seek before failing.
+	if (!sector || sector > disk->sectors) {
 		return bios_transfer_track(operation,
 		                           unit,
 		                           cylinder,
@@ -1529,6 +1650,7 @@ void FLOPPY_Init()
 	pcjr_watchdog_asserted = false;
 	disk_changed.fill(false);
 	reset_controller();
+	fdc.drives = {};
 	update_irq();
 	IO_RegisterWriteHandler(0x3f2, write_dor, io_width_t::byte);
 	IO_RegisterReadHandler(0x3f4, read_status, io_width_t::byte);

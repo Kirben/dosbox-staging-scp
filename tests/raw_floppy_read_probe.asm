@@ -57,7 +57,8 @@ org 100h
     mov cx,2
     call command_and_irq
     call read_result
-    cmp word [result],0440h + DRIVE_HEAD
+    ; An empty stepped slot has no ID address mark.
+    cmp word [result],0140h + DRIVE_HEAD
     jne finish
     mov si,seek
     mov cx,3

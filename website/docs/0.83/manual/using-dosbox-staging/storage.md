@@ -393,6 +393,12 @@ formatting in a sidecar named
 after the full image filename. For example, changes to `disk.scp` go into
 `disk.scp.overlay`, and changes to `disk.mfm` go into `disk.mfm.overlay`.
 Sidecars with 256- or 1,024-byte writes require a build that supports those writes.
+Writes to overlapping sectors replay in their original order; independent sector
+writes keep only their latest contents. Sidecars containing ordered, repeated
+write records require a build supporting overlay version 6; earlier sidecar
+versions remain readable by this build.
+Formats whose physical data length differs from the size stored in their
+sector IDs require overlay version 7. Ordinary formats keep the earlier layout.
 The original image stays intact.
 
 Only one writable mount can hold an image's sidecar at a time. Use `-ro` for

@@ -22,6 +22,7 @@ inline uint64_t FloppyImageFingerprint(const std::span<const uint8_t> bytes)
 struct FloppyMfmTrack {
 	std::vector<uint8_t> cells   = {};
 	size_t bit_count             = 0;
+	size_t index                 = 0;
 	std::vector<bool> weak_cells = {};
 };
 
@@ -35,6 +36,7 @@ struct FloppySector {
 	bool data_crc_error                = false;
 	bool deleted                       = false;
 	size_t revolution                  = 0;
+	size_t overlay_slot                = 0;
 	std::vector<uint8_t> data          = {};
 	std::vector<uint8_t> extended_data = {};
 	std::vector<uint8_t> weak_mask = {}; // Payload followed by the two CRC
@@ -43,6 +45,7 @@ struct FloppySector {
 	size_t weak_seed                          = 0;
 	std::shared_ptr<FloppyMfmTrack> mfm_track = {};
 	size_t data_bit                           = 0;
+	size_t id_bit                             = 0;
 	size_t data_delay_bits                    = 0;
 
 	// Sample one physical turn and return whether its data CRC is bad.
@@ -62,9 +65,9 @@ class FloppyMedia {
 public:
 	enum class FormatResult { Success, InvalidLayout, WriteError };
 
-	virtual ~FloppyMedia()                                     = default;
+	virtual ~FloppyMedia()                               = default;
 	virtual double GetCycleMs(const uint32_t cylinder,
-	                          const uint32_t head) const       = 0;
+	                          const uint32_t head) const = 0;
 	// Index positions as fractions of the full capture cycle, ending at 1.
 	virtual std::span<const double> GetRevolutionEnds(uint32_t cylinder,
 	                                                  uint32_t head) const = 0;
@@ -80,8 +83,8 @@ public:
 	                         const FloppySector* selected = nullptr) = 0;
 	virtual FormatResult FormatTrack(const uint8_t cylinder, const uint8_t head,
 	                                 const std::span<const uint8_t> ids,
-	                                 const uint8_t fill,
-	                                 const uint8_t requested)        = 0;
+	                                 const uint8_t fill, const uint8_t requested,
+	                                 const uint8_t size_code)        = 0;
 };
 
 #endif
