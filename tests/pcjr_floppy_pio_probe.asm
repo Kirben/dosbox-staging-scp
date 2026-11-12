@@ -144,7 +144,8 @@ org 100h
     mov bl,0e5h
     call read_sector
     call read_sector
-    mov bl,80h
+    ; Read Track stops normally at its sector count without DMA TC.
+    xor bl,bl
     call check_result
 
     mov byte [stage],14

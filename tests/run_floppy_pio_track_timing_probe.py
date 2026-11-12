@@ -65,13 +65,9 @@ data_ready:
     jnz poll_data
     call wait_result
 ''' + f'''
-    mov al,[ids+1]
-    and al,20h
-    cmp al,{0x20 if bad_crc else 0}
+    cmp byte [ids+1],{0x20 if bad_crc else 0}
     jne done
-    mov al,[ids+2]
-    and al,20h
-    cmp al,{0x20 if bad_crc else 0}
+    cmp byte [ids+2],{0x20 if bad_crc else 0}
     jne done
 ''' + SAVE
     body = (checks + '\n    jmp checked\n' + DECLARATIONS +

@@ -70,13 +70,13 @@ struct Controller {
 	size_t track_remaining                             = 0;
 	bool track_physical_transfer                       = false;
 	bool track_transfer_ready                               = false;
-	double track_transfer_ms                           = 0;
-	uint64_t track_sample_turn                         = 0;
-	size_t track_offset                                = 0;
-	uint8_t track_status_1                             = 0;
-	uint8_t track_status_2                             = 0;
-	size_t formatted_ids                               = 0;
-	std::shared_ptr<imageDisk> disk                    = {};
+	double track_transfer_ms                                = 0;
+	uint64_t track_sample_turn                              = 0;
+	size_t track_offset                                     = 0;
+	uint8_t track_status_1                                  = 0;
+	uint8_t track_status_2                                  = 0;
+	size_t formatted_ids                                    = 0;
+	std::shared_ptr<imageDisk> disk                         = {};
 	std::shared_ptr<FloppyMedia> media                 = {};
 	std::vector<uint8_t> pio_data                      = {};
 	size_t pio_offset                                  = 0;
@@ -413,7 +413,9 @@ void finish_track_sector(const bool terminal_count, const double elapsed_ms)
 	if (terminal_count) {
 		finish_data(fdc.track_status_1, fdc.track_status_2, true);
 	} else if (--fdc.track_remaining == 0) {
-		finish_data(fdc.track_status_1 | 0x80, fdc.track_status_2);
+		// Read Track's EOT is a sector count and a normal stop condition;
+		// unlike Read Data, it does not require DMA terminal count.
+		finish_data(fdc.track_status_1, fdc.track_status_2);
 	} else if (fdc.track_physical_transfer) {
 		// A command-sized field can pass other IDs or even cross index.
 		// Resume searching at the physical position reached by the read.
@@ -422,9 +424,9 @@ void finish_track_sector(const bool terminal_count, const double elapsed_ms)
 		auto delay_ms       = cycle;
 		for (size_t i = 0; i < track.size(); ++i) {
 			const auto offset_ms = track[i].cycle_fraction * cycle;
-			const auto wait_ms   = offset_ms > position
-			                             ? offset_ms - position
-			                             : cycle + offset_ms - position;
+			const auto wait_ms = offset_ms > position
+			                           ? offset_ms - position
+			                           : cycle + offset_ms - position;
 			if (wait_ms < delay_ms) {
 				delay_ms         = wait_ms;
 				fdc.track_offset = i;
