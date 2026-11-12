@@ -21,6 +21,14 @@ org 100h
     out 0f2h,al
     mov al,81h
     out 0f2h,al
+    ; Consume reset polling statuses before checking later seek results.
+    mov cx,4
+.reset_status:
+    mov al,8
+    out DATA,al
+    in al,DATA
+    in al,DATA
+    loop .reset_status
     mov si,specify
     mov cx,3
     call send
@@ -154,16 +162,29 @@ org 100h
     mov cx,3
     call send
 .wait_seek:
-    in al,MSR
+    ; PCjr has no floppy completion IRQ. Poll Sense Interrupt until
+    ; it returns a completed seek instead of the one-byte invalid result.
+    mov al,8
+    out DATA,al
+    in al,DATA
     cmp al,80h
-    jne .wait_seek
+    je .wait_seek
+    cmp al,24h
+    jne report
+    in al,DATA
+    cmp al,2
+    jne report
+    mov byte [stage],20
     mov si,read_crc_track
     mov cx,9
     call send
     xor bl,bl
     call read_sector
+    mov byte [stage],21
     call read_sector
+    mov byte [stage],22
     call read_sector
+    mov byte [stage],23
     mov bl,30h
     mov byte [expected_st2],20h
     call check_result

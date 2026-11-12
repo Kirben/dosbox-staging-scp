@@ -146,6 +146,10 @@ read_sector:
     ret
 
 seek:
+    push es
+    mov ax,40h
+    mov es,ax
+    and byte [es:3eh],7fh
     mov dx,3f5h
     mov al,0fh
     out dx,al
@@ -153,24 +157,22 @@ seek:
     out dx,al
     mov al,bl
     out dx,al
-    ; Wait for the command phase using the guest timer as a deadline.
+    ; Seek accepts new commands while moving. Wait for its completion
+    ; interrupt, then acknowledge it with Sense Interrupt Status.
     xor ax,ax
     int 1ah
     mov si,dx
-    mov dx,3f4h
 .wait:
-    in al,dx
-    and al,0d0h
-    cmp al,80h
-    je .done
+    test byte [es:3eh],80h
+    jnz .done
     xor ax,ax
     int 1ah
     sub dx,si
     cmp dx,18
     jae fail
-    mov dx,3f4h
     jmp .wait
 .done:
+    pop es
     call sense_interrupt
     cmp al,bl
     jne fail

@@ -61,22 +61,31 @@ struct Drive {
 	double motor_started_ms = 0;
 };
 
+struct Seek {
+	uint8_t cylinder = 0;
+	uint8_t head     = 0;
+	uint8_t status   = 0;
+	bool active      = false;
+	bool pending     = false;
+};
+
 struct Controller {
 	std::array<Drive, 2> drives                        = {};
+	std::array<Seek, 4> seeks                          = {};
 	std::array<uint8_t, 9> command                     = {};
 	std::array<uint8_t, 7> result                      = {};
 	std::array<uint8_t, FormatIdSize * 255> format_ids = {};
 	size_t track_revolution                            = 0;
 	size_t track_remaining                             = 0;
 	bool track_physical_transfer                       = false;
-	bool track_transfer_ready                               = false;
-	double track_transfer_ms                                = 0;
-	uint64_t track_sample_turn                              = 0;
-	size_t track_offset                                     = 0;
-	uint8_t track_status_1                                  = 0;
-	uint8_t track_status_2                                  = 0;
-	size_t formatted_ids                                    = 0;
-	std::shared_ptr<imageDisk> disk                         = {};
+	bool track_transfer_ready                          = false;
+	double track_transfer_ms                           = 0;
+	uint64_t track_sample_turn                         = 0;
+	size_t track_offset                                = 0;
+	uint8_t track_status_1                             = 0;
+	uint8_t track_status_2                             = 0;
+	size_t formatted_ids                               = 0;
+	std::shared_ptr<imageDisk> disk                    = {};
 	std::shared_ptr<FloppyMedia> media                 = {};
 	std::vector<uint8_t> pio_data                      = {};
 	size_t pio_offset                                  = 0;
@@ -97,13 +106,11 @@ struct Controller {
 	size_t result_length                               = 0;
 	uint8_t dor                                        = 0;
 	uint8_t reset_unit                                 = 4;
-	uint8_t seek_status                                = 0;
-	uint8_t seek_cylinder                              = 0;
 	uint8_t cylinder                                   = 0;
 	uint8_t head                                       = 0;
 	uint8_t sector                                     = 0;
 	bool irq_pending                                   = false;
-	bool seek_pending                                  = false;
+	bool seek_irq_pending                              = false;
 	bool skipped_deleted                               = false;
 	bool missing_address_mark                          = false;
 	bool non_dma                                       = false;
@@ -111,8 +118,8 @@ struct Controller {
 
 double pio_byte_ms = 8.0 / DefaultDataRateKbps;
 
-Controller fdc    = {};
-bool irq_asserted = false;
+Controller fdc              = {};
+bool irq_asserted           = false;
 uint8_t pcjr_dor            = 0;
 bool pcjr_watchdog_asserted = false;
 // The latch belongs to the drive and survives controller resets.
@@ -123,7 +130,8 @@ void update_irq()
 	if (is_machine_pcjr()) {
 		return;
 	}
-	const auto asserted = fdc.irq_pending && (fdc.dor & InterruptEnabled);
+	const auto asserted = (fdc.irq_pending || fdc.seek_irq_pending) &&
+	                      (fdc.dor & InterruptEnabled);
 	if (asserted == irq_asserted) {
 		return;
 	}
@@ -396,7 +404,7 @@ void start_pio_transfer(const size_t size, const std::span<const uint8_t> source
 	}
 	fdc.pio_offset      = 0;
 	fdc.pio_waiting_crc = false;
-	fdc.pio_underrun = false;
+	fdc.pio_underrun    = false;
 	fdc.pio_started_ms = PIC_FullIndex();
 	fdc.pio_ready      = true;
 	fdc.irq_pending    = true;
@@ -413,8 +421,9 @@ void finish_track_sector(const bool terminal_count, const double elapsed_ms)
 	if (terminal_count) {
 		finish_data(fdc.track_status_1, fdc.track_status_2, true);
 	} else if (--fdc.track_remaining == 0) {
-		// Read Track's EOT is a sector count and a normal stop condition;
-		// unlike Read Data, it does not require DMA terminal count.
+		// Read Track's EOT is a sector count and a normal stop
+		// condition; unlike Read Data, it does not require DMA terminal
+		// count.
 		finish_data(fdc.track_status_1, fdc.track_status_2);
 	} else if (fdc.track_physical_transfer) {
 		// A command-sized field can pass other IDs or even cross index.
@@ -498,7 +507,7 @@ void transfer_track_sector(uint32_t)
 		fdc.track_sample_turn = static_cast<uint64_t>(
 		        rotation_elapsed_ms() / rotation_cycle_ms());
 		fdc.track_transfer_ready = true;
-		fdc.sector_end_ms   = PIC_FullIndex() + fdc.track_transfer_ms;
+		fdc.sector_end_ms = PIC_FullIndex() + fdc.track_transfer_ms;
 		PIC_AddEvent(transfer_track_sector,
 		             fdc.non_dma ? header_ms : fdc.track_transfer_ms);
 		return;
@@ -1111,23 +1120,24 @@ void start_data(const Command command)
 	schedule_next_sector();
 }
 
-void complete_seek(uint32_t)
+void complete_seek(const uint32_t unit)
 {
-	const auto unit = selected_unit();
+	auto& seek            = fdc.seeks[unit];
+	const auto drive_bits = (seek.head << 2) | unit;
 	if (motor_on(unit) && unit == (fdc.dor & 3u)) {
 		auto& drive = fdc.drives[unit];
-		if (drive.cylinder != fdc.seek_cylinder && BIOS_GetDisk(unit)) {
+		if (drive.cylinder != seek.cylinder && BIOS_GetDisk(unit)) {
 			FLOPPY_SetDiskChanged(unit, false);
 		}
-		drive.cylinder = fdc.seek_cylinder;
-		fdc.seek_status = check_cast<uint8_t>(0x20u | (fdc.command[1] & 7u));
+		drive.cylinder = seek.cylinder;
+		seek.status    = check_cast<uint8_t>(0x20u | drive_bits);
 	} else {
-		fdc.seek_status = check_cast<uint8_t>(0x68u | (fdc.command[1] & 7u));
+		seek.status = check_cast<uint8_t>(0x68u | drive_bits);
 	}
-	fdc.seek_cylinder = unit < fdc.drives.size() ? fdc.drives[unit].cylinder : 0;
-	fdc.seek_pending = true;
-	fdc.phase        = Phase::Command;
-	fdc.irq_pending  = true;
+	seek.cylinder = unit < fdc.drives.size() ? fdc.drives[unit].cylinder : 0;
+	seek.active          = false;
+	seek.pending         = true;
+	fdc.seek_irq_pending = true;
 	update_irq();
 }
 
@@ -1135,30 +1145,43 @@ void execute_command(const Command command)
 {
 	switch (command) {
 	case Command::Specify: fdc.non_dma = (fdc.command[2] & 1) != 0; break;
-	case Command::SenseInterrupt:
+	case Command::SenseInterrupt: {
+		fdc.seek_irq_pending = false;
+		const auto pending   = std::ranges::find_if(
+		        fdc.seeks, [](const auto& seek) { return seek.pending; });
 		if (fdc.reset_unit < 4) {
 			const auto unit = fdc.reset_unit++;
 			fdc.result = {check_cast<uint8_t>(0xc0u | unit), 0};
 			begin_result(2, false);
-		} else if (fdc.seek_pending) {
-			fdc.seek_pending = false;
-			fdc.result       = {fdc.seek_status, fdc.seek_cylinder};
+		} else if (pending != fdc.seeks.end()) {
+			pending->pending = false;
+			fdc.result       = {pending->status, pending->cylinder};
 			begin_result(2, false);
 		} else {
 			fdc.result[0] = 0x80;
 			begin_result(1, false);
 		}
 		break;
+	}
 	case Command::Seek:
 	case Command::Recalibrate: {
-		const auto unit     = selected_unit();
+		const auto unit = selected_unit();
+		auto& seek      = fdc.seeks[unit];
+		if (seek.active || seek.pending) {
+			fdc.result[0] = 0x80;
+			begin_result(1, false);
+			break;
+		}
 		const auto cylinder = unit < fdc.drives.size()
 		                            ? fdc.drives[unit].cylinder
 		                            : 0;
-		fdc.seek_cylinder = command == Command::Seek ? fdc.command[2] : 0;
-		const auto steps = std::max(1, std::abs(cylinder - fdc.seek_cylinder));
-		fdc.phase = Phase::Execution;
-		PIC_AddEvent(complete_seek, steps * StepMs);
+		seek.cylinder = command == Command::Seek ? fdc.command[2] : 0;
+		seek.head     = (fdc.command[1] >> 2) & 1;
+		seek.active   = true;
+		const auto steps = std::max(1, std::abs(cylinder - seek.cylinder));
+		// Seek has no result phase of its own. Keep accepting commands,
+		// and latch the drive independently until Sense Interrupt.
+		PIC_AddEvent(complete_seek, steps * StepMs, check_cast<uint32_t>(unit));
 		break;
 	}
 	case Command::ReadId:
@@ -1234,15 +1257,21 @@ io_val_t read_status(io_port_t, io_width_t)
 	if (!(fdc.dor & ResetReleased)) {
 		return 0;
 	}
+	uint8_t busy = 0;
+	for (size_t unit = 0; unit < fdc.seeks.size(); ++unit) {
+		if (fdc.seeks[unit].active || fdc.seeks[unit].pending) {
+			busy |= check_cast<uint8_t>(1u << unit);
+		}
+	}
 	switch (fdc.phase) {
 	case Phase::Execution:
 		if (fdc.pio_data.empty()) {
-			return fdc.non_dma ? 0x30 : 0x10;
+			return busy | (fdc.non_dma ? 0x30 : 0x10);
 		}
-		return 0x30 | (fdc.pio_ready ? 0x80 : 0) |
+		return busy | 0x30 | (fdc.pio_ready ? 0x80 : 0) |
 		       (fdc.pio_writing ? 0 : 0x40);
-	case Phase::Result: return 0xd0;
-	case Phase::Command: return fdc.command_count ? 0x90 : 0x80;
+	case Phase::Result: return busy | 0xd0;
+	case Phase::Command: return busy | (fdc.command_count ? 0x90 : 0x80);
 	}
 	return 0;
 }
@@ -1681,7 +1710,10 @@ uint8_t FLOPPY_BiosDmaFormat(const uint8_t unit, const uint32_t cylinder,
 
 bool FLOPPY_CanStartBiosCommand()
 {
-	return fdc.phase == Phase::Command && !fdc.command_count && !fdc.irq_pending;
+	return fdc.phase == Phase::Command && !fdc.command_count &&
+	       !fdc.irq_pending && !fdc.seek_irq_pending &&
+	       std::ranges::none_of(fdc.seeks,
+	                            [](const auto& seek) { return seek.active; });
 }
 
 void FLOPPY_BiosPosition(const uint8_t unit, const uint8_t cylinder)
