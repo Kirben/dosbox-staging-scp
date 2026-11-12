@@ -559,7 +559,10 @@ std::unique_ptr<FloppyTrackImage> FloppyTrackImage::LoadHxcMfm(
 		if (seen[track]) {
 			return {};
 		}
-		seen[track] = true;
+		seen[track]             = true;
+		auto& decoded           = image->tracks[track];
+		decoded.cycle_ms        = turn_ms;
+		decoded.format_cycle_ms = turn_ms;
 		if (!length) {
 			continue;
 		}
@@ -573,9 +576,6 @@ std::unique_ptr<FloppyTrackImage> FloppyTrackImage::LoadHxcMfm(
 			return {};
 		}
 		extents.emplace_hint(next, offset, offset + length);
-		auto& decoded    = image->tracks[track];
-		decoded.cycle_ms = turn_ms;
-		decoded.format_cycle_ms = turn_ms;
 		decoded.sectors = DecodeMfmTrack(input.subspan(offset, length));
 		image->UpdateLogicalGeometry(cylinder, head, decoded.sectors);
 	}
