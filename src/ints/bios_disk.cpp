@@ -638,7 +638,7 @@ static uint8_t format_floppy_track(imageDisk& disk, const uint8_t unit,
 	}
 
 	switch (FLOPPY_FormatTrack(
-	        disk, disk_slots[unit].floppy.get(), cylinder, head, ids, fill, count)) {
+	        disk, disk_slots[unit].floppy.get(), cylinder, head, ids, fill, count, size_code)) {
 	case FloppyFormatResult::Success: return 0;
 	case FloppyFormatResult::WriteProtected: return 0x03;
 	case FloppyFormatResult::InvalidLayout: return 0x04;
@@ -699,7 +699,7 @@ static FloppyBiosTransferResult bios_track_sector_transfer(
 	const auto cross_tracks = sector <= disk.sectors;
 	for (uint8_t completed = 0; completed < request.count; ++completed) {
 		if (cylinder >= disk.cylinders || head >= disk.heads ||
-		    !sector || sector > UINT8_MAX) {
+		    sector > UINT8_MAX) {
 			return {0x04, completed};
 		}
 		FLOPPY_BiosPosition(unit, check_cast<uint8_t>(cylinder));

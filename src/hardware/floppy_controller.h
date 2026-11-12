@@ -19,8 +19,8 @@ enum class FloppyFormatResult {
 
 FloppyFormatResult FLOPPY_FormatTrack(imageDisk& disk, FloppyMedia* media,
                                       uint32_t cylinder, uint32_t head,
-                                      std::span<const uint8_t> ids,
-                                      uint8_t fill, uint8_t requested);
+                                      std::span<const uint8_t> ids, uint8_t fill,
+                                      uint8_t requested, uint8_t size_code);
 
 enum class FloppyBiosTransfer { Read, Write, Verify };
 
