@@ -221,6 +221,19 @@ double rotation_ms()
 	return std::fmod(rotation_elapsed_ms(), rotation_cycle_ms());
 }
 
+double next_index_ms()
+{
+	const auto cycle    = rotation_cycle_ms();
+	const auto position = rotation_ms() / cycle;
+	if (fdc.media) {
+		const auto ends = fdc.media->GetRevolutionEnds(fdc.cylinder,
+		                                               fdc.head);
+		const auto next = std::upper_bound(ends.begin(), ends.end(), position);
+		return (*next - position) * cycle;
+	}
+	return (1.0 - position) * cycle;
+}
+
 bool sample_sector_data(const FloppySector& sector,
                         std::vector<uint8_t>& sampled, const uint64_t turn)
 {
@@ -962,7 +975,7 @@ void start_data(const Command command)
 			return;
 		}
 		fdc.formatted_ids   = 0;
-		const auto to_index = rotation_cycle_ms() - rotation_ms();
+		const auto to_index = next_index_ms();
 		if (raw) {
 			PIC_AddEvent(format_raw_track,
 			             to_index + rotation_cycle_ms());
