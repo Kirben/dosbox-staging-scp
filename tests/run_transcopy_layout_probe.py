@@ -14,6 +14,7 @@ from run_hxc_mfm_probe import MFM, launch
 from run_transcopy_attachment_probe import encode_transcopy
 
 
+# pylint: disable-next=too-many-arguments,too-many-positional-arguments,too-many-locals
 def run_guest(dosbox, nasm, directory, image, checks, expected=b"", extra_commands=(),
               machine=None, read_only=True):
     """Run BIOS checks and report the first failing stage."""
@@ -106,6 +107,7 @@ check_{stage}:
             print(f"TC {heads} head(s), step {step}: cylinders 2 and 38 passed")
 
 
+# pylint: disable-next=too-many-locals
 def encode_field_fixture(oversized):
     """Build an overlapping field or a field longer than one revolution."""
     cells = bytearray()
