@@ -629,16 +629,21 @@ void transfer_sector(uint32_t)
 
 	const auto command = static_cast<Command>(fdc.command[0] & 0x1f);
 	const auto* field  = fdc.track_sector;
+	const auto writing = command == Command::WriteData;
 	const auto skip    = command == Command::ReadData && field &&
 	                     field->deleted && (fdc.command[0] & 0x20);
 	if (!fdc.sector_transfer_ready && !skip &&
-	    (!field || (!field->id_crc_error && !field->data.empty()))) {
+	    (!field || (!field->id_crc_error && (writing || !field->data.empty())))) {
 		// The ID identifies a sector; completion follows its data and
 		// CRC. PIO transfers start at the data field instead of its
 		// end.
-		auto bit_ms      = pio_byte_ms / 16;
-		auto header_ms   = 0.0;
-		const auto bytes = field ? field->data.size() : SectorSize;
+		auto bit_ms    = pio_byte_ms / 16;
+		auto header_ms = 0.0;
+		// Writes create a full command-sized field even if no old DAM
+		// exists. The old decoded payload is only a read-size source.
+		const auto bytes = writing ? size_t{128} << fdc.command[5]
+		                 : field   ? field->data.size()
+		                           : SectorSize;
 		if (!fdc.media) {
 			const auto rate = fdc.disk->sectors >= 36 ? 1000
 			                : fdc.disk->sectors >= 15 ? 500
@@ -672,8 +677,7 @@ void transfer_sector(uint32_t)
 		return;
 	}
 
-	const auto writing = command == Command::WriteData;
-	auto* dma          = DMA_GetChannel(FloppyDma);
+	auto* dma = DMA_GetChannel(FloppyDma);
 	if (!fdc.non_dma &&
 	    (!dma || dma->is_masked ||
 	     !(writing ? dma->is_memory_to_device : dma->is_device_to_memory) ||
