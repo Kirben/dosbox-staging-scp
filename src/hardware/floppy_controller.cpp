@@ -431,7 +431,11 @@ void transfer_track_sector(uint32_t)
 	}
 	const auto& sector = track[fdc.track_offset];
 	fdc.track_sector   = &sector;
-	auto* dma          = DMA_GetChannel(FloppyDma);
+	if (sector.data.empty()) {
+		finish_data(fdc.track_status_1 | 0x01, fdc.track_status_2 | 0x01);
+		return;
+	}
+	auto* dma = DMA_GetChannel(FloppyDma);
 	if (!fdc.non_dma && (!dma || dma->is_masked || !dma->is_device_to_memory ||
 	                     !(fdc.dor & InterruptEnabled))) {
 		finish_data(fdc.track_status_1 | 0x10, fdc.track_status_2);

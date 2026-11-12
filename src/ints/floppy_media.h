@@ -52,7 +52,7 @@ struct FloppySector {
 	bool SampleWeakData(uint64_t turn, std::vector<uint8_t>& sampled) const;
 	bool ReadTrackData(size_t size, uint64_t turn,
 	                   std::vector<uint8_t>& sampled, bool& bad_crc) const;
-	void UpdateTrackData();
+	void UpdateTrackData(const bool create_data_mark = false);
 };
 
 constexpr bool IsFloppyOverlaySizeCode(const int size_code)
