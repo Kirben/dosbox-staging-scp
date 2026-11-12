@@ -15,6 +15,7 @@
 #include "hardware/ide.h"
 #include "hardware/pic.h"
 #include "hardware/port.h"
+#include "ints/bios.h"
 #include "ints/bios_disk.h"
 #include "ints/floppy_media.h"
 #include "utils/checks.h"
@@ -292,7 +293,7 @@ void verify_sector()
 	} else if (sector->data.empty()) {
 		finish_data(0x01, 0x01);
 	} else if (sample_sector_data(*sector, sampled)) {
-		finish_data(0x20, 0x20);
+		finish_data(0x20, 0x20 | (sector->deleted ? 0x40 : 0));
 	} else if (sector->deleted) {
 		finish_data(0, 0x40);
 	} else if (fdc.sector == fdc.command[6]) {
@@ -493,7 +494,8 @@ void finish_sector_transfer(const std::span<const uint8_t> write_data,
 	if (!write_data.empty() && !commit_sector_write(write_data)) {
 		finish_data(0x20);
 	} else if (fdc.sector_data_crc_error) {
-		finish_data(0x20, 0x20);
+		const auto deleted = fdc.track_sector && fdc.track_sector->deleted;
+		finish_data(0x20, 0x20 | (deleted ? 0x40 : 0));
 	} else if (fdc.track_sector && fdc.track_sector->deleted) {
 		finish_data(0, 0x40);
 	} else if (terminal_count) {
@@ -1283,6 +1285,9 @@ BiosCommandResult bios_command(const uint8_t unit, const uint32_t cylinder,
 	for (auto& byte : result.status) {
 		byte = check_cast<uint8_t>(read_data(0x3f5, io_width_t::byte));
 	}
+	MEM_BlockWrite(BIOS_FDC_RESULT_BUFFER,
+	               result.status.data(),
+	               result.status.size());
 	if (dma) {
 		const auto remaining = static_cast<uint32_t>(dma->curr_count) + 1;
 		if (dma->has_reached_terminal_count ||
