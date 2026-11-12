@@ -69,7 +69,7 @@ struct Controller {
 	size_t track_revolution                            = 0;
 	size_t track_remaining                             = 0;
 	bool track_physical_transfer                       = false;
-	bool track_dma_ready                               = false;
+	bool track_transfer_ready                               = false;
 	double track_transfer_ms                           = 0;
 	uint64_t track_sample_turn                         = 0;
 	size_t track_offset                                = 0;
@@ -478,7 +478,7 @@ void transfer_track_sector(uint32_t)
 	}
 	const auto size             = size_t{128} << fdc.command[5];
 	fdc.track_physical_transfer = sector.mfm_track != nullptr;
-	if (fdc.track_physical_transfer && !fdc.non_dma && !fdc.track_dma_ready) {
+	if (fdc.track_physical_transfer && !fdc.track_transfer_ready) {
 		const auto ends  = fdc.media->GetRevolutionEnds(fdc.cylinder,
 		                                                fdc.head);
 		const auto start = fdc.track_revolution
@@ -486,14 +486,19 @@ void transfer_track_sector(uint32_t)
 		                         : 0;
 		const auto duration_ms = (ends[fdc.track_revolution] - start) *
 		                         rotation_cycle_ms();
+		const auto header_ms = static_cast<double>(sector.data_delay_bits) *
+		                       duration_ms /
+		                       static_cast<double>(sector.mfm_track->bit_count);
 		fdc.track_transfer_ms = static_cast<double>(sector.data_delay_bits +
 		                                            (size + 2) * 16) *
 		                        duration_ms /
 		                        static_cast<double>(sector.mfm_track->bit_count);
 		fdc.track_sample_turn = static_cast<uint64_t>(
 		        rotation_elapsed_ms() / rotation_cycle_ms());
-		fdc.track_dma_ready = true;
-		PIC_AddEvent(transfer_track_sector, fdc.track_transfer_ms);
+		fdc.track_transfer_ready = true;
+		fdc.sector_end_ms   = PIC_FullIndex() + fdc.track_transfer_ms;
+		PIC_AddEvent(transfer_track_sector,
+		             fdc.non_dma ? header_ms : fdc.track_transfer_ms);
 		return;
 	}
 	const auto extended = size > sector.data.size() &&
@@ -504,11 +509,7 @@ void transfer_track_sector(uint32_t)
 	if (fdc.track_physical_transfer) {
 		// Read Track checks the CRC after the commanded byte count,
 		// even when the ID advertises a different data-field size.
-		const auto turn = fdc.non_dma ? static_cast<uint64_t>(
-		                                        rotation_elapsed_ms() /
-		                                        rotation_cycle_ms())
-		                              : fdc.track_sample_turn;
-		if (!sector.ReadTrackData(size, turn, sampled, bad_crc)) {
+		if (!sector.ReadTrackData(size, fdc.track_sample_turn, sampled, bad_crc)) {
 			finish_data(fdc.track_status_1 | 0x01,
 			            fdc.track_status_2 | 0x01);
 			return;
@@ -537,6 +538,10 @@ void transfer_track_sector(uint32_t)
 		fdc.track_status_2 |= 0x40;
 	}
 	if (fdc.non_dma) {
+		if (!fdc.track_physical_transfer) {
+			fdc.sector_end_ms = PIC_FullIndex() +
+			                    static_cast<double>(size + 2) * pio_byte_ms;
+		}
 		start_pio_transfer(size, std::span(data).first(size));
 		return;
 	}
@@ -549,7 +554,7 @@ void transfer_track_sector(uint32_t)
 	if (transferred != count) {
 		finish_data(fdc.track_status_1 | 0x10, fdc.track_status_2);
 	} else {
-		fdc.track_dma_ready = false;
+		fdc.track_transfer_ready = false;
 		finish_track_sector(count == remaining,
 		                    fdc.track_physical_transfer ? fdc.track_transfer_ms
 		                                                : 0);
@@ -886,7 +891,8 @@ void format_raw_track(uint32_t)
 void finish_pio_transfer()
 {
 	const auto command    = static_cast<Command>(fdc.command[0] & 0x1f);
-	if ((command == Command::ReadData || command == Command::WriteData) &&
+	if ((command == Command::ReadData || command == Command::WriteData ||
+	     command == Command::ReadTrack) &&
 	    !fdc.pio_waiting_crc && PIC_FullIndex() < fdc.sector_end_ms) {
 		// Defer once: rounding at the target timestamp must not queue
 		// an endless sequence of events with effectively zero delay.
@@ -898,7 +904,10 @@ void finish_pio_transfer()
 	const auto data       = std::move(fdc.pio_data);
 	fdc.pio_data.clear();
 	switch (command) {
-	case Command::ReadTrack: finish_track_sector(false, elapsed_ms); break;
+	case Command::ReadTrack:
+		fdc.track_transfer_ready = false;
+		finish_track_sector(false, elapsed_ms);
+		break;
 	case Command::WriteData: finish_sector_transfer(data, false); break;
 	case Command::ReadData: finish_sector_transfer({}, false); break;
 	case Command::FormatTrack:
@@ -1052,7 +1061,7 @@ void start_data(const Command command)
                         });
 		fdc.track_offset    = check_cast<size_t>(first - track.begin());
 		fdc.track_remaining = fdc.command[6];
-		fdc.track_dma_ready = false;
+		fdc.track_transfer_ready = false;
 		const auto has_sector = first != track.end() &&
 		                        first->revolution == fdc.track_revolution;
 		const auto first_position = has_sector
