@@ -152,3 +152,25 @@ cells within the separator's existing 10% clock range; outside that range their
 transitions are decoded again at the selected rate. This remains a digital
 separator approximation, rather than an analogue PLL simulation. DOS FAT's
 logical sector view is unchanged.
+
+### Seek completion and bounded recalibration
+
+`Guest.FloppySeekStatus` sends head-1 Seek and Recalibrate commands on A and B
+across all six formats. Sense Interrupt Status must return H=0, while Read ID
+continues to report the actual selected head through the existing head probes.
+
+`Guest.FloppyRecalibrateLimit` checks starting cylinders 79, 80 and 81 in PC,
+PCjr and Tandy modes on A and B across all six formats. It checks the SPECIFY
+step interval, busy state, IRQ6 (absent on PCjr), SE/EC/IC status, cleared PCN,
+remaining physical cylinder using Read ID, and recovery on a second recalibration.
+A Seek to PCN zero after a failed recalibration must leave the physical head
+where it is; recalibration then continues toward the physical TRACK0 position.
+The images are mounted read-only and checked for changes.
+
+Intel's 82077AA manual section 5.2.2 specifies failure if TRACK0 is still inactive
+after 79 pulses. Section 8.3 describes a maximum of 80 pulses and says a head
+farther than cylinder 79 returns an error. The implementation follows the
+79-pulse termination rule in the detailed command section: cylinder 79 succeeds,
+while cylinders 80 and 81 fail with equipment check and leave one or two physical
+steps for the next recalibration. Motion interrupted by reset or motor loss
+still uses the controller's existing completion-time position model.
