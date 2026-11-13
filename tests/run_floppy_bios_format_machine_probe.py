@@ -93,7 +93,7 @@ def format_checks(case, order):
     xor ax,ax
     mov es,ax
     test byte [es:43eh],80h
-    {'jz' if tc else 'jnz'} done
+    jnz done
     inc byte [stage]
 """
     expected = (case.unit, 0, 0, 0, 0, order[-1], case.size_code)
