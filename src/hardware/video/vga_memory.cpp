@@ -179,8 +179,12 @@ public:
 	uint8_t readb(PhysPt addr) override
 	{
 		read_delay();
-		addr = static_cast<PhysPt>(PAGING_GetPhysicalAddress(addr) &
-		                           vgapages.mask);
+		return readb_physical(PAGING_GetPhysicalAddress(addr));
+	}
+
+	uint8_t readb_physical(PhysPt addr) override
+	{
+		addr = static_cast<PhysPt>(addr & vgapages.mask);
 		addr = static_cast<PhysPt>(addr + vga.svga.bank_read_full);
 		addr = static_cast<PhysPt>(CHECKED2(addr));
 		return readHandler(addr);
@@ -253,8 +257,12 @@ public:
 	void writeb(PhysPt addr, uint8_t val) override
 	{
 		write_delay();
-		addr = static_cast<PhysPt>(PAGING_GetPhysicalAddress(addr) &
-		                           vgapages.mask);
+		writeb_physical(PAGING_GetPhysicalAddress(addr), val);
+	}
+
+	void writeb_physical(PhysPt addr, uint8_t val) override
+	{
+		addr = static_cast<PhysPt>(addr & vgapages.mask);
 		addr = static_cast<PhysPt>(addr + vga.svga.bank_write_full);
 		addr = static_cast<PhysPt>(CHECKED(addr));
 		MEM_CHANGED(addr << 3);
@@ -290,8 +298,12 @@ public:
 	uint8_t readb(PhysPt addr) override
 	{
 		read_delay();
-		addr = static_cast<PhysPt>(PAGING_GetPhysicalAddress(addr) &
-		                           vgapages.mask);
+		return readb_physical(PAGING_GetPhysicalAddress(addr));
+	}
+
+	uint8_t readb_physical(PhysPt addr) override
+	{
+		addr = static_cast<PhysPt>(addr & vgapages.mask);
 		addr = static_cast<PhysPt>(addr + vga.svga.bank_read_full);
 		addr = static_cast<PhysPt>(CHECKED(addr));
 		return readHandler(addr);
@@ -360,8 +372,12 @@ public:
 	void writeb(PhysPt addr, uint8_t val) override
 	{
 		write_delay();
-		addr = static_cast<PhysPt>(PAGING_GetPhysicalAddress(addr) &
-		                           vgapages.mask);
+		writeb_physical(PAGING_GetPhysicalAddress(addr), val);
+	}
+
+	void writeb_physical(PhysPt addr, uint8_t val) override
+	{
+		addr = static_cast<PhysPt>(addr & vgapages.mask);
 		addr = static_cast<PhysPt>(addr + vga.svga.bank_write_full);
 		addr = static_cast<PhysPt>(CHECKED2(addr));
 		MEM_CHANGED(addr << 3);
@@ -468,8 +484,12 @@ public:
 	uint8_t readb(PhysPt addr) override
 	{
 		read_delay();
-		addr = static_cast<PhysPt>(PAGING_GetPhysicalAddress(addr) &
-		                           vgapages.mask);
+		return readb_physical(PAGING_GetPhysicalAddress(addr));
+	}
+
+	uint8_t readb_physical(PhysPt addr) override
+	{
+		addr = static_cast<PhysPt>(addr & vgapages.mask);
 		addr = static_cast<PhysPt>(addr + vga.svga.bank_read_full);
 		addr = static_cast<PhysPt>(CHECKED(addr));
 		return readHandler_byte(addr);
@@ -513,8 +533,12 @@ public:
 	void writeb(PhysPt addr, uint8_t val) override
 	{
 		write_delay();
-		addr = static_cast<PhysPt>(PAGING_GetPhysicalAddress(addr) &
-		                           vgapages.mask);
+		writeb_physical(PAGING_GetPhysicalAddress(addr), val);
+	}
+
+	void writeb_physical(PhysPt addr, uint8_t val) override
+	{
+		addr = static_cast<PhysPt>(addr & vgapages.mask);
 		addr = static_cast<PhysPt>(addr + vga.svga.bank_write_full);
 		addr = static_cast<PhysPt>(CHECKED(addr));
 		MEM_CHANGED(addr);
@@ -584,8 +608,12 @@ public:
 	void writeb(PhysPt addr, uint8_t val) override
 	{
 		write_delay();
-		addr = static_cast<PhysPt>(PAGING_GetPhysicalAddress(addr) &
-		                           vgapages.mask);
+		writeb_physical(PAGING_GetPhysicalAddress(addr), val);
+	}
+
+	void writeb_physical(PhysPt addr, uint8_t val) override
+	{
+		addr = static_cast<PhysPt>(addr & vgapages.mask);
 		addr = static_cast<PhysPt>(addr + vga.svga.bank_write_full);
 		addr = static_cast<PhysPt>(CHECKED2(addr));
 		MEM_CHANGED(addr << 2);
@@ -629,8 +657,12 @@ public:
 	uint8_t readb(PhysPt addr) override
 	{
 		read_delay();
-		addr = static_cast<PhysPt>(PAGING_GetPhysicalAddress(addr) &
-		                           vgapages.mask);
+		return readb_physical(PAGING_GetPhysicalAddress(addr));
+	}
+
+	uint8_t readb_physical(PhysPt addr) override
+	{
+		addr = static_cast<PhysPt>(addr & vgapages.mask);
 		switch (vga.gfx.read_map_select) {
 		case 0: // character index
 			return vga.mem.linear[CHECKED3(vga.svga.bank_read_full + addr)];
@@ -646,8 +678,12 @@ public:
 	void writeb(PhysPt addr, uint8_t val) override
 	{
 		write_delay();
-		addr = static_cast<PhysPt>(PAGING_GetPhysicalAddress(addr) &
-		                           vgapages.mask);
+		writeb_physical(PAGING_GetPhysicalAddress(addr), val);
+	}
+
+	void writeb_physical(PhysPt addr, uint8_t val) override
+	{
+		addr = static_cast<PhysPt>(addr & vgapages.mask);
 
 		if (vga.seq.map_mask == 0x4) {
 			vga.draw.font[addr] = val;
@@ -693,8 +729,12 @@ public:
 	uint8_t readb(PhysPt addr) override
 	{
 		read_delay();
-		addr = static_cast<PhysPt>(PAGING_GetPhysicalAddress(addr) &
-		                           vgapages.mask);
+		return readb_physical(PAGING_GetPhysicalAddress(addr));
+	}
+
+	uint8_t readb_physical(PhysPt addr) override
+	{
+		addr = static_cast<PhysPt>(addr & vgapages.mask);
 		addr = static_cast<PhysPt>(addr + vga.svga.bank_read_full);
 		addr = static_cast<PhysPt>(CHECKED(addr));
 		return host_readb(&vga.mem.linear[addr]);
@@ -723,8 +763,12 @@ public:
 	void writeb(PhysPt addr, uint8_t val) override
 	{
 		write_delay();
-		addr = static_cast<PhysPt>(PAGING_GetPhysicalAddress(addr) &
-		                           vgapages.mask);
+		writeb_physical(PAGING_GetPhysicalAddress(addr), val);
+	}
+
+	void writeb_physical(PhysPt addr, uint8_t val) override
+	{
+		addr = static_cast<PhysPt>(addr & vgapages.mask);
 		addr = static_cast<PhysPt>(addr + vga.svga.bank_write_full);
 		addr = static_cast<PhysPt>(CHECKED(addr));
 		MEM_CHANGED(addr);
@@ -763,8 +807,12 @@ public:
 	void writeb(PhysPt addr, uint8_t val) override
 	{
 		write_delay();
-		addr = static_cast<PhysPt>(vga.svga.bank_write_full +
-		                           (PAGING_GetPhysicalAddress(addr) & 0xffff));
+		writeb_physical(PAGING_GetPhysicalAddress(addr), val);
+	}
+
+	void writeb_physical(PhysPt addr, uint8_t val) override
+	{
+		addr = static_cast<PhysPt>(vga.svga.bank_write_full + (addr & 0xffff));
 		addr = static_cast<PhysPt>(CHECKED4(addr));
 		MEM_CHANGED(addr << 3);
 		writeHandler(addr + 0, (uint8_t)(val >> 0));
@@ -797,8 +845,12 @@ public:
 	uint8_t readb(PhysPt addr) override
 	{
 		read_delay();
-		addr = static_cast<PhysPt>(vga.svga.bank_read_full +
-		                           (PAGING_GetPhysicalAddress(addr) & 0xffff));
+		return readb_physical(PAGING_GetPhysicalAddress(addr));
+	}
+
+	uint8_t readb_physical(PhysPt addr) override
+	{
+		addr = static_cast<PhysPt>(vga.svga.bank_read_full + (addr & 0xffff));
 		addr = static_cast<PhysPt>(CHECKED4(addr));
 		return readHandler(addr);
 	}
@@ -836,8 +888,12 @@ public:
 	uint8_t readb(PhysPt addr) override
 	{
 		read_delay();
-		addr = static_cast<PhysPt>(PAGING_GetPhysicalAddress(addr) -
-		                           vga.lfb.addr);
+		return readb_physical(PAGING_GetPhysicalAddress(addr));
+	}
+
+	uint8_t readb_physical(PhysPt addr) override
+	{
+		addr = static_cast<PhysPt>(addr - vga.lfb.addr);
 		addr = static_cast<PhysPt>(CHECKED(addr));
 		return host_readb(&vga.mem.linear[addr]);
 	}
@@ -863,8 +919,12 @@ public:
 	void writeb(PhysPt addr, uint8_t val) override
 	{
 		write_delay();
-		addr = static_cast<PhysPt>(PAGING_GetPhysicalAddress(addr) -
-		                           vga.lfb.addr);
+		writeb_physical(PAGING_GetPhysicalAddress(addr), val);
+	}
+
+	void writeb_physical(PhysPt addr, uint8_t val) override
+	{
+		addr = static_cast<PhysPt>(addr - vga.lfb.addr);
 		addr = static_cast<PhysPt>(CHECKED(addr));
 		host_writeb(&vga.mem.linear[addr], val);
 		MEM_CHANGED(addr);
@@ -921,7 +981,12 @@ public:
 	void writeb(PhysPt addr, uint8_t val) override
 	{
 		write_delay();
-		Bitu port = PAGING_GetPhysicalAddress(addr) & 0xffff;
+		writeb_physical(PAGING_GetPhysicalAddress(addr), val);
+	}
+
+	void writeb_physical(PhysPt addr, uint8_t val) override
+	{
+		Bitu port = addr & 0xffff;
 		XGA_Write(static_cast<io_port_t>(port), val, io_width_t::byte);
 	}
 
@@ -942,7 +1007,12 @@ public:
 	uint8_t readb(PhysPt addr) override
 	{
 		read_delay();
-		Bitu port = PAGING_GetPhysicalAddress(addr) & 0xffff;
+		return readb_physical(PAGING_GetPhysicalAddress(addr));
+	}
+
+	uint8_t readb_physical(PhysPt addr) override
+	{
+		Bitu port = addr & 0xffff;
 		return static_cast<uint8_t>(
 		        XGA_Read(static_cast<io_port_t>(port), io_width_t::byte));
 	}

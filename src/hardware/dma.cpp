@@ -84,17 +84,29 @@ static void perform_dma_io(const DmaDirection direction, const PhysPt spage,
 		// Determine how many bytes to transfer within this page
 		const auto chunk_bytes = std::min(remaining_bytes, bytes_to_page_end);
 
-		// Copy the data from the page address into the data pointer
+		// Preserve device mappings without applying CPU page translation.
+		const auto handler = MEM_GetPageHandler(page);
 		if (direction == DmaDirection::Read) {
+			const auto host = (handler->flags & PFLAG_READABLE)
+			                        ? handler->GetHostReadPt(page)
+			                        : nullptr;
 			for (uint32_t i = 0; i < chunk_bytes; ++i) {
-				data_pt[i] = phys_readb(chunk_start + i);
+				data_pt[i] = host ? host_readb(host + pos_in_page + i)
+				                  : handler->readb_physical(
+				                            chunk_start + i);
 			}
-		}
-
-		// Copy the data from the data pointer into the page address
-		else if (direction == DmaDirection::Write) {
+		} else if (direction == DmaDirection::Write) {
+			const auto host = (handler->flags & PFLAG_WRITEABLE)
+			                        ? handler->GetHostWritePt(page)
+			                        : nullptr;
 			for (uint32_t i = 0; i < chunk_bytes; ++i) {
-				phys_writeb(chunk_start + i, data_pt[i]);
+				if (host) {
+					host_writeb(host + pos_in_page + i,
+					            data_pt[i]);
+				} else {
+					handler->writeb_physical(chunk_start + i,
+					                         data_pt[i]);
+				}
 			}
 		}
 
