@@ -7,7 +7,9 @@
 #include <cassert>
 #include <cmath>
 #include <limits>
+#include <map>
 #include <memory>
+#include <tuple>
 #include <utility>
 #include <vector>
 
@@ -103,6 +105,11 @@ struct Controller {
 	bool sector_transfer_ready                = false;
 	double sector_end_ms                      = 0;
 	uint64_t sector_sample_turn               = 0;
+	std::map<std::tuple<uint8_t, uint8_t, uint64_t>, std::vector<FloppySector>>
+	        track_samples                     = {};
+	uint64_t track_cycle                      = 0;
+	FloppySector selected_field               = {};
+	FloppySector wrong_field                  = {};
 	const FloppySector* track_sector          = nullptr;
 	const FloppySector* wrong_cylinder_sector = nullptr;
 	Phase phase                               = Phase::Command;
@@ -318,6 +325,31 @@ bool sample_sector_data(const FloppySector& sector, std::vector<uint8_t>& sample
 	                                                rotation_cycle_ms()));
 }
 
+uint64_t rotation_capture_cycle()
+{
+	return static_cast<uint64_t>(rotation_elapsed_ms() / rotation_cycle_ms());
+}
+
+const std::vector<FloppySector>& sampled_track(const uint64_t cycle)
+{
+	std::erase_if(fdc.track_samples, [cycle](const auto& entry) {
+		const auto sampled_cycle = std::get<2>(entry.first);
+		return sampled_cycle < cycle && cycle - sampled_cycle > 1;
+	});
+	auto [entry, inserted] = fdc.track_samples.try_emplace(
+	        std::tuple{fdc.cylinder, fdc.head, cycle});
+	if (inserted) {
+		entry->second = fdc.media->SampleTrack(fdc.cylinder, fdc.head, cycle);
+	}
+	return entry->second;
+}
+
+void select_field(const FloppySector& sector)
+{
+	fdc.selected_field = sector;
+	fdc.track_sector   = &fdc.selected_field;
+}
+
 void complete_read_id(uint32_t)
 {
 	if (!media_ready(selected_unit())) {
@@ -347,7 +379,6 @@ void missing_sector(uint32_t)
 void schedule_track_sector(const FloppyMedia& image, const bool read_id)
 {
 	fdc.sector_transfer_ready = false;
-	const auto track          = image.GetTrack(fdc.cylinder, fdc.head);
 	const auto position_ms    = rotation_ms();
 	const auto cycle_ms       = image.GetCycleMs(fdc.cylinder, fdc.head);
 	const auto ends  = image.GetRevolutionEnds(fdc.cylinder, fdc.head);
@@ -367,31 +398,40 @@ void schedule_track_sector(const FloppyMedia& image, const bool read_id)
 	fdc.missing_address_mark  = true;
 	fdc.wrong_cylinder_sector = nullptr;
 	auto wrong_delay_ms       = timeout_ms;
-	for (const auto& candidate : track) {
-		const auto offset_ms = candidate.cycle_fraction * cycle_ms;
-		const auto wait_ms   = offset_ms > position_ms
-		                             ? offset_ms - position_ms
-		                             : cycle_ms + offset_ms - position_ms;
-		if (wait_ms >= timeout_ms) {
-			continue;
-		}
-		fdc.missing_address_mark = false;
-		if (!read_id && (candidate.head != fdc.command[3] ||
-		                 candidate.id != fdc.sector ||
-		                 candidate.size_code != fdc.command[5])) {
-			continue;
-		}
-		if (!read_id && candidate.cylinder != fdc.command[2]) {
-			if (!candidate.id_crc_error &&
-			    (!fdc.wrong_cylinder_sector || wait_ms < wrong_delay_ms)) {
-				fdc.wrong_cylinder_sector = &candidate;
-				wrong_delay_ms            = wait_ms;
+	const auto current_cycle  = rotation_capture_cycle();
+	for (auto cycle = current_cycle; cycle <= current_cycle + 1; ++cycle) {
+		for (const auto& candidate : sampled_track(cycle)) {
+			const auto wait_ms = (candidate.cycle_fraction +
+			                      static_cast<double>(
+			                              cycle - current_cycle)) *
+			                             cycle_ms -
+			                     position_ms;
+			if (wait_ms <= 0) {
+				continue;
 			}
-			continue;
-		}
-		if (!fdc.track_sector || wait_ms < delay_ms) {
-			fdc.track_sector = &candidate;
-			delay_ms         = wait_ms;
+			if (wait_ms >= timeout_ms) {
+				continue;
+			}
+			fdc.missing_address_mark = false;
+			if (!read_id && (candidate.head != fdc.command[3] ||
+			                 candidate.id != fdc.sector ||
+			                 candidate.size_code != fdc.command[5])) {
+				continue;
+			}
+			if (!read_id && candidate.cylinder != fdc.command[2]) {
+				if (!candidate.id_crc_error &&
+				    (!fdc.wrong_cylinder_sector ||
+				     wait_ms < wrong_delay_ms)) {
+					fdc.wrong_field = candidate;
+					fdc.wrong_cylinder_sector = &fdc.wrong_field;
+					wrong_delay_ms = wait_ms;
+				}
+				continue;
+			}
+			if (!fdc.track_sector || wait_ms < delay_ms) {
+				select_field(candidate);
+				delay_ms = wait_ms;
+			}
 		}
 	}
 	const auto event = fdc.track_sector
@@ -474,7 +514,7 @@ void transfer_track_sector(uint32_t);
 
 void finish_track_sector(const bool terminal_count, const double elapsed_ms)
 {
-	const auto track   = fdc.media->GetTrack(fdc.cylinder, fdc.head);
+	const auto& track  = sampled_track(fdc.track_cycle);
 	const auto& sector = track[fdc.track_offset];
 	if (terminal_count) {
 		finish_data(fdc.track_status_1, fdc.track_status_2, true);
@@ -488,18 +528,33 @@ void finish_track_sector(const bool terminal_count, const double elapsed_ms)
 		// Resume searching at the physical position reached by the read.
 		const auto cycle    = rotation_cycle_ms();
 		const auto position = rotation_ms();
-		auto delay_ms       = cycle;
-		for (size_t i = 0; i < track.size(); ++i) {
-			const auto offset_ms = track[i].cycle_fraction * cycle;
-			const auto wait_ms   = offset_ms > position
-			                             ? offset_ms - position
-			                             : cycle + offset_ms - position;
-			if (wait_ms < delay_ms) {
-				delay_ms         = wait_ms;
-				fdc.track_offset = i;
+		auto delay_ms            = cycle;
+		const auto current_cycle = rotation_capture_cycle();
+		bool found               = false;
+		for (auto next_cycle = current_cycle;
+		     next_cycle <= current_cycle + 1;
+		     ++next_cycle) {
+			const auto& next_track = sampled_track(next_cycle);
+			for (size_t i = 0; i < next_track.size(); ++i) {
+				const auto wait_ms = (next_track[i].cycle_fraction +
+				                      static_cast<double>(
+				                              next_cycle -
+				                              current_cycle)) *
+				                             cycle -
+				                     position;
+				if (wait_ms > 0 && wait_ms < delay_ms) {
+					delay_ms         = wait_ms;
+					fdc.track_cycle  = next_cycle;
+					fdc.track_offset = i;
+					fdc.track_revolution = next_track[i].revolution;
+					found = true;
+				}
 			}
 		}
-		fdc.track_revolution = track[fdc.track_offset].revolution;
+		if (!found) {
+			finish_data(fdc.track_status_1 | 0x01, fdc.track_status_2);
+			return;
+		}
 		PIC_AddEvent(transfer_track_sector, delay_ms);
 	} else {
 		++fdc.track_offset;
@@ -523,7 +578,7 @@ void transfer_track_sector(uint32_t)
 		finish_data(0x04);
 		return;
 	}
-	const auto track = fdc.media->GetTrack(fdc.cylinder, fdc.head);
+	const auto& track = sampled_track(fdc.track_cycle);
 	if (fdc.track_offset >= track.size() ||
 	    track[fdc.track_offset].revolution != fdc.track_revolution) {
 		const auto has_id = std::ranges::any_of(track, [](const auto& sector) {
@@ -534,7 +589,7 @@ void transfer_track_sector(uint32_t)
 		return;
 	}
 	const auto& sector = track[fdc.track_offset];
-	fdc.track_sector   = &sector;
+	select_field(sector);
 	if (sector.data.empty()) {
 		finish_data(fdc.track_status_1 | 0x01, fdc.track_status_2 | 0x01);
 		return;
@@ -1116,6 +1171,7 @@ void start_data(const Command command)
 		finish_data(0x04);
 		return;
 	}
+	fdc.track_samples.clear();
 	fdc.phase = Phase::Execution;
 	if (command == Command::FormatTrack) {
 		fdc.formatted_ids = 0;
@@ -1165,7 +1221,6 @@ void start_loaded_data(uint32_t)
 		}
 		fdc.track_status_1 = 0;
 		fdc.track_status_2 = 0;
-		const auto track   = image->GetTrack(fdc.cylinder, fdc.head);
 		const auto ends = image->GetRevolutionEnds(fdc.cylinder, fdc.head);
 		const auto cycle    = rotation_cycle_ms();
 		const auto position = rotation_ms() / cycle;
@@ -1175,6 +1230,9 @@ void start_loaded_data(uint32_t)
 		                                    position);
 		const auto next  = check_cast<size_t>(index - ends.begin()) + 1;
 		fdc.track_revolution = next % ends.size();
+		fdc.track_cycle      = rotation_capture_cycle() +
+		                  (next == ends.size() ? 1u : 0u);
+		const auto& track    = sampled_track(fdc.track_cycle);
 		const auto first     = std::lower_bound(
                         track.begin(),
                         track.end(),

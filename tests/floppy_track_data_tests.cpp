@@ -60,3 +60,34 @@ TEST(FloppyTrackData, KeepByteCadenceAcrossEmbeddedSyncMarks)
 		EXPECT_EQ(sampled, std::vector<uint8_t>(3, expected[i]));
 	}
 }
+
+TEST(FloppyTrackData, SampleWeakCellsBeforeFieldDecoding)
+{
+	FloppyMfmTrack raw = {};
+	raw.cells.assign(32, 0xff);
+	raw.bit_count            = 256;
+	raw.index                = 5;
+	raw.revolution_ends_bits = {128, 256};
+	raw.weak_cells.resize(raw.bit_count);
+	raw.weak_cells[0]            = true;
+	raw.weak_cells[7]            = true;
+	const auto original          = raw.cells;
+	std::array<bool, 4> observed = {};
+	for (uint64_t cycle = 0; cycle < 64; ++cycle) {
+		const auto first    = raw.Sample(cycle);
+		const auto repeated = raw.Sample(cycle);
+		EXPECT_EQ(first->cells, repeated->cells);
+		EXPECT_EQ(first->index, raw.index);
+		EXPECT_EQ(first->revolution_ends_bits, raw.revolution_ends_bits);
+		EXPECT_TRUE(first->weak_cells.empty());
+		EXPECT_EQ(first->cells[0] & 0x7e, 0x7e);
+		EXPECT_TRUE(std::equal(first->cells.begin() + 1,
+		                       first->cells.end(),
+		                       original.begin() + 1));
+		observed[((first->cells[0] >> 6) & 2) | (first->cells[0] & 1)] = true;
+	}
+	EXPECT_TRUE(std::ranges::all_of(observed,
+	                                [](const auto value) { return value; }));
+	EXPECT_EQ(raw.cells, original);
+	EXPECT_TRUE(raw.weak_cells[0]);
+}
