@@ -14,26 +14,26 @@ from run_transcopy_layout_probe import run_guest
 
 SYNC = b"\x44\x89" * 3
 
-def byte_at(cells, offset):
-    """Decode one aligned MFM byte with circular access."""
-    word = cells[offset % len(cells)] * 256 + cells[(offset + 1) % len(cells)]
-    value = 0
-    for shift in range(14, -1, -2):
-        value = value * 2 + ((word >> shift) & 1)
-    return value
-
 def oracle(cells):
-    """Validate payloads/CRCs on the full continuous capture, across both indexes."""
+    """Validate full-stream CRCs at arbitrary cell alignment."""
+    bits = ''.join(f'{byte:08b}' for byte in cells)
+    repeated = bits + bits
+    pattern = '0100010010001001' * 3
     fields = []
-    for offset in range(len(cells)):
-        if cells[offset:offset+6] != SYNC or byte_at(cells, offset + 6) != 0xfb:
-            continue
-        data = bytes(byte_at(cells, offset + 8 + 2*i) for i in range(512))
-        recorded = byte_at(cells, offset + 1032)*256 + byte_at(cells, offset + 1034)
-        expected = crc_hqx(b'\xa1'*3 + b'\xfb' + data, 0xffff)
-        assert recorded == expected, (offset, recorded, expected)
-        assert len(set(data)) == 1
-        fields.append(data[0])
+    offset = 0
+    while True:
+        offset = bits.find(pattern, offset)
+        if offset < 0:
+            break
+        def decoded(position):
+            return int(repeated[position:position+16][1::2], 2)
+        if decoded(offset + 48) == 0xfb:
+            data = bytes(decoded(offset + 64 + 16*i) for i in range(512))
+            recorded = decoded(offset + 8256)*256 + decoded(offset + 8272)
+            assert recorded == crc_hqx(b'\xa1'*3 + b'\xfb' + data, 0xffff)
+            assert len(set(data)) == 1
+            fields.append(data[0])
+        offset += 1
     assert len(fields) == 2
     return fields
 
@@ -64,21 +64,25 @@ def scp_image(cells):
     pack_into('<I', image, 12, sum(image[16:]) & 0xffffffff)
     return image
 
-def make_capture(varied, crossing):
+def make_capture(varied, crossing, marker=0x12, index_shift_bits=0):
     """Rotate the entire capture, keeping fields intact across the physical indexes."""
-    first = make_track(((1, 0xfb, "", 0x12),), 2)
-    second = make_track(((1, 0xfb, "", 0x24 if varied else 0x12),), 2)
+    first = make_track(((1, 0xfb, "", marker),), 2)
+    second = make_track(((1, 0xfb, "", 0x24 if varied else marker),), 2)
     cells = first + second
     if crossing:
         data_sync = first.find(SYNC, first.find(SYNC) + 6)
         shift = data_sync + 8 + 256
         cells = cells[shift:] + cells[:shift]
+    if index_shift_bits:
+        bits = ''.join(f'{byte:08b}' for byte in cells)
+        bits = bits[index_shift_bits:] + bits[:index_shift_bits]
+        cells = bytearray(int(bits[i:i+8], 2) for i in range(0, len(bits), 8))
     markers = oracle(cells)
-    assert set(markers) == ({0x12, 0x24} if varied else {0x12})
+    assert set(markers) == ({marker, 0x24} if varied else {marker})
     return scp_image(cells)
 
 
-def check_direct(dosbox, nasm, directory, image):
+def check_direct(dosbox, nasm, directory, image, marker):
     """Read full fields through direct DMA Read Track as well as BIOS Read Data."""
     checks = RESET
     for index in range(2):
@@ -92,7 +96,7 @@ def check_direct(dosbox, nasm, directory, image):
     cmp byte [ids+2],0
     jne done
     mov bl,[buffer]
-    cmp bl,12h
+    cmp bl,{marker}
     je valid_{index}
     cmp bl,24h
     jne done
@@ -110,29 +114,36 @@ compare_{index}:
               extra_commands=("config -set cpu cpu_cycles=20000",))
 
 
+# pylint: disable-next=too-many-locals
 def main():
     """Check index-in-gap and constant-data controls, then varying cross-index data."""
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--dosbox", required=True, type=Path)
     parser.add_argument("--nasm", default="nasm")
+    parser.add_argument("--exact-index", action="store_true")
     args = parser.parse_args()
     with TemporaryDirectory() as temporary:
         directory = Path(temporary)
-        for name, varied, crossing in (
-            ("varied-gap", True, False), ("constant-crossing", False, True),
-            ("varied-crossing", True, True),
-        ):
+        cases = (("varied-gap", True, False, 0x12, 0),
+                 ("constant-crossing", False, True, 0x12, 0),
+                 ("varied-crossing", True, True, 0x12, 0))
+        if args.exact_index:
+            cases = (("exact-index-transition", False, True, 0x11, 0),
+                     ("index-between-transitions", False, True, 0x11, 1))
+        for name, varied, crossing, marker, phase in cases:
             image = directory / f"{name}.scp"
-            original = make_capture(varied, crossing)
+            original = make_capture(varied, crossing, marker, phase)
             image.write_bytes(original)
             samples, statuses, carry = read_samples(
                 args.dosbox.resolve(), args.nasm, directory, image)
             assert statuses == carry == [0] * 4
-            expected = {b"\x12" * 512, b"\x24" * 512} if varied else {b"\x12" * 512}
+            expected = {bytes([marker]) * 512}
+            if varied:
+                expected.add(bytes([0x24]) * 512)
             assert set(samples) == expected
             if varied:
                 assert all(first != second for first, second in zip(samples, samples[1:]))
-            check_direct(args.dosbox.resolve(), args.nasm, directory, image)
+            check_direct(args.dosbox.resolve(), args.nasm, directory, image, marker)
             samples, statuses, carry = read_samples(
                 args.dosbox.resolve(), args.nasm, directory, image, action="write")
             assert samples == [b"\x66" * 512] * 4
