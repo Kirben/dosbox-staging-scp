@@ -20,11 +20,50 @@ constexpr size_t DiskInfoOffset    = 0x100;
 constexpr size_t SkewTableOffset   = 0x105;
 constexpr size_t BlockTableOffset  = 0x305;
 constexpr size_t LengthTableOffset = 0x505;
+constexpr size_t FlagsTableOffset  = 0x705;
 constexpr size_t HeaderBytes       = 0x905;
 constexpr size_t MaxCylinders      = 128;
 constexpr size_t BlockBytes        = 256;
 constexpr size_t SkewTicksPerTurn  = 40'000;
 constexpr auto NoSkew              = 0x1111;
+
+enum class TransCopyType : uint8_t {
+	MfmHighDensity      = 0x02,
+	MfmDoubleDensity360 = 0x03,
+	FmSingleDensity     = 0x05,
+	MfmDoubleDensity    = 0x07,
+	AtariFm             = 0x0c,
+	Unknown             = 0xff,
+};
+
+bool is_pc_transcopy_type(const uint8_t type)
+{
+	switch (static_cast<TransCopyType>(type)) {
+	case TransCopyType::MfmHighDensity:
+	case TransCopyType::MfmDoubleDensity360:
+	case TransCopyType::FmSingleDensity:
+	case TransCopyType::MfmDoubleDensity:
+	case TransCopyType::AtariFm:
+	case TransCopyType::Unknown: return true;
+	default: return false;
+	}
+}
+
+int transcopy_rate_kbps(const uint8_t type, const size_t length)
+{
+	switch (static_cast<TransCopyType>(type)) {
+	case TransCopyType::MfmHighDensity:
+	case TransCopyType::MfmDoubleDensity360: return 500;
+	case TransCopyType::FmSingleDensity:
+	case TransCopyType::AtariFm:
+		// FM captures can use the native single-density clock or
+		// sample the same transitions at the double-density clock.
+		return length < 8000 ? 125 : 250;
+	case TransCopyType::MfmDoubleDensity: return 250;
+	case TransCopyType::Unknown: return length >= 18'000 ? 500 : 250;
+	default: return 0;
+	}
+}
 
 uint16_t read_le16(const std::span<const uint8_t> bytes, const size_t offset)
 {
@@ -62,7 +101,7 @@ std::optional<BitstreamCapture> ParseTransCopyCapture(const std::span<const uint
 		return fail("invalid TransCopy header or image size");
 	}
 	const auto type = bytes[DiskInfoOffset];
-	if (type != 0x02 && type != 0x03 && type != 0x07 && type != 0xff) {
+	if (!is_pc_transcopy_type(type)) {
 		return fail("unsupported TransCopy encoding");
 	}
 	const auto first = bytes[DiskInfoOffset + 1];
@@ -111,10 +150,20 @@ std::optional<BitstreamCapture> ParseTransCopyCapture(const std::span<const uint
 			}
 			extents.emplace_hint(next, offset, offset + length);
 
+			// Original captures can mix FM and MFM tracks. Missing
+			// track types and the unused-table sentinel defer to
+			// the disk type; bit 15 is an independent capture flag.
+			const auto flags = read_le16(bytes,
+			                             FlagsTableOffset + 2 * entry);
+			auto track_type = static_cast<uint8_t>((flags >> 8) & 0x7f);
+			if (track_type == 0 || track_type == 0x7f || flags == 0x4444) {
+				track_type = type;
+			}
+			if (!is_pc_transcopy_type(track_type)) {
+				return fail("unsupported TransCopy track encoding");
+			}
 			auto& track = capture.tracks[cylinder * heads + head];
-			const auto high_density = type == 0x02 || type == 0x03 ||
-			                          (type == 0xff && length >= 18'000);
-			const auto rate_kbps = high_density ? 500 : 250;
+			const auto rate_kbps = transcopy_rate_kbps(track_type, length);
 			const auto bit_count = size_t{length} * 8;
 			track.cycle_ms       = static_cast<double>(bit_count) /
 			                 (2 * rate_kbps);
