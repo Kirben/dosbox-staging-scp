@@ -9,10 +9,13 @@ from struct import pack, pack_into
 import subprocess
 from tempfile import TemporaryDirectory
 
+from floppy_fixture_cache import cached_fixture
+
 from run_hxc_mfm_probe import check_boot, check_fat, check_overlay_format, encode_track, launch
 from run_raw_floppy_read_probe import run_probe
 
 
+@cached_fixture
 def encode_86f(disk, verify_errors=False, *, write_protected=False, physical_hole=False):
     """Encode the raw fixture as an 86Box track image."""
     image = bytearray(8 + 512 * 4)

@@ -106,3 +106,6 @@ __pycache__
 
 # graft's local graph cache — regenerable, not committed (run `graft build`).
 /graft/
+
+# Local, one-use full-test validation for the pre-push gate
+/.floppy-full-validation.json

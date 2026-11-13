@@ -10,6 +10,8 @@ from struct import pack, pack_into, unpack_from
 import subprocess
 from tempfile import TemporaryDirectory
 
+from floppy_fixture_cache import cached_fixture
+
 from run_hxc_mfm_probe import check_boot, check_fat, encode_track, launch
 from run_raw_floppy_read_probe import run_probe
 
@@ -18,6 +20,7 @@ BIT_STRINGS = tuple(f"{value:08b}" for value in range(256))
 TRANSITION = re.compile("1")
 
 
+@cached_fixture
 # pylint: disable-next=R0914
 def encode_scp(disk, different_turns=False, duplicate_id=False, verify_errors=False):
     """Encode the raw fixture as a multi-revolution SCP capture."""
