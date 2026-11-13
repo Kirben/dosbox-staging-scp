@@ -629,7 +629,7 @@ static uint8_t format_floppy_track(imageDisk& disk, const uint8_t unit,
 	constexpr size_t IdSize = 4;
 	const auto table_size   = count * IdSize;
 	const auto address      = RealToPhysical(table);
-	const auto use_dma      = !is_machine_pcjr_or_tandy();
+	const auto use_dma      = !is_machine_pcjr();
 	if (use_dma && table_size > 0x10000u - (address & 0xffff)) {
 		return 0x09;
 	}
@@ -645,34 +645,25 @@ static uint8_t format_floppy_track(imageDisk& disk, const uint8_t unit,
 		return 0x01;
 	}
 	for (size_t i = IdSize - 1; i < table_size; i += IdSize) {
-		if (mem_readb(address + check_cast<PhysPt>(i)) != size_code) {
+		const auto id_size =
+		        use_dma ? mem_readb(address + check_cast<PhysPt>(i))
+		                : real_readb(RealSegment(table),
+		                             static_cast<uint16_t>(
+		                                     RealOffset(table) + i));
+		if (id_size != size_code) {
 			return 0x04;
 		}
 	}
-	if (use_dma) {
-		const auto gap = mem_readb(params + 7);
-		return FLOPPY_BiosDmaFormat(
-		        unit, cylinder, head, size_code, count, gap, fill, address);
-	}
-
-	// A pending FDC command can hold a pointer into the track being formatted.
-	if (!FLOPPY_CanStartBiosCommand()) {
-		return 0x80;
-	}
-	std::array<uint8_t, UINT8_MAX * IdSize> buffer = {};
-	const auto ids = std::span(buffer).first(table_size);
-	for (size_t i = 0; i < ids.size(); ++i) {
-		ids[i] = mem_readb(address + check_cast<PhysPt>(i));
-	}
-
-	switch (FLOPPY_FormatTrack(
-	        disk, disk_slots[unit].floppy.get(), cylinder, head, ids, fill, count, size_code)) {
-	case FloppyFormatResult::Success: return 0;
-	case FloppyFormatResult::WriteProtected: return 0x03;
-	case FloppyFormatResult::InvalidLayout: return 0x04;
-	case FloppyFormatResult::WriteError: return 0x20;
-	}
-	return 0x20;
+	const auto gap = mem_readb(params + 7);
+	return FLOPPY_BiosFormat(unit,
+	                         cylinder,
+	                         head,
+	                         size_code,
+	                         count,
+	                         gap,
+	                         fill,
+	                         address,
+	                         RealOffset(table));
 }
 
 struct DiskServiceRequest {

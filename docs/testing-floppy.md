@@ -10,7 +10,7 @@ python3 scripts/tools/test_floppy.py smoke --build /path/to/build
 python3 scripts/tools/test_floppy.py full --build /path/to/build
 ```
 
-`focused` runs the PCjr/Tandy BIOS transfer regressions. `smoke` exercises
+`focused` runs the PCjr/Tandy BIOS transfer and format regressions. `smoke` exercises
 all six image formats, sector contracts, FAT coherence, representative
 controller reads, and the cache/workflow checks. These groups are for iteration.
 `full` runs **every registered CTest test**, including the unit and floppy suites.

@@ -1784,10 +1784,10 @@ FloppyBiosTransferResult FLOPPY_BiosTransfer(
 	return {0, check_cast<uint8_t>(completed)};
 }
 
-uint8_t FLOPPY_BiosDmaFormat(const uint8_t unit, const uint32_t cylinder,
-                             const uint8_t head, const uint8_t size_code,
-                             const uint8_t count, const uint8_t gap,
-                             const uint8_t fill, const uint32_t address)
+uint8_t FLOPPY_BiosFormat(const uint8_t unit, const uint32_t cylinder,
+                          const uint8_t head, const uint8_t size_code,
+                          const uint8_t count, const uint8_t gap, const uint8_t fill,
+                          const uint32_t address, const uint16_t buffer_offset)
 {
 	if (unit > 1 || head > 1 || !count || size_code > 7) {
 		return 0x04;
@@ -1805,7 +1805,7 @@ uint8_t FLOPPY_BiosDmaFormat(const uint8_t unit, const uint32_t cylinder,
 	write_ccr(0x3f7, rate == 1000 ? 3 : (rate == 500 ? 0 : 2), io_width_t::byte);
 	const auto size     = check_cast<uint32_t>(count * FormatIdSize);
 	const auto transfer = bios_command(
-	        unit, cylinder, head, command, address, size, true, 3);
+	        unit, cylinder, head, command, address, size, true, 3, buffer_offset);
 	if (transfer.error) {
 		return transfer.error;
 	}
