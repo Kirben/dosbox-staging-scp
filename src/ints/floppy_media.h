@@ -28,6 +28,9 @@ struct FloppyMfmTrack {
 	// Cumulative cell boundaries when several captured turns share one stream.
 	std::vector<size_t> revolution_ends_bits = {};
 
+	void DetectWeakCells();
+	std::shared_ptr<FloppyMfmTrack> Sample(const uint64_t cycle) const;
+
 	size_t GetRevolutionBitCount(const size_t revolution) const
 	{
 		if (revolution_ends_bits.empty()) {
@@ -96,6 +99,14 @@ public:
 	                                const uint32_t head) const = 0;
 	virtual std::span<const FloppySector> GetTrack(const uint32_t cylinder,
 	                                               const uint32_t head) const = 0;
+	// Command-time field decoding is separate from the logical sector view.
+	virtual std::vector<FloppySector> SampleTrack(const uint32_t cylinder,
+	                                              const uint32_t head,
+	                                              const uint64_t) const
+	{
+		const auto sectors = GetTrack(cylinder, head);
+		return {sectors.begin(), sectors.end()};
+	}
 	virtual bool SupportsTrackWrites() const                   = 0;
 	virtual bool IsWriteProtected() const                      = 0;
 	virtual bool WriteSector(const uint32_t cylinder, const uint32_t head,

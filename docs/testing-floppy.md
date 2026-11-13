@@ -110,3 +110,26 @@ recognition and persistent overlays remain in the media adapter.
 
 Shared FAT-cache, timing, disk-change, and BIOS/CMOS reporting tests include
 IMG, IMA, SCP, MFM, 86F, and TransCopy.
+
+## Command-time track decoding
+
+The FDC uses `FloppyMedia::SampleTrack()` separately from the logical sector
+view. SCP retains its original transition stream and runs the existing data
+separator on the command path; writes switch subsequent reads to the modified
+raw cells. Bitstream captures sample weak cells before recognizing address marks,
+so CHRN bytes, ID CRCs, and ID/data sync visibility can change between turns.
+The FDC searches samples from the current and following capture cycle within
+its physical-index deadline. Read Track also refreshes its sample after a wrap.
+Selected fields retain physical slot identity for overlay writes.
+
+`Guest.FloppyWeakId` compares normal, weak-ID, weak-sync, initially hidden-sync,
+and weak-data-sync 86F tracks. It checks Read ID results and CRCs, Read Data
+matching, and untouched buffers when a sampled field is unavailable. A native
+sampling regression checks repeatability within a turn and preservation of
+unmarked cells. Existing multi-revolution, duplicate-write, weak-write, overlap,
+and persistence tests cover interaction with other media operations.
+
+This is command-time digital decoding, not an analogue drive simulation. The
+separator/noise model remains simplified, and programmed-rate mismatch behavior
+and cycle-accurate DMA/FIFO service remain separate work. The stable logical
+sector view used by DOS FAT does not acquire per-turn weak-field randomness.

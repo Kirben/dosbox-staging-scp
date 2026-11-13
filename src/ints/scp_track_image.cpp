@@ -150,6 +150,27 @@ std::shared_ptr<FloppyMfmTrack> recover_bitstream(const FluxTurn& turn,
 
 } // namespace
 
+struct FloppyTrackImage::FluxTrack {
+	std::vector<FluxTurn> turns = {};
+	double cell_ns              = 2000;
+};
+
+std::vector<FloppySector> FloppyTrackImage::DecodeFluxTrack(
+        const FluxTrack& flux, const std::span<const double> ends, const uint64_t cycle)
+{
+	std::vector<std::shared_ptr<FloppyMfmTrack>> raw = {};
+	for (const auto& turn : flux.turns) {
+		auto decoded = recover_bitstream(turn, flux.cell_ns);
+		if (!decoded || !decoded->bit_count) {
+			return {};
+		}
+		decoded->DetectWeakCells();
+		raw.push_back(
+		        decoded->Sample(cycle * flux.turns.size() + raw.size()));
+	}
+	return DecodeMfmRevolutions(raw, ends);
+}
+
 std::unique_ptr<FloppyTrackImage> FloppyTrackImage::LoadScp(FILE* file,
                                                             const std::string& path,
                                                             const bool read_only,
@@ -203,6 +224,7 @@ std::unique_ptr<FloppyTrackImage> FloppyTrackImage::LoadScp(FILE* file,
 		}
 		std::vector<FloppySector> decoded = {};
 		int best_score                    = 0;
+		double best_cell_ns               = CellTimesNs.front();
 		for (const auto cell_ns : CellTimesNs) {
 			std::vector<std::shared_ptr<FloppyMfmTrack>> revolutions = {};
 			for (const auto& turn : turns) {
@@ -210,6 +232,7 @@ std::unique_ptr<FloppyTrackImage> FloppyTrackImage::LoadScp(FILE* file,
 				if (!raw || !raw->bit_count) {
 					break;
 				}
+				raw->DetectWeakCells();
 				revolutions.push_back(std::move(raw));
 			}
 			if (revolutions.size() != turns.size()) {
@@ -231,12 +254,15 @@ std::unique_ptr<FloppyTrackImage> FloppyTrackImage::LoadScp(FILE* file,
 			    (decoded.empty() && !candidate.empty())) {
 				decoded    = std::move(candidate);
 				best_score = score;
+				best_cell_ns = cell_ns;
 			}
 		}
 		image->UpdateLogicalGeometry(static_cast<uint32_t>(index / 2),
 		                             static_cast<uint32_t>(index % 2),
 		                             decoded);
 		found_ids |= !decoded.empty();
+		track.flux = std::make_shared<FluxTrack>(
+		        FluxTrack{turns, best_cell_ns});
 		track.sectors = std::move(decoded);
 	}
 	if (!found_ids) {
@@ -718,7 +744,9 @@ bool FloppyTrackImage::WriteSector(const uint32_t cylinder, const uint32_t head,
 				const auto slot = check_cast<uint32_t>(
 				        candidate.overlay_slot);
 				copies[candidate.revolution].push_back(&candidate);
-				if (&candidate == selected) {
+				if (candidate.overlay_slot == selected->overlay_slot &&
+				    candidate.id_bit == selected->id_bit &&
+				    candidate.revolution == selected->revolution) {
 					selected_slot = slot;
 				}
 			}
@@ -884,6 +912,15 @@ void FloppyTrackImage::ApplyTrackFormat(const TrackAddress& address,
 	track.sectors       = std::move(sectors);
 	track.dirty         = true;
 	track.cells_changed = false;
+	track.flux.reset();
+	track.raw_tracks.clear();
+	for (const auto& sector : track.sectors) {
+		if (sector.mfm_track &&
+		    std::ranges::find(track.raw_tracks, sector.mfm_track) ==
+		            track.raw_tracks.end()) {
+			track.raw_tracks.push_back(sector.mfm_track);
+		}
+	}
 }
 
 FloppyTrackImage::FormatResult FloppyTrackImage::FormatTrack(
