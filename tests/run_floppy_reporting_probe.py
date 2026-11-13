@@ -10,6 +10,7 @@ import subprocess
 from tempfile import TemporaryDirectory
 
 from run_86f_attachment_probe import encode_86f
+from run_transcopy_attachment_probe import encode_transcopy
 from run_fat_floppy_cache_probe import fat12
 from run_hxc_mfm_probe import encode
 from run_scp_attachment_probe import encode_scp
@@ -26,7 +27,7 @@ def make_fixtures(folder, marker, odd_geometry):
         pack_into("<HH", disk, 24, 8, 1)
     for extension, encoder in (
         ("img", bytes), ("ima", bytes), ("scp", encode_scp),
-        ("mfm", encode), ("86f", encode_86f),
+        ("mfm", encode), ("86f", encode_86f), ("tc", encode_transcopy),
     ):
         (folder / f"disk.{extension}").write_bytes(encoder(disk))
 
@@ -103,7 +104,7 @@ def run_probe(exe, nasm, out):
     source = Path(__file__).with_name("floppy_reporting_probe.asm")
     subprocess.run([nasm, "-f", "bin", source, "-o", out / "REPORT.COM"], check=True)
     env = dict(os.environ, SDL_VIDEODRIVER="dummy", SDL_AUDIODRIVER="dummy")
-    for extension in ("img", "ima", "scp", "mfm", "86f"):
+    for extension in ("img", "ima", "scp", "mfm", "86f", "tc"):
         folder = out / extension
         folder.mkdir(exist_ok=True)
         first = out / "first" / f"disk.{extension}"

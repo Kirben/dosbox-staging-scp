@@ -11,6 +11,7 @@ import subprocess
 from tempfile import TemporaryDirectory
 
 from run_86f_attachment_probe import encode_86f
+from run_transcopy_attachment_probe import encode_transcopy
 from run_fat_floppy_cache_probe import fat12
 from run_hxc_mfm_probe import encode
 from run_scp_attachment_probe import encode_scp
@@ -99,7 +100,7 @@ def main():
         disk = timing_fixture()
         for extension, encoder in (
             ("img", bytes), ("ima", bytes), ("scp", encode_scp),
-            ("mfm", encode), ("86f", encode_86f),
+            ("mfm", encode), ("86f", encode_86f), ("tc", encode_transcopy),
         ):
             image = directory / f"disk.{extension}"
             original = encoder(disk)

@@ -11,6 +11,7 @@ import subprocess
 from tempfile import TemporaryDirectory
 
 from run_86f_attachment_probe import encode_86f
+from run_transcopy_attachment_probe import encode_transcopy
 from run_hxc_mfm_probe import encode, launch
 from run_scp_attachment_probe import encode_scp
 
@@ -94,7 +95,7 @@ def run_probe(dosbox, nasm, directory, extension, encoder, unit, writable):
     chain = files["chain.out"].read_bytes()
     assert len(chain) == 1028 and chain[1024:] == b"vfff"
     assert files["name.out"].stat().st_size == 512
-    if extension in ("scp", "mfm", "86f"):
+    if extension in ("scp", "mfm", "86f", "tc"):
         assert image.read_bytes() == capture
         assert image.with_suffix(f".{extension}.overlay").is_file()
     print(f".{extension}: open file data, directory and FAT chain refreshed, restart passed")
@@ -131,6 +132,7 @@ def main():
         ("img", bytes, 0, True), ("ima", bytes, 1, True),
         ("scp", encode_scp, 0, True), ("mfm", encode, 0, True),
         ("86f", encode_86f, 1, True),
+        ("tc", encode_transcopy, 0, True),
         ("86f", partial(encode_86f, write_protected=True), 0, False),
         ("86f", partial(encode_86f, physical_hole=True), 0, False),
     ):
