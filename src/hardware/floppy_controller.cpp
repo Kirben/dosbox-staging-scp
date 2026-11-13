@@ -128,6 +128,18 @@ uint16_t bios_data_rate(imageDisk& disk)
 	return type == 6 ? 1000 : (type == 2 || type == 4 ? 500 : 250);
 }
 
+// The BIOS consumes PCjr FIFO bytes as they become ready, while the
+// controller keeps its normal rotational, CRC and completion timing.
+struct BiosPioTransfer {
+	uint32_t base        = 0;
+	uint32_t size        = 0;
+	uint32_t transferred = 0;
+	uint16_t offset      = 0;
+	bool writing         = false;
+};
+BiosPioTransfer* bios_pio = nullptr;
+void service_bios_pio();
+
 Controller fdc              = {};
 bool irq_asserted           = false;
 uint8_t pcjr_dor            = 0;
@@ -421,6 +433,7 @@ void start_pio_transfer(const size_t size, const std::span<const uint8_t> source
 	fdc.irq_pending     = true;
 	update_irq();
 	PIC_AddEvent(pio_byte_event, pio_byte_ms);
+	service_bios_pio();
 }
 
 void transfer_track_sector(uint32_t);
@@ -1021,6 +1034,7 @@ void pio_byte_event(uint32_t)
 	fdc.irq_pending = true;
 	update_irq();
 	PIC_AddEvent(pio_byte_event, pio_byte_ms);
+	service_bios_pio();
 }
 
 void acknowledge_pio_byte()
@@ -1298,6 +1312,26 @@ io_val_t read_data(io_port_t, io_width_t)
 	return value;
 }
 
+void service_bios_pio()
+{
+	if (!bios_pio || !fdc.pio_ready || bios_pio->transferred >= bios_pio->size ||
+	    fdc.pio_writing != bios_pio->writing) {
+		return;
+	}
+	// The PCjr BIOS increments its 16-bit buffer offset within a fixed
+	// segment, rather than programming an 8237 physical-page boundary.
+	const auto address = bios_pio->base +
+	                     static_cast<uint16_t>(bios_pio->offset +
+	                                           bios_pio->transferred);
+	if (bios_pio->writing) {
+		write_data(0xf5, mem_readb(address), io_width_t::byte);
+	} else {
+		mem_writeb(address,
+		           check_cast<uint8_t>(read_data(0xf5, io_width_t::byte)));
+	}
+	++bios_pio->transferred;
+}
+
 io_val_t read_status(io_port_t, io_width_t)
 {
 	if (!(fdc.dor & ResetReleased)) {
@@ -1503,7 +1537,8 @@ BiosCommandResult bios_command(const uint8_t unit, const uint32_t cylinder,
                                const uint8_t head,
                                const std::span<const uint8_t> command,
                                const uint32_t address, const uint32_t size,
-                               const bool writing, const int revolutions)
+                               const bool writing, const int revolutions,
+                               const uint16_t buffer_offset = 0)
 {
 	if (!FLOPPY_CanStartBiosCommand()) {
 		return {.error = 0x80};
@@ -1515,8 +1550,9 @@ BiosCommandResult bios_command(const uint8_t unit, const uint32_t cylinder,
 		return {.error = 0x04};
 	}
 	constexpr auto MaskChannel = 0x04 | FloppyDma;
-	auto* dma                  = size ? DMA_GetChannel(FloppyDma) : nullptr;
-	if (size) {
+	const auto pcjr            = is_machine_pcjr();
+	auto* dma = size && !pcjr ? DMA_GetChannel(FloppyDma) : nullptr;
+	if (size && !pcjr) {
 		const auto offset = static_cast<uint16_t>(address);
 		if (!dma || size > 0x10000u - offset) {
 			return {.error = 0x09};
@@ -1538,14 +1574,20 @@ BiosCommandResult bios_command(const uint8_t unit, const uint32_t cylinder,
 	// position.
 	FLOPPY_SetDiskChanged(unit, false);
 	FLOPPY_BiosPosition(unit, check_cast<uint8_t>(cylinder));
-	fdc.non_dma = false;
+	const auto previous_non_dma  = fdc.non_dma;
+	fdc.non_dma                  = pcjr;
+	BiosPioTransfer pio_transfer = {
+	        address - buffer_offset, size, 0, buffer_offset, writing};
+	bios_pio = pcjr && size ? &pio_transfer : nullptr;
 
 	const auto track    = BIOS_GetFloppyMedia(unit);
 	const auto cycle_ms = track ? track->GetCycleMs(cylinder, head)
 	                            : StandardRevolutionMs;
 	const auto deadline = PIC_FullIndex() + revolutions * cycle_ms;
 	const auto mask     = IO_ReadB(0x21);
-	PIC_SetIRQMask(FloppyIrq, false);
+	if (!pcjr) {
+		PIC_SetIRQMask(FloppyIrq, false);
+	}
 	mem_writeb(BIOS_DRIVE_ACTIVE, mem_readb(BIOS_DRIVE_ACTIVE) & 0x7f);
 	for (const auto byte : command) {
 		write_data(0x3f5, byte, io_width_t::byte);
@@ -1556,10 +1598,14 @@ BiosCommandResult bios_command(const uint8_t unit, const uint32_t cylinder,
 	       !shutdown) {
 		shutdown = CALLBACK_Idle();
 	}
-	if (!shutdown && fdc.phase == Phase::Result && fdc.irq_pending) {
+	if (!pcjr && !shutdown && fdc.phase == Phase::Result && fdc.irq_pending) {
 		shutdown = CALLBACK_Idle();
 	}
-	PIC_SetIRQMask(FloppyIrq, (mask & (1u << FloppyIrq)) != 0);
+	bios_pio    = nullptr;
+	fdc.non_dma = previous_non_dma;
+	if (!pcjr) {
+		PIC_SetIRQMask(FloppyIrq, (mask & (1u << FloppyIrq)) != 0);
+	}
 	if (dma) {
 		IO_WriteB(0x0a, MaskChannel);
 	}
@@ -1572,6 +1618,7 @@ BiosCommandResult bios_command(const uint8_t unit, const uint32_t cylinder,
 	}
 
 	BiosCommandResult result = {};
+	result.transferred       = pio_transfer.transferred;
 	for (auto& byte : result.status) {
 		byte = check_cast<uint8_t>(read_data(0x3f5, io_width_t::byte));
 	}
@@ -1595,7 +1642,7 @@ static FloppyBiosTransferResult bios_transfer_track(
         const FloppyBiosTransfer operation, const uint8_t unit,
         const uint32_t cylinder, const uint8_t head, const uint8_t sector,
         const uint8_t size_code, const uint8_t count, const uint8_t gap,
-        const uint32_t address)
+        const uint32_t address, const uint16_t buffer_offset)
 {
 	const auto last_sector = sector + count - 1;
 	if (!count || last_sector > UINT8_MAX || size_code > 7 || unit > 1 ||
@@ -1620,15 +1667,19 @@ static FloppyBiosTransferResult bios_transfer_track(
 	const auto sector_size               = 128u << size_code;
 	const auto size   = verifying ? 0u : count * sector_size;
 	const auto result = bios_command(
-	        unit, cylinder, head, command, address, size, writing, 3 + count);
+	        unit, cylinder, head, command, address, size, writing, 3 + count, buffer_offset);
 	if (result.error) {
 		return {result.error, 0};
 	}
 
-	const auto st0          = result.status[0];
-	const auto st1          = result.status[1];
-	const auto st2          = result.status[2];
-	const auto failed       = (st0 & 0xc0) || st1 || st2;
+	const auto st0 = result.status[0];
+	const auto st1 = result.status[1];
+	const auto st2 = result.status[2];
+	// Non-DMA transfers stop at EOT without a DMA terminal-count input.
+	const auto pio_end = is_machine_pcjr() && !verifying && st1 == 0x80 &&
+	                     !st2 && result.transferred == size &&
+	                     result.status[5] == last_sector;
+	const auto failed       = ((st0 & 0xc0) || st1 || st2) && !pio_end;
 	const auto before_error = std::clamp(result.status[5] - sector,
 	                                     0,
 	                                     static_cast<int>(count));
@@ -1663,7 +1714,7 @@ FloppyBiosTransferResult FLOPPY_BiosTransfer(
         const FloppyBiosTransfer operation, const uint8_t unit,
         const uint32_t cylinder, const uint8_t head, const uint8_t sector,
         const uint8_t size_code, const uint8_t count, const uint8_t gap,
-        const uint32_t address)
+        const uint32_t address, const uint16_t buffer_offset)
 {
 	const auto disk = BIOS_GetDisk(unit);
 	if (!disk || !count || size_code > 7 || head >= disk->heads) {
@@ -1671,7 +1722,8 @@ FloppyBiosTransferResult FLOPPY_BiosTransfer(
 	}
 
 	const auto sector_size = 128u << size_code;
-	const auto dma         = operation != FloppyBiosTransfer::Verify;
+	const auto has_data    = operation != FloppyBiosTransfer::Verify;
+	const auto dma         = has_data && !is_machine_pcjr();
 	if (dma && count * sector_size > 0x10000u - (address & 0xffff)) {
 		return {0x09, 0};
 	}
@@ -1687,7 +1739,8 @@ FloppyBiosTransferResult FLOPPY_BiosTransfer(
 		                           size_code,
 		                           count,
 		                           gap,
-		                           address);
+		                           address,
+		                           buffer_offset);
 	}
 	const auto end_of_track = std::min(disk->sectors, 255u);
 	auto current_cylinder   = cylinder;
@@ -1701,16 +1754,21 @@ FloppyBiosTransferResult FLOPPY_BiosTransfer(
 
 		const auto run    = std::min(count - completed,
                                           end_of_track - current_sector + 1);
-		const auto result = bios_transfer_track(
-		        operation,
-		        unit,
-		        current_cylinder,
-		        check_cast<uint8_t>(current_head),
-		        check_cast<uint8_t>(current_sector),
-		        size_code,
-		        check_cast<uint8_t>(run),
-		        gap,
-		        dma ? address + completed * sector_size : 0u);
+		const auto offset = static_cast<uint16_t>(
+		        buffer_offset + completed * sector_size);
+		const auto next_address = dma ? address + completed * sector_size
+		                              : address - buffer_offset + offset;
+		const auto result =
+		        bios_transfer_track(operation,
+		                            unit,
+		                            current_cylinder,
+		                            check_cast<uint8_t>(current_head),
+		                            check_cast<uint8_t>(current_sector),
+		                            size_code,
+		                            check_cast<uint8_t>(run),
+		                            gap,
+		                            has_data ? next_address : 0u,
+		                            has_data ? offset : uint16_t{0});
 		completed += result.sectors;
 		if (result.status || result.sectors != run) {
 			return {result.status ? result.status : uint8_t{0x04},
