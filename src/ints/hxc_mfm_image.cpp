@@ -393,18 +393,83 @@ std::vector<FloppySector> FloppyTrackImage::DecodeMfmTrack(
 	return sectors;
 }
 
-std::vector<FloppySector> FloppyTrackImage::FormatMfmTrack(
+std::vector<FloppySector> FloppyTrackImage::DecodeMfmRevolutions(
+        const std::span<const std::shared_ptr<FloppyMfmTrack>> revolutions,
+        const std::span<const double> ends)
+{
+	assert(!revolutions.empty() && revolutions.size() == ends.size());
+	if (revolutions.size() == 1) {
+		const auto& raw = revolutions.front();
+		return DecodeMfmTrack(raw->cells, raw->bit_count, raw->index, false, raw);
+	}
+	auto raw = std::make_shared<FloppyMfmTrack>();
+	for (const auto& turn : revolutions) {
+		raw->bit_count += turn->bit_count;
+		raw->revolution_ends_bits.push_back(raw->bit_count);
+	}
+	raw->cells.resize((raw->bit_count + 7) / 8);
+	if (std::ranges::any_of(revolutions, [](const auto& turn) {
+		    return !turn->weak_cells.empty();
+	    })) {
+		raw->weak_cells.resize(raw->bit_count);
+	}
+	size_t position = 0;
+	for (const auto& turn : revolutions) {
+		for (size_t bit = 0; bit < turn->bit_count; ++bit, ++position) {
+			const auto source = (bit + turn->index) % turn->bit_count;
+			if (bit_at({turn->cells, turn->bit_count}, source)) {
+				raw->cells[position / 8] |= check_cast<uint8_t>(
+				        0x80u >> (position % 8));
+			}
+			if (!turn->weak_cells.empty()) {
+				raw->weak_cells[position] = turn->weak_cells[source];
+			}
+		}
+	}
+	auto sectors = DecodeMfmTrack(raw->cells, raw->bit_count, 0, false, raw);
+	for (auto& sector : sectors) {
+		const auto next = std::upper_bound(raw->revolution_ends_bits.begin(),
+		                                   raw->revolution_ends_bits.end(),
+		                                   sector.id_bit);
+		sector.revolution = check_cast<size_t>(
+		        next - raw->revolution_ends_bits.begin());
+		const auto start_bit =
+		        sector.revolution
+		                ? raw->revolution_ends_bits[sector.revolution - 1]
+		                : 0;
+		const auto start_time = sector.revolution
+		                              ? ends[sector.revolution - 1]
+		                              : 0;
+		const auto duration   = ends[sector.revolution] - start_time;
+		sector.cycle_fraction =
+		        start_time +
+		        duration * static_cast<double>(sector.id_bit - start_bit) /
+		                static_cast<double>(raw->GetRevolutionBitCount(
+		                        sector.revolution));
+	}
+	return sectors;
+}
+
+std::shared_ptr<FloppyMfmTrack> FloppyTrackImage::FormatMfmTrack(
         const std::span<const FloppySector> previous, const size_t revolution,
         const double duration_ms, const TrackFormat& format)
 {
 	const auto found = std::ranges::find_if(previous, [&](const auto& sector) {
-		return sector.revolution == revolution && sector.mfm_track;
+		return sector.mfm_track &&
+		       (sector.revolution == revolution ||
+		        sector.mfm_track->revolution_ends_bits.size() > revolution);
 	});
 	const auto source = found != previous.end() ? found->mfm_track : nullptr;
+	const auto source_bits = source ? source->GetRevolutionBitCount(revolution)
+	                                : 0;
+	const auto source_start = source && !source->revolution_ends_bits.empty() &&
+	                                          revolution
+	                                ? source->revolution_ends_bits[revolution - 1]
+	                                : 0;
 	const auto rate = format.rate_kbps ? format.rate_kbps : uint16_t{250};
 	auto bits = check_cast<size_t>(std::lround(duration_ms * 2 * rate));
 	if (!format.rate_kbps && source) {
-		bits = source->bit_count;
+		bits = source_bits;
 	}
 	auto captured       = std::make_shared<FloppyMfmTrack>();
 	captured->bit_count = bits;
@@ -424,11 +489,12 @@ std::vector<FloppySector> FloppyTrackImage::FormatMfmTrack(
 			// Keep suffix transition times when changing the cell
 			// clock.
 			const auto begin = check_cast<size_t>(
-			        uint64_t{bit} * source->bit_count / bits);
-			const auto end = check_cast<size_t>(
-			        (uint64_t{bit} + 1) * source->bit_count / bits);
+			        uint64_t{bit} * source_bits / bits);
+			const auto end = check_cast<size_t>((uint64_t{bit} + 1) *
+			                                    source_bits / bits);
 			for (auto old = begin; old < end; ++old) {
-				const auto index = (old + source->index) %
+				const auto index = (old + source_start +
+				                    source->index) %
 				                   source->bit_count;
 				value |= bit_at({source->cells, source->bit_count},
 				                index);
@@ -509,7 +575,7 @@ std::vector<FloppySector> FloppyTrackImage::FormatMfmTrack(
 		}
 		append_crc(crc);
 	}
-	return DecodeMfmTrack(captured->cells, bits, 0, false, captured);
+	return captured;
 }
 
 std::unique_ptr<FloppyTrackImage> FloppyTrackImage::FromBitstreamCapture(
