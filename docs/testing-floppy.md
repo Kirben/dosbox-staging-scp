@@ -176,6 +176,37 @@ while cylinders 80 and 81 fail with equipment check and leave one or two physica
 steps for the next recalibration. Motion interrupted by reset or motor loss
 still uses the controller's existing completion-time position model.
 
+### Byte-level DMA and FIFO timing
+
+`Guest.FloppyFifo` checks live channel-2 counter progress during Read Data,
+Read Track and Format Track. It checks threshold-dependent service latency,
+mask/unmask recovery, overruns, early terminal count before IRQ6, zero-filled
+write tails and restart persistence across IMG, IMA, SCP, MFM, 86F and TransCopy.
+The Read Track cases use captured-track formats. Enhanced non-DMA tests check
+RQM bursts, delayed CPU service, payloads and persistent writes. The probe also
+checks explicit FIFO disable and DOR reset returning to compatibility mode.
+
+DMA transfers service one byte per scheduled acknowledgement. The media side
+advances at its byte cadence, with completion held through the sector's CRC or
+format slot. The 16-byte FIFO is enabled with CONFIGURE (13h); EFIFO disables
+it and FIFOTHR selects its request threshold. Disabled mode has a one-byte
+buffer. The existing default PCjr non-DMA path retains its compatibility
+behavior; explicitly enabled FIFO mode also supports non-DMA transfers.
+
+A masked DMA channel can recover while the FIFO still has space or data.
+Overruns stop reads. Write underruns stop requests but clock a zero-filled
+remainder and valid CRC before committing the sector. Early terminal count
+retains its distinct completion status. Reset and motor loss cancel pending
+byte/service/completion events and prevent an unfinished sector from committing.
+Format Track consumes its ID bytes progressively and persists completed slots.
+
+This is an event-driven digital timing model. Its fixed 1.5-microsecond DMA
+service interval provides finite acknowledgements but does not model full 8237
+bus arbitration, CPU wait states or ISA bus cycles. CONFIGURE currently handles
+FIFO enable and threshold only; implied seek, polling and precompensation are
+not added by this change. LOCK, VERSION and other enhanced-controller commands
+remain separate work.
+
 ### Preserving recorded SCP intervals
 
 `Guest.FloppyScpNoFlux` reads a bad-CRC sector containing a long interval without

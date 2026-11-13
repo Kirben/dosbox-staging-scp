@@ -45,10 +45,32 @@ constexpr auto PcjrWatchdogMs = 3000.0;
 
 constexpr size_t FormatIdSize = 4;
 
+// A fixed DACK service interval models finite host service time, not ISA
+// arbitration.
+constexpr auto DmaServiceMs = 0.0015;
+constexpr size_t FifoSize   = 16;
+
+struct ByteTransfer {
+	std::vector<uint8_t> data          = {};
+	std::array<uint8_t, FifoSize> fifo = {};
+	size_t disk_offset                 = 0;
+	size_t host_offset                 = 0;
+	size_t first                       = 0;
+	size_t count                       = 0;
+	bool active                        = false;
+	bool writing                       = false;
+	bool request                       = false;
+	bool terminal_count                = false;
+	bool overrun                       = false;
+	bool service_pending               = false;
+	bool waiting_crc                   = false;
+};
+
 enum class Phase { Command, Execution, Result };
 enum class Command {
 	ReadTrack        = 0x02,
 	Specify          = 0x03,
+	Configure        = 0x13,
 	WriteData        = 0x05,
 	ReadData         = 0x06,
 	ReadDeletedData  = 0x0c,
@@ -79,6 +101,11 @@ struct Seek {
 };
 
 struct Controller {
+	ByteTransfer bytes      = {};
+	bool fifo_enabled       = false;
+	uint8_t fifo_threshold  = 0;
+	double transfer_byte_ms = 8.0 / DefaultDataRateKbps;
+
 	std::array<Drive, 2> drives                        = {};
 	std::array<Seek, 4> seeks                          = {};
 	std::array<uint8_t, 9> command                     = {};
@@ -199,6 +226,12 @@ bool media_ready(const size_t unit)
 }
 
 void pio_byte_event(uint32_t);
+void byte_transfer_event(uint32_t);
+void dma_fifo_event(uint32_t);
+void complete_byte_transfer(uint32_t);
+void refresh_fifo_request();
+void start_byte_transfer(const size_t size,
+                         const std::span<const uint8_t> source = {});
 void start_loaded_data(uint32_t);
 
 void begin_result(const size_t length, const bool interrupt)
@@ -230,6 +263,15 @@ void finish_data(const uint8_t status_1, const uint8_t status_2 = 0,
                  const bool terminal_count = false)
 {
 	PIC_RemoveEvents(pio_byte_event);
+	PIC_RemoveEvents(byte_transfer_event);
+	PIC_RemoveEvents(dma_fifo_event);
+	PIC_RemoveEvents(complete_byte_transfer);
+	if (fdc.bytes.active) {
+		if (auto* dma = DMA_GetChannel(FloppyDma); dma && !fdc.non_dma) {
+			dma->ClearRequest();
+		}
+		fdc.bytes = {};
+	}
 	PIC_RemoveEvents(start_loaded_data);
 	const auto unit = selected_unit();
 	if (unit < fdc.drives.size() && fdc.phase == Phase::Execution &&
@@ -600,12 +642,7 @@ void transfer_track_sector(uint32_t)
 		finish_data(fdc.track_status_1 | 0x01, fdc.track_status_2 | 0x01);
 		return;
 	}
-	auto* dma = DMA_GetChannel(FloppyDma);
-	if (!fdc.non_dma && (!dma || dma->is_masked || !dma->is_device_to_memory ||
-	                     !(fdc.dor & InterruptEnabled))) {
-		finish_data(fdc.track_status_1 | 0x10, fdc.track_status_2);
-		return;
-	}
+
 	const auto size             = size_t{128} << fdc.command[5];
 	fdc.track_physical_transfer = sector.mfm_track != nullptr;
 	if (fdc.track_physical_transfer && !fdc.track_transfer_ready) {
@@ -629,8 +666,9 @@ void transfer_track_sector(uint32_t)
 		        rotation_elapsed_ms() / rotation_cycle_ms());
 		fdc.track_transfer_ready = true;
 		fdc.sector_end_ms = PIC_FullIndex() + fdc.track_transfer_ms;
-		PIC_AddEvent(transfer_track_sector,
-		             fdc.non_dma ? header_ms : fdc.track_transfer_ms);
+		fdc.transfer_byte_ms     = (fdc.track_transfer_ms - header_ms) /
+		                       static_cast<double>(size + 2);
+		PIC_AddEvent(transfer_track_sector, header_ms);
 		return;
 	}
 	const auto extended = size > sector.data.size() &&
@@ -669,7 +707,12 @@ void transfer_track_sector(uint32_t)
 	if (sector.deleted) {
 		fdc.track_status_2 |= 0x40;
 	}
-	if (fdc.non_dma) {
+	if (!fdc.track_physical_transfer) {
+		fdc.transfer_byte_ms = pio_byte_ms;
+		fdc.sector_end_ms    = PIC_FullIndex() +
+		                    static_cast<double>(size + 2) * pio_byte_ms;
+	}
+	if (fdc.non_dma && !fdc.fifo_enabled) {
 		if (!fdc.track_physical_transfer) {
 			fdc.sector_end_ms = PIC_FullIndex() +
 			                    static_cast<double>(size + 2) * pio_byte_ms;
@@ -677,20 +720,7 @@ void transfer_track_sector(uint32_t)
 		start_pio_transfer(size, std::span(data).first(size));
 		return;
 	}
-	const auto remaining = static_cast<size_t>(dma->curr_count) + 1;
-	const auto count     = std::min(remaining, size);
-	dma->RaiseRequest();
-	const auto transferred = dma->Write(count,
-	                                    const_cast<uint8_t*>(data.data()));
-	dma->ClearRequest();
-	if (transferred != count) {
-		finish_data(fdc.track_status_1 | 0x10, fdc.track_status_2);
-	} else {
-		fdc.track_transfer_ready = false;
-		finish_track_sector(count == remaining,
-		                    fdc.track_physical_transfer ? fdc.track_transfer_ms
-		                                                : 0);
-	}
+	start_byte_transfer(size, std::span(data).first(size));
 }
 
 bool is_write_command(const Command command)
@@ -824,14 +854,15 @@ void transfer_sector(uint32_t)
 			            bit_ms;
 		}
 		const auto data_ms = static_cast<double>((bytes + 2) * 16) * bit_ms;
+		fdc.transfer_byte_ms = bit_ms * 16;
 		fdc.sector_end_ms      = PIC_FullIndex() + header_ms + data_ms;
 		fdc.sector_sample_turn = static_cast<uint64_t>(
 		        rotation_elapsed_ms() / rotation_cycle_ms());
 		fdc.sector_transfer_ready = true;
-		const auto pio = fdc.non_dma && command != Command::Verify &&
-		                 (fdc.command[5] || fdc.command[8]);
 		PIC_AddEvent(transfer_sector,
-		             header_ms + ((pio || skip) ? 0 : data_ms));
+		             header_ms + ((command != Command::Verify || skip)
+		                                  ? 0
+		                                  : data_ms));
 		return;
 	}
 	if (command == Command::Verify) {
@@ -839,14 +870,6 @@ void transfer_sector(uint32_t)
 		return;
 	}
 
-	auto* dma = DMA_GetChannel(FloppyDma);
-	if (!fdc.non_dma &&
-	    (!dma || dma->is_masked ||
-	     !(writing ? dma->is_memory_to_device : dma->is_device_to_memory) ||
-	     !(fdc.dor & InterruptEnabled))) {
-		finish_data(0x10);
-		return;
-	}
 
 	std::array<uint8_t, 1024> buffer = {};
 	const auto write_size            = fdc.track_sector && writing
@@ -887,37 +910,25 @@ void transfer_sector(uint32_t)
 	                             ? std::min(data.size(), size_t{fdc.command[8]})
 	                             : data.size();
 	if (!host_size) {
+		if (PIC_FullIndex() < fdc.sector_end_ms) {
+			PIC_AddEvent(transfer_sector,
+			             fdc.sector_end_ms - PIC_FullIndex());
+			return;
+		}
 		finish_sector_transfer({}, false);
 		return;
 	}
-	if (fdc.non_dma) {
+	if (fdc.non_dma && !fdc.fifo_enabled) {
 		start_pio_transfer(host_size,
 		                   writing ? std::span<const uint8_t>{}
 		                           : data.first(host_size));
 		return;
 	}
-	const auto remaining = static_cast<size_t>(dma->curr_count) + 1;
-	const auto count     = std::min(remaining, host_size);
-	dma->RaiseRequest();
-	// DMA Write copies from the source buffer without modifying it.
-	const auto transferred =
-	        writing ? dma->Read(count, buffer.data())
-	                : dma->Write(count, const_cast<uint8_t*>(data.data()));
-	dma->ClearRequest();
-	if (transferred != count) {
-		finish_data(0x10);
-	} else {
-		finish_sector_transfer(writing ? transfer_buffer
-		                               : std::span<const uint8_t>{},
-		                       remaining == count);
-	}
+	start_byte_transfer(host_size,
+	                    writing ? std::span<const uint8_t>{}
+	                            : data.first(host_size));
 }
 
-bool format_dma_ready(const DmaChannel* dma)
-{
-	return dma && !dma->is_masked && dma->is_memory_to_device &&
-	       !fdc.non_dma && (fdc.dor & InterruptEnabled);
-}
 
 uint8_t format_status(const FloppyFormatResult result)
 {
@@ -972,30 +983,13 @@ void format_track_sector(uint32_t)
 		finish_data(0x04);
 		return;
 	}
-	if (fdc.non_dma) {
+	if (fdc.non_dma && !fdc.fifo_enabled) {
 		start_pio_transfer(FormatIdSize);
 		return;
 	}
-	auto* dma = DMA_GetChannel(FloppyDma);
-	if (!format_dma_ready(dma)) {
-		finish_track_format(0x10);
-		return;
-	}
-	const auto remaining = static_cast<size_t>(dma->curr_count) + 1;
-	const auto count     = std::min(FormatIdSize, remaining);
-	auto* id = fdc.format_ids.data() + fdc.formatted_ids * FormatIdSize;
-	dma->RaiseRequest();
-	const auto transferred = dma->Read(count, id);
-	dma->ClearRequest();
-	if (transferred != FormatIdSize) {
-		finish_track_format(0x10);
-	} else if (++fdc.formatted_ids == fdc.command[3]) {
-		finish_track_format(0);
-	} else if (remaining == FormatIdSize) {
-		finish_track_format(0x10);
-	} else {
-		PIC_AddEvent(format_track_sector, track_format_slot_ms());
-	}
+	fdc.transfer_byte_ms = pio_byte_ms;
+	fdc.sector_end_ms    = PIC_FullIndex() + track_format_slot_ms();
+	start_byte_transfer(FormatIdSize);
 }
 
 void finish_raw_format(const std::span<const uint8_t> ids)
@@ -1021,27 +1015,235 @@ void format_raw_track(uint32_t)
 		finish_data(0x04);
 		return;
 	}
-	std::array<uint8_t, FormatIdSize * 255> ids = {};
 	const auto count = fdc.command[3] * FormatIdSize;
-	if (fdc.non_dma) {
+	if (fdc.non_dma && !fdc.fifo_enabled) {
 		start_pio_transfer(count);
 		return;
 	}
-	auto* dma = DMA_GetChannel(FloppyDma);
-	if (!format_dma_ready(dma) ||
-	    static_cast<size_t>(dma->curr_count) + 1 < count) {
-		finish_data(0x10);
-		return;
-	}
-	dma->RaiseRequest();
-	const auto transferred = dma->Read(count, ids.data());
-	dma->ClearRequest();
-	if (transferred != count) {
-		finish_data(0x10);
-		return;
-	}
+	fdc.transfer_byte_ms = pio_byte_ms;
+	fdc.sector_end_ms    = PIC_FullIndex() + rotation_cycle_ms();
+	start_byte_transfer(count);
+}
 
-	finish_raw_format(std::span(ids).first(count));
+void defer_byte_completion()
+{
+	auto& bytes = fdc.bytes;
+	if (bytes.waiting_crc) {
+		return;
+	}
+	bytes.waiting_crc     = true;
+	bytes.request         = false;
+	bytes.service_pending = false;
+	PIC_RemoveEvents(byte_transfer_event);
+	PIC_RemoveEvents(dma_fifo_event);
+	if (auto* dma = DMA_GetChannel(FloppyDma); dma && !fdc.non_dma) {
+		dma->ClearRequest();
+	}
+	fdc.pio_ready = false;
+	if (fdc.non_dma) {
+		fdc.irq_pending = false;
+		update_irq();
+	}
+	PIC_AddEvent(complete_byte_transfer,
+	             std::max(0.0, fdc.sector_end_ms - PIC_FullIndex()));
+}
+
+void refresh_fifo_request()
+{
+	auto& bytes = fdc.bytes;
+	if (!bytes.active || bytes.waiting_crc) {
+		return;
+	}
+	const auto capacity = fdc.fifo_enabled ? FifoSize : size_t{1};
+	if (bytes.terminal_count || bytes.overrun) {
+		bytes.request = false;
+	} else if (bytes.writing) {
+		const auto low = fdc.fifo_enabled ? size_t{fdc.fifo_threshold}
+		                                  : size_t{0};
+		if (bytes.count == capacity ||
+		    bytes.host_offset == bytes.data.size()) {
+			bytes.request = false;
+		} else if (bytes.count <= low) {
+			bytes.request = true;
+		}
+	} else if (!bytes.count) {
+		bytes.request = false;
+	} else if (bytes.count >=
+	                   (fdc.fifo_enabled ? FifoSize - fdc.fifo_threshold : 1) ||
+	           bytes.disk_offset == bytes.data.size()) {
+		bytes.request = true;
+	}
+	if (fdc.non_dma) {
+		fdc.pio_ready   = bytes.request;
+		fdc.pio_writing = bytes.writing;
+		fdc.irq_pending = bytes.request;
+		update_irq();
+	} else if (auto* dma = DMA_GetChannel(FloppyDma)) {
+		if (bytes.request) {
+			dma->RaiseRequest();
+			if (!bytes.service_pending) {
+				bytes.service_pending = true;
+				PIC_AddEvent(dma_fifo_event, DmaServiceMs);
+			}
+		} else {
+			dma->ClearRequest();
+		}
+	}
+	if ((!bytes.writing &&
+	     (bytes.terminal_count ||
+	      (bytes.disk_offset == bytes.data.size() && !bytes.count))) ||
+	    (bytes.writing && (bytes.disk_offset == bytes.data.size() ||
+	                       (bytes.terminal_count && !bytes.count)))) {
+		if (bytes.writing && bytes.disk_offset < bytes.data.size() &&
+		    (fdc.command[0] & 0x1f) ==
+		            static_cast<int>(Command::FormatTrack)) {
+			bytes.overrun = true;
+		}
+		defer_byte_completion();
+	}
+}
+
+void dma_fifo_event(uint32_t)
+{
+	auto& bytes           = fdc.bytes;
+	bytes.service_pending = false;
+	if (!bytes.active || !bytes.request || bytes.waiting_crc) {
+		return;
+	}
+	auto* dma = DMA_GetChannel(FloppyDma);
+	if (dma && !dma->is_masked && (fdc.dor & InterruptEnabled) &&
+	    (bytes.writing ? dma->is_memory_to_device : dma->is_device_to_memory)) {
+		const auto terminal = dma->curr_count == 0;
+		auto* value = &bytes.fifo[bytes.writing ? (bytes.first + bytes.count) % FifoSize
+		                                        : bytes.first];
+		const auto count = bytes.writing ? dma->Read(1, value)
+		                                 : dma->Write(1, value);
+		if (count != 1) {
+			bytes.overrun = true;
+			defer_byte_completion();
+			return;
+		}
+		if (bytes.writing) {
+			++bytes.count;
+		} else {
+			bytes.first = (bytes.first + 1) % FifoSize;
+			--bytes.count;
+		}
+		++bytes.host_offset;
+		bytes.terminal_count = terminal;
+	}
+	refresh_fifo_request();
+}
+
+void byte_transfer_event(uint32_t)
+{
+	auto& bytes = fdc.bytes;
+	if (!bytes.active || bytes.waiting_crc) {
+		return;
+	}
+	if (!media_ready(selected_unit())) {
+		finish_data(0x04);
+		return;
+	}
+	const auto capacity = fdc.fifo_enabled ? FifoSize : size_t{1};
+	if (bytes.writing ? bytes.count == 0 : bytes.count == capacity) {
+		if (bytes.writing) {
+			bytes.overrun = !bytes.terminal_count;
+			defer_byte_completion();
+		} else {
+			const auto track = (fdc.command[0] & 0x1f) ==
+			                   static_cast<int>(Command::ReadTrack);
+			finish_data((track ? fdc.track_status_1 : 0) | 0x10,
+			            track ? fdc.track_status_2 : 0);
+		}
+		return;
+	}
+	if (bytes.writing) {
+		bytes.data[bytes.disk_offset] = bytes.fifo[bytes.first];
+		bytes.first                   = (bytes.first + 1) % FifoSize;
+		--bytes.count;
+	} else {
+		bytes.fifo[(bytes.first + bytes.count) % FifoSize] =
+		        bytes.data[bytes.disk_offset];
+		++bytes.count;
+	}
+	++bytes.disk_offset;
+	refresh_fifo_request();
+	service_bios_pio();
+	if (bytes.active && !bytes.waiting_crc &&
+	    bytes.disk_offset < bytes.data.size()) {
+		PIC_AddEvent(byte_transfer_event, fdc.transfer_byte_ms);
+	}
+}
+
+void start_byte_transfer(const size_t size, const std::span<const uint8_t> source)
+{
+	fdc.bytes   = {};
+	auto& bytes = fdc.bytes;
+	bytes.data.assign(size, 0);
+	bytes.active  = true;
+	bytes.writing = source.empty();
+	if (!source.empty()) {
+		std::copy(source.begin(), source.end(), bytes.data.begin());
+	}
+	refresh_fifo_request();
+	service_bios_pio();
+	PIC_AddEvent(byte_transfer_event, fdc.transfer_byte_ms);
+}
+
+void complete_byte_transfer(uint32_t)
+{
+	if (!fdc.bytes.active) {
+		return;
+	}
+	if (!media_ready(selected_unit())) {
+		finish_data(0x04);
+		return;
+	}
+	const auto terminal = fdc.bytes.terminal_count;
+	const auto overrun  = fdc.bytes.overrun;
+	const auto received = fdc.bytes.disk_offset;
+	const auto writing  = fdc.bytes.writing;
+	const auto data     = std::move(fdc.bytes.data);
+	fdc.bytes           = {};
+	fdc.pio_ready       = false;
+	if (auto* dma = DMA_GetChannel(FloppyDma); dma && !fdc.non_dma) {
+		dma->ClearRequest();
+	}
+	const auto command = static_cast<Command>(fdc.command[0] & 0x1f);
+	if (command == Command::FormatTrack) {
+		if (overrun || received != data.size()) {
+			if (fdc.media) {
+				finish_track_format(0x10);
+			} else {
+				finish_data(0x10);
+			}
+		} else if (!fdc.media) {
+			finish_raw_format(data);
+		} else {
+			std::copy(data.begin(),
+			          data.end(),
+			          fdc.format_ids.begin() +
+			                  fdc.formatted_ids * FormatIdSize);
+			if (++fdc.formatted_ids == fdc.command[3]) {
+				finish_track_format(0);
+			} else if (terminal) {
+				finish_track_format(0x10);
+			} else {
+				PIC_AddEvent(format_track_sector, 0);
+			}
+		}
+	} else if (overrun) {
+		const auto saved = !writing || commit_sector_write(data);
+		finish_data(saved ? 0x10 : 0x20);
+	} else if (command == Command::ReadTrack) {
+		fdc.track_transfer_ready = false;
+		finish_track_sector(terminal, fdc.track_transfer_ms);
+	} else {
+		finish_sector_transfer(writing ? std::span(data)
+		                               : std::span<const uint8_t>{},
+		                       terminal);
+	}
 }
 
 void finish_pio_transfer()
@@ -1212,10 +1414,14 @@ void start_loaded_data(uint32_t)
 		const auto to_index = next_index_ms();
 		if (raw) {
 			PIC_AddEvent(format_raw_track,
-			             to_index + rotation_cycle_ms());
+			             to_index + (fdc.non_dma && !fdc.fifo_enabled
+			                                 ? rotation_cycle_ms()
+			                                 : 0));
 		} else {
 			PIC_AddEvent(format_track_sector,
-			             to_index + track_format_slot_ms());
+			             to_index + (fdc.non_dma && !fdc.fifo_enabled
+			                                 ? track_format_slot_ms()
+			                                 : 0));
 		}
 		return;
 	}
@@ -1323,6 +1529,10 @@ void complete_seek(const uint32_t unit)
 void execute_command(const Command command)
 {
 	switch (command) {
+	case Command::Configure:
+		fdc.fifo_enabled   = (fdc.command[2] & 0x20) == 0;
+		fdc.fifo_threshold = fdc.command[2] & 0x0f;
+		break;
 	case Command::Specify:
 		fdc.non_dma          = (fdc.command[2] & 1) != 0;
 		fdc.step_rate        = fdc.command[1] >> 4;
@@ -1414,6 +1624,7 @@ void execute_command(const Command command)
 size_t command_length(const Command command)
 {
 	switch (command) {
+	case Command::Configure: return 4;
 	case Command::FormatTrack: return 6;
 	case Command::WriteDeletedData:
 	case Command::WriteData:
@@ -1431,6 +1642,15 @@ size_t command_length(const Command command)
 
 void write_data(io_port_t, const io_val_t value, io_width_t)
 {
+	if (fdc.bytes.active && fdc.non_dma && fdc.bytes.writing && fdc.pio_ready) {
+		auto& bytes = fdc.bytes;
+		bytes.fifo[(bytes.first + bytes.count) % FifoSize] =
+		        check_cast<uint8_t>(value);
+		++bytes.count;
+		++bytes.host_offset;
+		refresh_fifo_request();
+		return;
+	}
 	if (fdc.phase == Phase::Execution && fdc.pio_ready && fdc.pio_writing) {
 		fdc.pio_data[fdc.pio_offset++] = check_cast<uint8_t>(value);
 		acknowledge_pio_byte();
@@ -1449,6 +1669,15 @@ void write_data(io_port_t, const io_val_t value, io_width_t)
 
 io_val_t read_data(io_port_t, io_width_t)
 {
+	if (fdc.bytes.active && fdc.non_dma && !fdc.bytes.writing && fdc.pio_ready) {
+		auto& bytes      = fdc.bytes;
+		const auto value = bytes.fifo[bytes.first];
+		bytes.first      = (bytes.first + 1) % FifoSize;
+		--bytes.count;
+		++bytes.host_offset;
+		refresh_fifo_request();
+		return value;
+	}
 	if (fdc.phase == Phase::Execution && fdc.pio_ready && !fdc.pio_writing) {
 		const auto value = fdc.pio_data[fdc.pio_offset++];
 		acknowledge_pio_byte();
@@ -1476,16 +1705,20 @@ void service_bios_pio()
 	}
 	// The PCjr BIOS increments its 16-bit buffer offset within a fixed
 	// segment, rather than programming an 8237 physical-page boundary.
-	const auto address = bios_pio->base +
-	                     static_cast<uint16_t>(bios_pio->offset +
-	                                           bios_pio->transferred);
-	if (bios_pio->writing) {
-		write_data(0xf5, mem_readb(address), io_width_t::byte);
-	} else {
-		mem_writeb(address,
-		           check_cast<uint8_t>(read_data(0xf5, io_width_t::byte)));
-	}
-	++bios_pio->transferred;
+	do {
+		const auto address = bios_pio->base +
+		                     static_cast<uint16_t>(bios_pio->offset +
+		                                           bios_pio->transferred);
+		if (bios_pio->writing) {
+			write_data(0xf5, mem_readb(address), io_width_t::byte);
+		} else {
+			mem_writeb(address,
+			           check_cast<uint8_t>(
+			                   read_data(0xf5, io_width_t::byte)));
+		}
+		++bios_pio->transferred;
+	} while (fdc.bytes.active && fdc.pio_ready &&
+	         bios_pio->transferred < bios_pio->size);
 }
 
 io_val_t read_status(io_port_t, io_width_t)
@@ -1501,6 +1734,12 @@ io_val_t read_status(io_port_t, io_width_t)
 	}
 	switch (fdc.phase) {
 	case Phase::Execution:
+		if (fdc.bytes.active) {
+			return busy |
+			       (fdc.non_dma ? 0x30 | (fdc.pio_ready ? 0x80 : 0) |
+			                              (fdc.bytes.writing ? 0 : 0x40)
+			                    : 0x10);
+		}
 		if (fdc.pio_data.empty()) {
 			return busy | (fdc.non_dma ? 0x30 : 0x10);
 		}
@@ -1537,6 +1776,15 @@ void reset_controller()
 	PIC_RemoveEvents(format_track_sector);
 	PIC_RemoveEvents(missing_sector);
 	PIC_RemoveEvents(pio_byte_event);
+	PIC_RemoveEvents(byte_transfer_event);
+	PIC_RemoveEvents(dma_fifo_event);
+	PIC_RemoveEvents(complete_byte_transfer);
+	if (fdc.bytes.active) {
+		if (auto* dma = DMA_GetChannel(FloppyDma); dma && !fdc.non_dma) {
+			dma->ClearRequest();
+		}
+		fdc.bytes = {};
+	}
 	const auto drives = fdc.drives;
 	fdc               = {};
 	// Resetting the controller does not move the physical drive heads.
@@ -1587,7 +1835,7 @@ void write_dor(io_port_t, const io_val_t value, io_width_t)
 			PIC_RemoveEvents(transfer_sector);
 			PIC_RemoveEvents(missing_sector);
 		}
-		if (writing_data || !fdc.pio_data.empty()) {
+		if (writing_data || fdc.bytes.active || !fdc.pio_data.empty()) {
 			finish_data(0x04);
 			return;
 		}
