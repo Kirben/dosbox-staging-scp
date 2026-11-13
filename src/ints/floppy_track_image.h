@@ -47,7 +47,8 @@ public:
 	bool IsWriteProtected() const override;
 	bool WriteSector(const uint32_t cylinder, const uint32_t head,
 	                 const uint32_t sector, const std::span<const uint8_t> data,
-	                 const FloppySector* selected) override;
+	                 const FloppySector* selected,
+	                 const bool deleted = false) override;
 	FormatResult FormatTrack(const uint8_t cylinder, const uint8_t head,
 	                         const std::span<const uint8_t> ids,
 	                         const uint8_t fill, const uint8_t requested,
@@ -60,8 +61,11 @@ public:
 
 private:
 	// Cylinder, head, logical ID, physical slot (zero for CHS), and size code.
-	using OverlayKey    = std::array<uint32_t, 5>;
-	using OverlaySector = std::vector<uint8_t>;
+	using OverlayKey = std::array<uint32_t, 5>;
+	struct OverlaySector {
+		std::vector<uint8_t> bytes = {};
+		bool deleted               = false;
+	};
 	// Preserve write order when physical fields overlap.
 	using Overlay      = std::vector<std::pair<OverlayKey, OverlaySector>>;
 	using TrackAddress = std::array<uint8_t, 2>;

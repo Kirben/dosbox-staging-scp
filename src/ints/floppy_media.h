@@ -81,17 +81,18 @@ public:
 	                                const uint32_t head) const = 0;
 	virtual std::span<const FloppySector> GetTrack(const uint32_t cylinder,
 	                                               const uint32_t head) const = 0;
-	virtual bool SupportsTrackWrites() const                         = 0;
-	virtual bool IsWriteProtected() const                            = 0;
+	virtual bool SupportsTrackWrites() const                   = 0;
+	virtual bool IsWriteProtected() const                      = 0;
 	virtual bool WriteSector(const uint32_t cylinder, const uint32_t head,
 	                         const uint32_t sector,
 	                         const std::span<const uint8_t> data,
-	                         const FloppySector* selected = nullptr) = 0;
+	                         const FloppySector* selected = nullptr,
+	                         const bool deleted           = false)       = 0;
 	virtual FormatResult FormatTrack(const uint8_t cylinder, const uint8_t head,
 	                                 const std::span<const uint8_t> ids,
 	                                 const uint8_t fill, const uint8_t requested,
 	                                 const uint8_t size_code,
-	                                 const uint16_t rate_kbps)       = 0;
+	                                 const uint16_t rate_kbps) = 0;
 };
 
 #endif

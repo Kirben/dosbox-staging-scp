@@ -44,17 +44,18 @@ constexpr size_t FormatIdSize = 4;
 
 enum class Phase { Command, Execution, Result };
 enum class Command {
-	ReadTrack       = 0x02,
-	Specify         = 0x03,
-	WriteData       = 0x05,
-	ReadData        = 0x06,
-	ReadDeletedData = 0x0c,
-	Verify          = 0x16,
-	Recalibrate     = 0x07,
-	SenseInterrupt  = 0x08,
-	ReadId          = 0x0a,
-	FormatTrack     = 0x0d,
-	Seek            = 0x0f,
+	ReadTrack        = 0x02,
+	Specify          = 0x03,
+	WriteData        = 0x05,
+	ReadData         = 0x06,
+	ReadDeletedData  = 0x0c,
+	WriteDeletedData = 0x09,
+	Verify           = 0x16,
+	Recalibrate      = 0x07,
+	SenseInterrupt   = 0x08,
+	ReadId           = 0x0a,
+	FormatTrack      = 0x0d,
+	Seek             = 0x0f,
 };
 
 struct Drive {
@@ -582,13 +583,21 @@ void transfer_track_sector(uint32_t)
 	}
 }
 
+bool is_write_command(const Command command)
+{
+	return command == Command::WriteData || command == Command::WriteDeletedData;
+}
+
 bool commit_sector_write(const std::span<const uint8_t> data)
 {
+	const auto deleted = static_cast<Command>(fdc.command[0] & 0x1f) ==
+	                     Command::WriteDeletedData;
 	return fdc.track_sector ? fdc.media->WriteSector(fdc.cylinder,
 	                                                 fdc.head,
 	                                                 fdc.sector,
 	                                                 data,
-	                                                 fdc.track_sector)
+	                                                 fdc.track_sector,
+	                                                 deleted)
 	                        : fdc.disk->WriteSectorForController(fdc.head,
 	                                                             fdc.cylinder,
 	                                                             fdc.sector,
@@ -671,7 +680,7 @@ void transfer_sector(uint32_t)
 
 	const auto command = static_cast<Command>(fdc.command[0] & 0x1f);
 	const auto* field  = fdc.track_sector;
-	const auto writing = command == Command::WriteData;
+	const auto writing = is_write_command(command);
 	const auto skip    = data_mark_mismatch() && (fdc.command[0] & 0x20);
 	if (!fdc.sector_transfer_ready &&
 	    (!field || (!field->id_crc_error && (writing || !field->data.empty())))) {
@@ -928,7 +937,7 @@ void finish_pio_transfer()
 {
 	const auto command = static_cast<Command>(fdc.command[0] & 0x1f);
 	if ((command == Command::ReadData || command == Command::ReadDeletedData ||
-	     command == Command::WriteData || command == Command::ReadTrack) &&
+	     is_write_command(command) || command == Command::ReadTrack) &&
 	    !fdc.pio_waiting_crc && PIC_FullIndex() < fdc.sector_end_ms) {
 		// Defer once: rounding at the target timestamp must not queue
 		// an endless sequence of events with effectively zero delay.
@@ -944,6 +953,7 @@ void finish_pio_transfer()
 		fdc.track_transfer_ready = false;
 		finish_track_sector(false, elapsed_ms);
 		break;
+	case Command::WriteDeletedData:
 	case Command::WriteData: finish_sector_transfer(data, false); break;
 	case Command::ReadData:
 	case Command::ReadDeletedData: finish_sector_transfer({}, false); break;
@@ -984,7 +994,7 @@ void pio_byte_event(uint32_t)
 		} else if (command == Command::FormatTrack && fdc.media) {
 			finish_track_format(0x10);
 		} else {
-			if (command == Command::WriteData) {
+			if (is_write_command(command)) {
 				// Stop requesting bytes, but clock the
 				// zero-filled remainder and CRC before
 				// committing the write. Reset and motor loss
@@ -1039,9 +1049,14 @@ void start_data(const Command command)
 		return;
 	}
 
-	if ((command == Command::WriteData || command == Command::FormatTrack) &&
+	if ((is_write_command(command) || command == Command::FormatTrack) &&
 	    fdc.disk->IsWriteProtected()) {
 		finish_data(0x02);
+		return;
+	}
+	// Raw sector files cannot retain the deleted data-address mark.
+	if (command == Command::WriteDeletedData && !fdc.media) {
+		finish_data(0x04);
 		return;
 	}
 	// Support the single-track, end-of-track form used by the BIOS.
@@ -1113,7 +1128,7 @@ void start_data(const Command command)
 	if (const auto& track = fdc.media) {
 		if (command != Command::ReadId &&
 		    (fdc.sector > fdc.command[6] ||
-		     (command == Command::WriteData &&
+		     (is_write_command(command) &&
 		      !IsFloppyOverlaySizeCode(fdc.command[5])))) {
 			finish_data(0x04);
 			return;
@@ -1213,6 +1228,7 @@ void execute_command(const Command command)
 	}
 	case Command::ReadId:
 	case Command::FormatTrack:
+	case Command::WriteDeletedData:
 	case Command::WriteData:
 	case Command::ReadData:
 	case Command::ReadDeletedData:
@@ -1229,6 +1245,7 @@ size_t command_length(const Command command)
 {
 	switch (command) {
 	case Command::FormatTrack: return 6;
+	case Command::WriteDeletedData:
 	case Command::WriteData:
 	case Command::ReadData:
 	case Command::ReadDeletedData:
@@ -1340,8 +1357,8 @@ void write_dor(io_port_t, const io_val_t value, io_width_t)
 	const auto previous     = fdc.dor;
 	const auto unit         = selected_unit();
 	const auto writing_data = fdc.phase == Phase::Execution &&
-	                          (fdc.command[0] & 0x1f) ==
-	                                  static_cast<int>(Command::WriteData);
+	                          is_write_command(static_cast<Command>(
+	                                  fdc.command[0] & 0x1f));
 	const auto formatting_track = fdc.phase == Phase::Execution &&
 	                              fdc.disk && fdc.media &&
 	                              (fdc.command[0] & 0x1f) ==

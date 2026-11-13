@@ -70,7 +70,7 @@ public:
 	}
 	bool WriteSector(const uint32_t, const uint32_t, const uint32_t,
 	                 const std::span<const uint8_t> data,
-	                 const FloppySector*) override
+	                 const FloppySector*, const bool) override
 	{
 		if (fail_write) {
 			return false;
