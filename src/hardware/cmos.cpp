@@ -15,6 +15,10 @@
 #include "ints/bios_disk.h"
 #include "misc/cross.h"
 
+#include "utils/checks.h"
+
+CHECK_NARROWING();
+
 static struct {
 	uint8_t regs[0x40];
 	bool nmi;
@@ -126,7 +130,8 @@ static void cmos_writereg(io_port_t, io_val_t value, io_width_t)
 }
 
 #define MAKE_RETURN(_VAL) \
-	(cmos.bcd ? ((((_VAL) / 10) << 4) | ((_VAL) % 10)) : (_VAL));
+	static_cast<uint8_t>(cmos.bcd ? ((((_VAL) / 10) << 4) | ((_VAL) % 10)) \
+	                              : (_VAL));
 
 static uint8_t cmos_readreg(io_port_t, io_width_t)
 {
@@ -210,7 +215,7 @@ static uint8_t cmos_readreg(io_port_t, io_width_t)
 		return 0;
 	case 0x1d:
 		if (const auto disk = BIOS_GetDisk(2)) {
-			return (disk->heads);
+			return static_cast<uint8_t>(disk->heads);
 		}
 		return 0;
 	case 0x1e:
@@ -240,7 +245,7 @@ static uint8_t cmos_readreg(io_port_t, io_width_t)
 		return 0;
 	case 0x23:
 		if (const auto disk = BIOS_GetDisk(2)) {
-			return (disk->sectors);
+			return static_cast<uint8_t>(disk->sectors);
 		}
 		return 0;
 	/* Second harddrive info */
@@ -261,7 +266,7 @@ static uint8_t cmos_readreg(io_port_t, io_width_t)
 		return 0;
 	case 0x26:
 		if (const auto disk = BIOS_GetDisk(3)) {
-			return (disk->heads);
+			return static_cast<uint8_t>(disk->heads);
 		}
 		return 0;
 	case 0x27:
@@ -291,7 +296,7 @@ static uint8_t cmos_readreg(io_port_t, io_width_t)
 		return 0;
 	case 0x2c:
 		if (const auto disk = BIOS_GetDisk(3)) {
-			return (disk->sectors);
+			return static_cast<uint8_t>(disk->sectors);
 		}
 		return 0;
 	case 0x39: return 0;

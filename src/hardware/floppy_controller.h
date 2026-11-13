@@ -18,10 +18,11 @@ enum class FloppyFormatResult {
 };
 
 FloppyFormatResult FLOPPY_FormatTrack(imageDisk& disk, FloppyMedia* media,
-                                      uint32_t cylinder, uint32_t head,
-                                      std::span<const uint8_t> ids,
-                                      uint8_t fill, uint8_t requested,
-                                      uint8_t size_code, uint16_t rate_kbps = 0);
+                                      const uint32_t cylinder, const uint32_t head,
+                                      const std::span<const uint8_t> ids,
+                                      const uint8_t fill, const uint8_t requested,
+                                      const uint8_t size_code,
+                                      uint16_t rate_kbps = 0);
 
 enum class FloppyBiosTransfer { Read, Write, Verify };
 
@@ -36,9 +37,10 @@ FloppyBiosTransferResult FLOPPY_BiosTransfer(
         const uint8_t size_code, const uint8_t count, const uint8_t gap,
         const uint32_t address, const uint16_t buffer_offset = 0);
 
-uint8_t FLOPPY_BiosFormat(uint8_t unit, uint32_t cylinder, uint8_t head,
-                          uint8_t size_code, uint8_t count, uint8_t gap,
-                          uint8_t fill, uint32_t address, uint16_t buffer_offset);
+uint8_t FLOPPY_BiosFormat(const uint8_t unit, const uint32_t cylinder,
+                          const uint8_t head, const uint8_t size_code,
+                          const uint8_t count, const uint8_t gap, const uint8_t fill,
+                          const uint32_t address, const uint16_t buffer_offset);
 
 void FLOPPY_SetDiskChanged(const size_t unit, const bool changed);
 bool FLOPPY_IsDiskChanged(const size_t unit);

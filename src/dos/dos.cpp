@@ -31,11 +31,14 @@
 #include "misc/support.h"
 #include "programs/mount_common.h"
 #include "utils/ascii.h"
+#include "utils/checks.h"
 #include "utils/string_utils.h"
 
 #if defined(WIN32)
 #include <winsock2.h> // for gethostname
 #endif
+
+CHECK_NARROWING();
 
 DOS_Block dos;
 DOS_InfoBlock dos_infoblock;
@@ -97,7 +100,7 @@ uint16_t DOS_GetBiosDatePacked()
 
 static void DOS_AddDays(Bitu days)
 {
-	dos.date.day += days;
+	dos.date.day       = static_cast<uint8_t>(dos.date.day + days);
 	uint8_t monthlimit = DOS_DATE_months[dos.date.month];
 
 	if (dos.date.day > monthlimit) {
@@ -424,7 +427,7 @@ static inline void modify_cycles(Bits value)
 	// over into the subsequent CPU slices). Capping the delay at the
 	// remaining cycles of the current slice would make DOS I/O speed
 	// dependent on PIC event density (e.g., on the VGA drawing mode).
-	CPU_Cycles -= 4 * value;
+	CPU_Cycles = static_cast<int>(CPU_Cycles - 4 * value);
 	CPU_IODelayRemoved += 4 * value;
 }
 #else
@@ -665,7 +668,7 @@ static Bitu DOS_21Handler(void)
 		} break;
 		default:
 			//				LOG_ERROR("DOS:0C:Illegal
-			//Flush STDIN Buffer call %d",reg_al);
+			// Flush STDIN Buffer call %d",reg_al);
 			reg_al = 0;
 			break;
 		}
@@ -832,9 +835,9 @@ static Bitu DOS_21Handler(void)
 		int y  = dos.date.year - a;
 		int m  = dos.date.month + 12 * a - 2;
 		reg_ah = 0x2a;
-		reg_al = (dos.date.day + y + (y / 4) - (y / 100) + (y / 400) +
-		          (31 * m) / 12) %
-		         7;
+		reg_al = check_cast<uint8_t>((dos.date.day + y + (y / 4) -
+		                              (y / 100) + (y / 400) + (31 * m) / 12) %
+		                             7);
 		reg_cx = dos.date.year;
 		reg_dh = dos.date.month;
 		reg_dl = dos.date.day;
@@ -993,7 +996,7 @@ static Bitu DOS_21Handler(void)
 		break;
 	case 0x35: /* Get interrupt vector */
 		reg_bx = real_readw(0, ((uint16_t)reg_al) * 4);
-		SegSet16(es, real_readw(0, ((uint16_t)reg_al) * 4 + 2));
+		SegSet16(es, real_readw(0, check_cast<uint16_t>(reg_al * 4 + 2)));
 		break;
 	case 0x36: /* Get Free Disk Space */
 	{
@@ -1304,7 +1307,7 @@ static Bitu DOS_21Handler(void)
 	case 0x4c: /* EXIT Terminate with return code */
 		DOS_Terminate(dos.psp(), false, reg_al);
 		if (result_errorcode) {
-			dos.return_code = result_errorcode;
+			dos.return_code = static_cast<uint8_t>(result_errorcode);
 		}
 		break;
 
@@ -1757,8 +1760,8 @@ static Bitu DOS_20Handler(void)
 static Bitu DOS_27Handler(void)
 {
 	// Terminate & stay resident
-	uint16_t para = (reg_dx / 16) + ((reg_dx % 16) > 0);
-	uint16_t psp  = dos.psp(); // mem_readw(SegPhys(ss)+reg_sp+2);
+	auto para = check_cast<uint16_t>((reg_dx / 16) + ((reg_dx % 16) > 0));
+	uint16_t psp = dos.psp(); // mem_readw(SegPhys(ss)+reg_sp+2);
 	if (DOS_ResizeMemory(psp, &para)) {
 		DOS_Terminate(psp, true, 0);
 	}
@@ -1887,7 +1890,7 @@ DOS_Version DOS_ParseVersion(const char* word, const char* args)
 		p++;
 		int minor = -1;
 		if (isdigit(*p)) {
-			int len = strlen(p);
+			const auto len = strlen(p);
 			// Get the first 2 characters as minor version if there
 			// are more
 			minor = atoi(len > 2 ? std::string(p).substr(0, 2).c_str()

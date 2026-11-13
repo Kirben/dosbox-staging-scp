@@ -38,8 +38,8 @@ public:
 	        std::string& error);
 
 	double GetCycleMs(const uint32_t cylinder, const uint32_t head) const override;
-	std::span<const double> GetRevolutionEnds(uint32_t cylinder,
-	                                          uint32_t head) const override;
+	std::span<const double> GetRevolutionEnds(const uint32_t cylinder,
+	                                          const uint32_t head) const override;
 	double GetFormatCycleMs(const uint32_t cylinder,
 	                        const uint32_t head) const override;
 
@@ -96,7 +96,7 @@ private:
 	void ApplyTrackFormat(const TrackAddress& address, const TrackFormat& format);
 	static Overlay TakeTrackWrites(Overlay& entries, const TrackAddress& address);
 	bool CanOverlaySector(const OverlayKey& key) const;
-	bool HasOverlappingFields(uint32_t cylinder, uint32_t head) const;
+	bool HasOverlappingFields(const uint32_t cylinder, const uint32_t head) const;
 	void ApplyOverlaySector(const OverlayKey& key, const OverlaySector& data);
 	std::string overlay_path     = {};
 	uint64_t capture_fingerprint = 0;
@@ -119,8 +119,8 @@ private:
 	        const size_t index = 0, const bool detect_weak = false,
 	        std::shared_ptr<FloppyMfmTrack> captured = {});
 	static std::vector<FloppySector> FormatMfmTrack(
-	        std::span<const FloppySector> previous, size_t revolution,
-	        double duration_ms, const TrackFormat& format);
+	        const std::span<const FloppySector> previous, const size_t revolution,
+	        const double duration_ms, const TrackFormat& format);
 	void UpdateLogicalGeometry(const uint32_t cylinder, const uint32_t head,
 	                           const std::span<const FloppySector> sectors);
 	std::vector<Track> tracks = {};

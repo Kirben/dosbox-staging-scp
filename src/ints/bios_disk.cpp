@@ -20,6 +20,10 @@
 #include "ints/floppy_media.h"
 #include "utils/string_utils.h"
 
+#include "utils/checks.h"
+
+CHECK_NARROWING();
+
 static const std::vector<DiskGeometry> disk_geometry_list = {
         { 160,  8, 1, 40, 0}, // SS/DD 5.25"
         { 180,  9, 1, 40, 0}, // SS/DD 5.25"
@@ -43,7 +47,8 @@ const std::vector<DiskGeometry>& BIOS_GetDiskGeometryList()
 }
 
 callback_number_t call_int13 = 0;
-Bitu diskparm0, diskparm1;
+callback_number_t diskparm0  = 0;
+callback_number_t diskparm1  = 0;
 static uint8_t last_status;
 static uint8_t last_drive;
 uint16_t imgDTASeg;
@@ -360,7 +365,7 @@ MediaResult imageDisk::read_absolute_sector(const uint32_t sector,
 	// FAT adds its own delay; the controller schedules its own transfer.
 	if (mode != RawReadMode::Controller && DOS_IsGuestOsBooted()) {
 		const auto type = hardDrive ? DiskType::HardDisk : DiskType::Floppy;
-		DOS_PerformDiskIoDelay(sector_size, type);
+		DOS_PerformDiskIoDelay(check_cast<uint16_t>(sector_size), type);
 	}
 	const auto count = fread(data.data(), 1, data.size(), diskimg);
 	current_fpos     = bytenum + check_cast<cross_off_t>(count);
@@ -463,7 +468,7 @@ MediaResult imageDisk::write_absolute_sector(const uint32_t sector,
 	}
 	if (!controller_write && DOS_IsGuestOsBooted()) {
 		const auto type = hardDrive ? DiskType::HardDisk : DiskType::Floppy;
-		DOS_PerformDiskIoDelay(sector_size, type);
+		DOS_PerformDiskIoDelay(check_cast<uint16_t>(sector_size), type);
 	}
 	const auto count = fwrite(data.data(), 1, data.size(), diskimg);
 	current_fpos     = bytenum + check_cast<cross_off_t>(count);
