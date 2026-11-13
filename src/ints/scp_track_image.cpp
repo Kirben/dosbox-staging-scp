@@ -39,6 +39,7 @@ constexpr uint8_t LegacyOverlayVersion     = 4;
 constexpr uint8_t SizedOverlayVersion      = 5;
 constexpr uint8_t OrderedOverlayVersion    = 6;
 constexpr uint8_t FormatSizeOverlayVersion = 7;
+constexpr uint8_t FormatRateOverlayVersion = 8;
 constexpr uint32_t LegacySizeCode          = 2;
 constexpr size_t ChrnSize                  = 4;
 
@@ -375,7 +376,8 @@ bool FloppyTrackImage::LoadOverlay()
 	     header != overlay_header(capture_fingerprint, LegacyOverlayVersion) &&
 	     header != overlay_header(capture_fingerprint, SizedOverlayVersion) &&
 	     header != overlay_header(capture_fingerprint, OrderedOverlayVersion) &&
-	     header != overlay_header(capture_fingerprint, FormatSizeOverlayVersion))) {
+	     header != overlay_header(capture_fingerprint, FormatSizeOverlayVersion) &&
+	     header != overlay_header(capture_fingerprint, FormatRateOverlayVersion))) {
 		return false;
 	}
 	const auto version         = header[6];
@@ -391,7 +393,19 @@ bool FloppyTrackImage::LoadOverlay()
 			const auto size_code = version >= FormatSizeOverlayVersion
 			                             ? fgetc(input.get())
 			                             : 0xff;
+			const auto rate_low = version >= FormatRateOverlayVersion
+			                            ? fgetc(input.get())
+			                            : 0;
+			const auto rate_high = version >= FormatRateOverlayVersion
+			                             ? fgetc(input.get())
+			                             : 0;
+			if (rate_low == EOF || rate_high == EOF) {
+				return false;
+			}
+			const auto rate_kbps = check_cast<uint16_t>(
+			        rate_low | (rate_high << 8));
 			if (count <= 0 || fill == EOF || requested < count ||
+			    (rate_kbps && !IsFloppyDataRate(rate_kbps)) ||
 			    (size_code != 0xff && (size_code < 0 || size_code > 7)) ||
 			    (size_code != 0xff &&
 			     (size_t{128} << size_code) * count > 64 * 1024) ||
@@ -405,6 +419,7 @@ bool FloppyTrackImage::LoadOverlay()
 			                      check_cast<uint8_t>(fill),
 			                      check_cast<uint8_t>(requested)};
 			format.size_code   = check_cast<uint8_t>(size_code);
+			format.rate_kbps   = rate_kbps;
 			if (fread(format.ids.data(), 1, format.ids.size(), input.get()) !=
 			            format.ids.size() ||
 			    !IsValidTrackFormat(address, format.ids)) {
@@ -529,7 +544,13 @@ bool FloppyTrackImage::SaveOverlay(const Overlay& entries,
 			return false;
 		});
 	});
-	const auto version = formatted_size ? FormatSizeOverlayVersion
+	const auto formatted_rate = std::ranges::any_of(formats, [](const auto& track) {
+		return std::ranges::any_of(track.second, [](const auto& format) {
+			return format.rate_kbps != 0;
+		});
+	});
+	const auto version = formatted_rate ? FormatRateOverlayVersion
+	                   : formatted_size ? FormatSizeOverlayVersion
 	                   : ordered        ? OrderedOverlayVersion
 	                   : sized          ? SizedOverlayVersion
 	                                    : LegacyOverlayVersion;
@@ -584,6 +605,9 @@ bool FloppyTrackImage::SaveOverlay(const Overlay& entries,
 			          (!partial || fputc(format.requested, file) != EOF) &&
 			          (version < FormatSizeOverlayVersion ||
 			           fputc(format.size_code, file) != EOF) &&
+			          (version < FormatRateOverlayVersion ||
+			           (fputc(format.rate_kbps & 0xff, file) != EOF &&
+			            fputc(format.rate_kbps >> 8, file) != EOF)) &&
 			          fwrite(format.ids.data(), 1, format.ids.size(), file) ==
 			                  format.ids.size();
 		}
@@ -827,14 +851,14 @@ void FloppyTrackImage::ApplyTrackFormat(const TrackAddress& address,
 FloppyTrackImage::FormatResult FloppyTrackImage::FormatTrack(
         const uint8_t cylinder, const uint8_t head,
         const std::span<const uint8_t> ids, const uint8_t fill,
-        const uint8_t requested, const uint8_t size_code)
+        const uint8_t requested, const uint8_t size_code, const uint16_t rate_kbps)
 {
 	if (IsWriteProtected()) {
 		return FormatResult::WriteError;
 	}
 	const TrackAddress address = {cylinder, head};
 	const auto count           = ids.size() / ChrnSize;
-	if (count > requested || size_code > 7 ||
+	if (count > requested || size_code > 7 || !IsFloppyDataRate(rate_kbps) ||
 	    (size_t{128} << size_code) * count > 64 * 1024 ||
 	    !IsValidTrackFormat(address, ids)) {
 		return FormatResult::InvalidLayout;
@@ -849,7 +873,7 @@ FloppyTrackImage::FormatResult FloppyTrackImage::FormatTrack(
 	}
 	history.push_back({
 	        {ids.begin(), ids.end()},
-                fill, requested, std::move(prior), size_code
+                fill, requested, std::move(prior), size_code, rate_kbps
         });
 	if (!SaveOverlay(entries, formats)) {
 		return FormatResult::WriteError;

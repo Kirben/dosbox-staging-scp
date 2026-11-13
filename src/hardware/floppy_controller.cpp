@@ -85,38 +85,46 @@ struct Controller {
 	uint8_t track_status_1                             = 0;
 	uint8_t track_status_2                             = 0;
 	size_t formatted_ids                               = 0;
-	std::shared_ptr<imageDisk> disk                    = {};
-	std::shared_ptr<FloppyMedia> media                 = {};
-	std::vector<uint8_t> pio_data                      = {};
-	size_t pio_offset                                  = 0;
-	double pio_started_ms                              = 0;
-	bool pio_ready                                     = false;
-	bool pio_writing                                   = false;
-	bool pio_waiting_crc                               = false;
-	bool pio_underrun                                  = false;
-	bool sector_data_crc_error                         = false;
-	bool sector_transfer_ready                         = false;
-	double sector_end_ms                               = 0;
-	uint64_t sector_sample_turn                        = 0;
-	const FloppySector* track_sector                   = nullptr;
-	const FloppySector* wrong_cylinder_sector          = nullptr;
-	Phase phase                                        = Phase::Command;
-	size_t command_count                               = 0;
-	size_t result_count                                = 0;
-	size_t result_length                               = 0;
-	uint8_t dor                                        = 0;
-	uint8_t reset_unit                                 = 4;
-	uint8_t cylinder                                   = 0;
-	uint8_t head                                       = 0;
-	uint8_t sector                                     = 0;
-	bool irq_pending                                   = false;
-	bool seek_irq_pending                              = false;
-	bool skipped_deleted                               = false;
-	bool missing_address_mark                          = false;
-	bool non_dma                                       = false;
+	uint16_t format_rate_kbps                 = DefaultDataRateKbps;
+	std::shared_ptr<imageDisk> disk           = {};
+	std::shared_ptr<FloppyMedia> media        = {};
+	std::vector<uint8_t> pio_data             = {};
+	size_t pio_offset                         = 0;
+	double pio_started_ms                     = 0;
+	bool pio_ready                            = false;
+	bool pio_writing                          = false;
+	bool pio_waiting_crc                      = false;
+	bool pio_underrun                         = false;
+	bool sector_data_crc_error                = false;
+	bool sector_transfer_ready                = false;
+	double sector_end_ms                      = 0;
+	uint64_t sector_sample_turn               = 0;
+	const FloppySector* track_sector          = nullptr;
+	const FloppySector* wrong_cylinder_sector = nullptr;
+	Phase phase                               = Phase::Command;
+	size_t command_count                      = 0;
+	size_t result_count                       = 0;
+	size_t result_length                      = 0;
+	uint8_t dor                               = 0;
+	uint8_t reset_unit                        = 4;
+	uint8_t cylinder                          = 0;
+	uint8_t head                              = 0;
+	uint8_t sector                            = 0;
+	bool irq_pending                          = false;
+	bool seek_irq_pending                     = false;
+	bool skipped_deleted                      = false;
+	bool missing_address_mark                 = false;
+	bool non_dma                              = false;
 };
 
-double pio_byte_ms = 8.0 / DefaultDataRateKbps;
+double pio_byte_ms      = 8.0 / DefaultDataRateKbps;
+uint16_t data_rate_kbps = DefaultDataRateKbps;
+
+uint16_t bios_data_rate(imageDisk& disk)
+{
+	const auto type = disk.GetBiosType();
+	return type == 6 ? 1000 : (type == 2 || type == 4 ? 500 : 250);
+}
 
 Controller fdc              = {};
 bool irq_asserted           = false;
@@ -797,7 +805,8 @@ uint8_t commit_track_format()
 	                                        ids,
 	                                        fdc.command[5],
 	                                        fdc.command[3],
-	                                        fdc.command[2]));
+	                                        fdc.command[2],
+	                                        fdc.format_rate_kbps));
 }
 
 void finish_track_format(const uint8_t status)
@@ -863,7 +872,8 @@ void finish_raw_format(const std::span<const uint8_t> ids)
 	                                       ids,
 	                                       fdc.command[5],
 	                                       fdc.command[3],
-	                                       fdc.command[2]);
+	                                       fdc.command[2],
+	                                       fdc.format_rate_kbps);
 	if (result == FloppyFormatResult::Success) {
 		fdc.sector = fdc.command[3];
 	}
@@ -1026,7 +1036,8 @@ void start_data(const Command command)
 	}
 	fdc.phase = Phase::Execution;
 	if (command == Command::FormatTrack) {
-		const auto raw = !fdc.media;
+		fdc.format_rate_kbps = data_rate_kbps;
+		const auto raw       = !fdc.media;
 		if (fdc.command[3] == 0 || fdc.command[2] > 7 ||
 		    (raw && (fdc.command[2] != SectorSizeCode ||
 		             fdc.command[3] != fdc.disk->sectors ||
@@ -1285,8 +1296,9 @@ io_val_t read_dir(io_port_t, io_width_t)
 
 void write_ccr(io_port_t, const io_val_t value, io_width_t)
 {
-	constexpr std::array DataRatesKbps = {500, 300, 250, 1000};
-	pio_byte_ms                        = 8.0 / DataRatesKbps[value & 3u];
+	constexpr std::array<uint16_t, 4> DataRatesKbps = {500, 300, 250, 1000};
+	data_rate_kbps = DataRatesKbps[value & 3u];
+	pio_byte_ms    = 8.0 / data_rate_kbps;
 }
 
 void reset_controller()
@@ -1389,7 +1401,7 @@ FloppyFormatResult FLOPPY_FormatTrack(imageDisk& disk, FloppyMedia* media,
                                       const uint32_t cylinder, const uint32_t head,
                                       const std::span<const uint8_t> ids,
                                       const uint8_t fill, const uint8_t requested,
-                                      const uint8_t size_code)
+                                      const uint8_t size_code, uint16_t rate_kbps)
 {
 	using Result = FloppyFormatResult;
 	if (disk.IsWriteProtected()) {
@@ -1403,13 +1415,17 @@ FloppyFormatResult FLOPPY_FormatTrack(imageDisk& disk, FloppyMedia* media,
 	}
 
 	if (media) {
+		if (!rate_kbps) {
+			rate_kbps = bios_data_rate(disk);
+		}
 		using ScpResult = FloppyMedia::FormatResult;
 		switch (media->FormatTrack(check_cast<uint8_t>(cylinder),
 		                           check_cast<uint8_t>(head),
 		                           ids,
 		                           fill,
 		                           requested,
-		                           size_code)) {
+		                           size_code,
+		                           rate_kbps)) {
 		case ScpResult::Success: return Result::Success;
 		case ScpResult::InvalidLayout: return Result::InvalidLayout;
 		case ScpResult::WriteError: return Result::WriteError;
@@ -1685,6 +1701,15 @@ uint8_t FLOPPY_BiosDmaFormat(const uint8_t unit, const uint32_t cylinder,
 	}
 	const std::array<uint8_t, 6> command = {
 	        0x4d, check_cast<uint8_t>(unit | (head << 2)), size_code, count, gap, fill};
+	const auto disk = BIOS_GetDisk(unit);
+	if (!disk) {
+		return 0x04;
+	}
+	if (!FLOPPY_CanStartBiosCommand()) {
+		return 0x80;
+	}
+	const auto rate = bios_data_rate(*disk);
+	write_ccr(0x3f7, rate == 1000 ? 3 : (rate == 500 ? 0 : 2), io_width_t::byte);
 	const auto size     = check_cast<uint32_t>(count * FormatIdSize);
 	const auto transfer = bios_command(
 	        unit, cylinder, head, command, address, size, true, 3);
@@ -1765,7 +1790,8 @@ bool FLOPPY_IsDiskChanged(const size_t unit)
 
 void FLOPPY_Init()
 {
-	pio_byte_ms = 8.0 / DefaultDataRateKbps;
+	data_rate_kbps = DefaultDataRateKbps;
+	pio_byte_ms    = 8.0 / DefaultDataRateKbps;
 	PIC_RemoveEvents(pcjr_watchdog_expired);
 	pcjr_dor               = 0;
 	pcjr_watchdog_asserted = false;
