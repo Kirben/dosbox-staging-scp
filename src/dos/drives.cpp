@@ -6,8 +6,8 @@
 
 #include <string_view>
 
-#include "ints/bios_disk.h"
 #include "hardware/ide.h"
+#include "ints/bios_disk.h"
 #include "utils/string_utils.h"
 
 extern char sfn[DOS_NAMELENGTH_ASCII];
@@ -19,14 +19,15 @@ extern char sfn[DOS_NAMELENGTH_ASCII];
 // Also: this function is too strict - it removes all punctuation when *some*
 // punctuation is acceptable in drive labels (e.g. '_' or '-').
 //
-std::string To_Label(const char* name) {
+std::string To_Label(const char* name)
+{
 	// Reformat the name per the DOS label specification:
 	// - Upper-case, up to 11 ASCII characters
 	// - Internal spaces allowed but no: tabs ? / \ | . , ; : + = [ ] < > " '
 	std::string label(name);
-	trim(label); // strip front-and-back white-space
+	trim(label);              // strip front-and-back white-space
 	strip_punctuation(label); // strip all punctuation
-	label.resize(11); // collapse remainder to (at-most) 11 chars
+	label.resize(11);         // collapse remainder to (at-most) 11 chars
 	upcase(label);
 	return label;
 }
@@ -38,50 +39,71 @@ void Set_Label(const char* const input, char* const output, bool cdrom)
 	Bitu labelPos = 0;
 	bool point    = false;
 
-	//spacepadding the filenamepart to include spaces after the terminating zero is more closely to the specs. (not doing this now)
-	// HELLO\0' '' '
+	// spacepadding the filenamepart to include spaces after the terminating
+	// zero is more closely to the specs. (not doing this now)
+	//  HELLO\0' '' '
 
 	while (togo > 0) {
-		if (input[vnamePos]==0) break;
-		if (!point && (input[vnamePos]=='.')) {	togo=4; point=true; }
+		if (input[vnamePos] == 0) {
+			break;
+		}
+		if (!point && (input[vnamePos] == '.')) {
+			togo  = 4;
+			point = true;
+		}
 
-		//another mscdex quirk. Label is not always uppercase. (Daggerfall)
-		output[labelPos] = (cdrom?input[vnamePos]:toupper(input[vnamePos]));
+		// another mscdex quirk. Label is not always uppercase.
+		// (Daggerfall)
+		output[labelPos] = (cdrom ? input[vnamePos]
+		                          : toupper(input[vnamePos]));
 
-		labelPos++; vnamePos++;
+		labelPos++;
+		vnamePos++;
 		togo--;
-		if ((togo==0) && !point) {
-			if (input[vnamePos]=='.') vnamePos++;
-			output[labelPos]='.'; labelPos++; point=true; togo=3;
+		if ((togo == 0) && !point) {
+			if (input[vnamePos] == '.') {
+				vnamePos++;
+			}
+			output[labelPos] = '.';
+			labelPos++;
+			point = true;
+			togo  = 3;
 		}
 	};
-	output[labelPos]=0;
+	output[labelPos] = 0;
 
-	//Remove trailing dot. except when on cdrom and filename is exactly 8 (9 including the dot) letters. MSCDEX feature/bug (fifa96 cdrom detection)
-	if((labelPos > 0) && (output[labelPos-1] == '.') && !(cdrom && labelPos ==9))
-		output[labelPos-1] = 0;
+	// Remove trailing dot. except when on cdrom and filename is exactly 8
+	// (9 including the dot) letters. MSCDEX feature/bug (fifa96 cdrom
+	// detection)
+	if ((labelPos > 0) && (output[labelPos - 1] == '.') &&
+	    !(cdrom && labelPos == 9)) {
+		output[labelPos - 1] = 0;
+	}
 }
 
 constexpr bool is_special_character(const char c)
 {
-    constexpr auto special_characters = std::string_view("\"+=,;:<>[]|?*");
-    return special_characters.find(c) != std::string_view::npos;
+	constexpr auto special_characters = std::string_view("\"+=,;:<>[]|?*");
+	return special_characters.find(c) != std::string_view::npos;
 }
 
 /* Generate 8.3 names from LFNs, with tilde usage (from ~1 to ~9999). */
-std::string generate_8x3(const char *lfn, const unsigned int num, const bool start)
+std::string generate_8x3(const char* lfn, const unsigned int num, const bool start)
 {
 	unsigned int tilde_limit = 1000000;
-	if (num >= tilde_limit)
+	if (num >= tilde_limit) {
 		return "";
+	}
 	static std::string result = "";
-	std::string input = lfn;
-	while (input.size() && (input[0] == '.' || input[0] == ' '))
+	std::string input         = lfn;
+	while (input.size() && (input[0] == '.' || input[0] == ' ')) {
 		input.erase(input.begin());
-	while (input.size() && (input.back() == '.' || input.back() == ' '))
+	}
+	while (input.size() && (input.back() == '.' || input.back() == ' ')) {
 		input.pop_back();
-	size_t len = 0;
-	auto found = input.rfind('.');
+	}
+	size_t len             = 0;
+	auto found             = input.rfind('.');
 	unsigned int tilde_pos = 6 - (unsigned int)floor(log10(num));
 	if (num == 1 || start) {
 		result.clear();
@@ -89,10 +111,11 @@ std::string generate_8x3(const char *lfn, const unsigned int num, const bool sta
 		for (size_t i = 0; i < len; i++) {
 			if (input[i] != ' ') {
 				result += is_special_character(input[i])
-				                  ? "_"
-				                  : std::string(1, toupper(input[i]));
-				if (result.size() >= tilde_pos)
+				                ? "_"
+				                : std::string(1, toupper(input[i]));
+				if (result.size() >= tilde_pos) {
 					break;
+				}
 			}
 		}
 	}
@@ -101,40 +124,46 @@ std::string generate_8x3(const char *lfn, const unsigned int num, const bool sta
 	if (found != std::string::npos) {
 		input.erase(0, found + 1);
 		size_t len_ext = 0;
-		len = input.size();
+		len            = input.size();
 		for (size_t i = 0; i < len; i++) {
 			if (input[i] != ' ') {
-				if (!len_ext)
+				if (!len_ext) {
 					result += ".";
+				}
 				result += is_special_character(input[i])
-				                  ? "_"
-				                  : std::string(1, toupper(input[i]));
-				if (++len_ext >= 3)
+				                ? "_"
+				                : std::string(1, toupper(input[i]));
+				if (++len_ext >= 3) {
 					break;
+				}
 			}
 		}
 	}
 	return result;
 }
 
-bool filename_not_8x3(const char *n)
+bool filename_not_8x3(const char* n)
 {
 	unsigned int i;
 
 	i = 0;
 	while (*n != 0) {
-		if (*n == '.')
+		if (*n == '.') {
 			break;
-		if ((*n & 0xFF) <= 32 || *n == 127 || is_special_character(*n))
+		}
+		if ((*n & 0xFF) <= 32 || *n == 127 || is_special_character(*n)) {
 			return true;
+		}
 		i++;
 		n++;
 	}
-	if (i > 8)
+	if (i > 8) {
 		return true;
-	if (*n == 0)
+	}
+	if (*n == 0) {
 		return false; /* made it past 8 or less normal chars and end of
 		                 string: normal */
+	}
 
 	/* skip dot */
 	assert(*n == '.');
@@ -142,15 +171,18 @@ bool filename_not_8x3(const char *n)
 
 	i = 0;
 	while (*n != 0) {
-		if (*n == '.')
+		if (*n == '.') {
 			return true; /* another '.' means LFN */
-		if ((*n & 0xFF) <= 32 || *n == 127 || is_special_character(*n))
+		}
+		if ((*n & 0xFF) <= 32 || *n == 127 || is_special_character(*n)) {
 			return true;
+		}
 		i++;
 		n++;
 	}
-	if (i > 3)
+	if (i > 3) {
 		return true;
+	}
 
 	return false; /* it is 8.3 case */
 }
@@ -158,25 +190,27 @@ bool filename_not_8x3(const char *n)
 /* Assuming an LFN call, if the name is not strict 8.3 uppercase, return true.
  * If the name is strict 8.3 uppercase like "FILENAME.TXT" there is no point
  * making an LFN because it is a waste of space */
-bool filename_not_strict_8x3(const char *n)
+bool filename_not_strict_8x3(const char* n)
 {
-	if (filename_not_8x3(n))
+	if (filename_not_8x3(n)) {
 		return true;
+	}
 	const auto len = strlen(n);
-	for (unsigned int i = 0; i < len; i++)
-		if (n[i] >= 'a' && n[i] <= 'z')
+	for (unsigned int i = 0; i < len; i++) {
+		if (n[i] >= 'a' && n[i] <= 'z') {
 			return true;
+		}
+	}
 	return false; /* it is strict 8.3 upper case */
 }
 
-DOS_Drive::DOS_Drive()
-	: dirCache()
+DOS_Drive::DOS_Drive() : dirCache()
 {
 	curdir[0] = '\0';
-	info[0] = '\0';
+	info[0]   = '\0';
 }
 
-void DOS_Drive::SetDir(const char *path)
+void DOS_Drive::SetDir(const char* path)
 {
 	safe_strcpy(curdir, path);
 }
@@ -234,7 +268,7 @@ void DriveManager::CycleDisks(int requested_drive, bool notify)
 		                      (Drives.at(drive)->GetType() ==
 		                       DosDriveType::Iso);
 		int8_t index = -1;
-		bool slave = false;
+		bool slave   = false;
 		if (is_cdrom) {
 			IDE_CDROM_Detach_Ret(index, slave, drive);
 		}
@@ -250,7 +284,8 @@ void DriveManager::CycleDisks(int requested_drive, bool notify)
 			BIOS_SetDisk(drive, fat_drive->loadedDisk);
 		}
 
-		// copy working directory, acquire system resources and finally switch to next drive
+		// copy working directory, acquire system resources and finally
+		// switch to next drive
 		if (new_disk && old_disk) {
 			strcpy(new_disk->curdir, old_disk->curdir);
 			new_disk->Activate();
@@ -262,19 +297,24 @@ void DriveManager::CycleDisks(int requested_drive, bool notify)
 			IDE_CDROM_Attach(index, slave, drive);
 		}
 
-		if (notify)
+		if (notify) {
 			LOG_MSG("Drive %c: disk %d of %d now active",
 			        'A' + drive,
 			        current_disk + 1,
 			        num_disks);
+		}
 	}
 }
 
-void DriveManager::CycleAllDisks(void) {
-	for (int idrive=0; idrive<DOS_DRIVES; idrive++) CycleDisks(idrive, true);
+void DriveManager::CycleAllDisks(void)
+{
+	for (int idrive = 0; idrive < DOS_DRIVES; idrive++) {
+		CycleDisks(idrive, true);
+	}
 }
 
-int DriveManager::UnmountDrive(int drive) {
+int DriveManager::UnmountDrive(int drive)
+{
 	int result = 0;
 
 	// dettach CDROM from controller, if attached
@@ -303,7 +343,7 @@ int DriveManager::UnmountDrive(int drive) {
 	return result;
 }
 
-char *DriveManager::GetDrivePosition(int drive)
+char* DriveManager::GetDrivePosition(int drive)
 {
 	static char swap_position[10];
 	const auto& drive_info = drive_infos.at(drive);
@@ -317,7 +357,7 @@ char *DriveManager::GetDrivePosition(int drive)
 void DriveManager::Init()
 {
 	// setup drive_infos structure
-	for(int i = 0; i < DOS_DRIVES; i++) {
+	for (int i = 0; i < DOS_DRIVES; i++) {
 		drive_infos.at(i).current_disk = 0;
 	}
 

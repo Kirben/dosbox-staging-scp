@@ -56,7 +56,7 @@ static void perform_dma_io(const DmaDirection direction, const PhysPt spage,
 
 	// Convert from DMA 'words' to actual bytes, no greater than 64 KB
 	auto remaining_bytes = check_cast<uint32_t>(num_words << is_dma16);
-	
+
 	assert(remaining_bytes <= 65536);
 
 	do {
@@ -64,7 +64,7 @@ static void perform_dma_io(const DmaDirection direction, const PhysPt spage,
 		auto page = highpart_addr_page + (mem_address >> 12);
 		if (page < EMM_PAGEFRAME4K) {
 			page = paging.firstmb[page];
-		} else if (page < EMM_PAGEFRAME4K + 0x10) {	
+		} else if (page < EMM_PAGEFRAME4K + 0x10) {
 			page = ems_board_mapping[page];
 		} else if (page < LINK_START) {
 			page = paging.firstmb[page];
@@ -345,8 +345,8 @@ uint16_t DmaController::ReadControllerReg(const io_port_t reg, io_width_t)
 		}
 		return ret;
 	default:
-		LOG(LOG_DMACONTROL,
-		    LOG_NORMAL)("Trying to read undefined DMA port %x", reg);
+		LOG(LOG_DMACONTROL, LOG_NORMAL)
+		("Trying to read undefined DMA port %x", reg);
 		break;
 	}
 	return 0xffff;
