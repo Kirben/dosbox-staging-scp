@@ -1790,7 +1790,7 @@ static uint16_t DOS_SectorAccess(const bool read)
 			return 0x0408; // sector not found
 		}
 		if (read) {
-			if (drive->readSector(sectorNum++, &sectorBuf)) {
+			if (drive->readSector(sectorNum++, sectorBuf)) {
 				return 0x0408;
 			}
 			for (const auto& sectorVal : sectorBuf) {
@@ -1800,7 +1800,7 @@ static uint16_t DOS_SectorAccess(const bool read)
 			for (auto& sectorVal : sectorBuf) {
 				sectorVal = real_readb(bufferSeg, bufferOff++);
 			}
-			if (drive->writeSector(sectorNum++, &sectorBuf)) {
+			if (drive->writeSector(sectorNum++, sectorBuf)) {
 				return 0x0408;
 			}
 		}

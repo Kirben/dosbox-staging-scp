@@ -8,6 +8,7 @@
 #include "dosbox.h"
 
 #include <memory>
+#include <span>
 #include <string>
 #include <unordered_map>
 #include <unordered_set>
@@ -223,8 +224,8 @@ public:
 	void EmptyCache(void) override {}
 
 public:
-	uint8_t readSector(uint32_t sectnum, void* data);
-	uint8_t writeSector(uint32_t sectnum, void* data);
+	uint8_t readSector(uint32_t sectnum, std::span<uint8_t> data);
+	uint8_t writeSector(uint32_t sectnum, std::span<const uint8_t> data);
 	uint32_t getAbsoluteSectFromBytePos(uint32_t startClustNum, uint32_t bytePos);
 	uint32_t getSectorCount();
 	uint32_t getSectorSize(void);

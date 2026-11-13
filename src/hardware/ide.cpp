@@ -8,6 +8,7 @@
 #include <algorithm>
 #include <cassert>
 #include <cmath>
+#include <span>
 
 #include "audio/mixer.h"
 #include "config/config.h"
@@ -3590,7 +3591,9 @@ static void IDE_DelayedCommand(uint32_t idx /*which IDE controller*/)
 				          ((uint32_t)ata->lba[0] - 1u);
 			}
 
-			if (disk->Write_AbsoluteSector(sectorn, ata->sector) != 0) {
+			if (disk->Write_AbsoluteSector(
+			            sectorn, std::span(ata->sector).first(512)) !=
+			    MediaResult::Ok) {
 				LOG_WARNING("IDE: Failed to write sector");
 				ata->abort_error();
 				dev->controller->raise_irq();
@@ -3683,7 +3686,9 @@ static void IDE_DelayedCommand(uint32_t idx /*which IDE controller*/)
 				          ((uint32_t)ata->lba[0] - 1u);
 			}
 
-			if (disk->Read_AbsoluteSector(sectorn, ata->sector) != 0) {
+			if (disk->Read_AbsoluteSector(
+			            sectorn, std::span(ata->sector).first(512)) !=
+			    MediaResult::Ok) {
 				LOG_WARNING("IDE: ATA read failed");
 				ata->abort_error();
 				dev->controller->raise_irq();
@@ -3758,7 +3763,9 @@ static void IDE_DelayedCommand(uint32_t idx /*which IDE controller*/)
 				          ((uint32_t)ata->lba[0] - 1u);
 			}
 
-			if (disk->Read_AbsoluteSector(sectorn, ata->sector) != 0) {
+			if (disk->Read_AbsoluteSector(
+			            sectorn, std::span(ata->sector).first(512)) !=
+			    MediaResult::Ok) {
 				LOG_WARNING("IDE: ATA read failed");
 				ata->abort_error();
 				dev->controller->raise_irq();
@@ -3854,9 +3861,10 @@ static void IDE_DelayedCommand(uint32_t idx /*which IDE controller*/)
 			     cc++) {
 				/* it would be great if the disk object had a
 				 * "read multiple sectors" member function */
-				if (disk->Read_AbsoluteSector(sectorn + cc,
-				                              ata->sector + (cc * 512)) !=
-				    0) {
+				if (disk->Read_AbsoluteSector(
+				            sectorn + cc,
+				            std::span(ata->sector).subspan(cc * 512, 512)) !=
+				    MediaResult::Ok) {
 					LOG_WARNING("IDE: ATA read failed");
 					ata->abort_error();
 					dev->controller->raise_irq();
@@ -3939,9 +3947,10 @@ static void IDE_DelayedCommand(uint32_t idx /*which IDE controller*/)
 			     cc++) {
 				/* it would be great if the disk object had a
 				 * "write multiple sectors" member function */
-				if (disk->Write_AbsoluteSector(sectorn + cc,
-				                               ata->sector + (cc * 512)) !=
-				    0) {
+				if (disk->Write_AbsoluteSector(
+				            sectorn + cc,
+				            std::span(ata->sector).subspan(cc * 512, 512)) !=
+				    MediaResult::Ok) {
 					LOG_WARNING("IDE: Failed to write sector");
 					ata->abort_error();
 					dev->controller->raise_irq();
