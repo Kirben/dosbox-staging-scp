@@ -1296,7 +1296,13 @@ void execute_command(const Command command)
 		seek.cylinder = command == Command::Seek ? fdc.command[2] : 0;
 		seek.head     = (fdc.command[1] >> 2) & 1;
 		seek.active   = true;
-		const auto steps = std::max(1, std::abs(cylinder - seek.cylinder));
+		// SEEK to the present cylinder needs no step pulses.
+		// Recalibrate still probes track zero, even when the cylinder
+		// counter is zero.
+		const auto distance = std::abs(cylinder - seek.cylinder);
+		const auto steps    = command == Command::Seek
+		                            ? distance
+		                            : std::max(1, distance);
 		// Seek has no result phase of its own. Keep accepting commands,
 		// and latch the drive independently until Sense Interrupt.
 		const auto step_ms = fdc.timing_specified
