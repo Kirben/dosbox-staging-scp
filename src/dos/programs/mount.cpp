@@ -28,6 +28,10 @@
 #include "utils/string_utils.h"
 #include <sys/stat.h>
 
+#include "utils/checks.h"
+
+CHECK_NARROWING();
+
 #ifndef S_ISREG
 #define S_ISREG(m) (((m) & S_IFMT) == S_IFREG)
 #endif
@@ -219,7 +223,9 @@ void MOUNT::WriteMountStatus(const std::string& image_type,
 
 			images_str = images_str.append(
 			        std::string(Indent) +
-			        truncate_path(image, term_width - indent_size) +
+			        truncate_path(image,
+			                      check_cast<int>(term_width) -
+			                              check_cast<int>(indent_size)) +
 			        std::string("\n"));
 		}
 
@@ -864,8 +870,9 @@ bool MOUNT::ParseGeometry(MountParameters& params, const GeometryOptions& option
 		while (*scan && index < 20 && count < 4) {
 			if (*scan == ',') {
 				number[index]         = 0;
-				params.sizes[count++] = atoi(number);
-				index                 = 0;
+				params.sizes[count++] = static_cast<uint16_t>(
+				        atoi(number));
+				index = 0;
 			} else {
 				number[index++] = *scan;
 			}
@@ -876,7 +883,7 @@ bool MOUNT::ParseGeometry(MountParameters& params, const GeometryOptions& option
 			// always goes correct as index is max 20 at this point.
 			number[index] = 0;
 
-			params.sizes[count] = atoi(number);
+			params.sizes[count] = static_cast<uint16_t>(atoi(number));
 		}
 	}
 
@@ -929,7 +936,8 @@ bool MOUNT::ParseDrive(MountParameters& params, bool explicit_fs)
 		return false;
 	}
 
-	const char first_char  = toupper(temp_line[0]);
+	const char first_char = static_cast<char>(
+	        toupper(static_cast<unsigned char>(temp_line[0])));
 	params.is_drive_number = false;
 
 	if (isdigit(first_char)) {

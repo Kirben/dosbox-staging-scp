@@ -49,8 +49,8 @@ struct FloppySector {
 	size_t data_delay_bits                    = 0;
 
 	// Sample one physical turn and return whether its data CRC is bad.
-	bool SampleWeakData(uint64_t turn, std::vector<uint8_t>& sampled) const;
-	bool ReadTrackData(size_t size, uint64_t turn,
+	bool SampleWeakData(const uint64_t turn, std::vector<uint8_t>& sampled) const;
+	bool ReadTrackData(const size_t size, const uint64_t turn,
 	                   std::vector<uint8_t>& sampled, bool& bad_crc) const;
 	void UpdateTrackData(const bool create_data_mark = false);
 };
@@ -75,8 +75,8 @@ public:
 	virtual double GetCycleMs(const uint32_t cylinder,
 	                          const uint32_t head) const = 0;
 	// Index positions as fractions of the full capture cycle, ending at 1.
-	virtual std::span<const double> GetRevolutionEnds(uint32_t cylinder,
-	                                                  uint32_t head) const = 0;
+	virtual std::span<const double> GetRevolutionEnds(const uint32_t cylinder,
+	                                                  const uint32_t head) const = 0;
 	virtual double GetFormatCycleMs(const uint32_t cylinder,
 	                                const uint32_t head) const = 0;
 	virtual std::span<const FloppySector> GetTrack(const uint32_t cylinder,

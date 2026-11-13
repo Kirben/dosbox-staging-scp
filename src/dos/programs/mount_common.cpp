@@ -8,11 +8,16 @@
 #include "ints/bios_disk.h"
 #include "misc/support.h"
 
+#include "utils/checks.h"
+
+CHECK_NARROWING();
+
 Bitu ZDRIVE_NUM = 25;
 
 std::string UnmountHelper(char umount)
 {
-	const char drive_id           = toupper(umount);
+	const char drive_id = static_cast<char>(
+	        toupper(static_cast<unsigned char>(umount)));
 	const bool using_drive_number = (drive_id >= '0' && drive_id <= '3');
 	const bool using_drive_letter = (drive_id >= 'A' && drive_id <= 'Z');
 
@@ -20,8 +25,9 @@ std::string UnmountHelper(char umount)
 		return MSG_Get("PROGRAM_MOUNT_DRIVEID_ERROR");
 	}
 
-	const uint8_t i_drive = using_drive_number ? (drive_id - '0')
-	                                           : drive_index(drive_id);
+	const uint8_t i_drive = using_drive_number
+	                              ? check_cast<uint8_t>(drive_id - '0')
+	                              : drive_index(drive_id);
 	assert(i_drive < DOS_DRIVES);
 
 	if (i_drive < MAX_DISK_IMAGES && !Drives[i_drive] && !BIOS_GetDisk(i_drive)) {
@@ -40,7 +46,7 @@ std::string UnmountHelper(char umount)
 		Drives[i_drive] = nullptr;
 		mem_writeb(RealToPhysical(dos.tables.mediaid) + i_drive * 9, 0);
 		if (i_drive == DOS_GetDefaultDrive()) {
-			DOS_SetDrive(ZDRIVE_NUM);
+			DOS_SetDrive(check_cast<uint8_t>(ZDRIVE_NUM));
 		}
 	}
 

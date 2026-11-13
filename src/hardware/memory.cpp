@@ -14,6 +14,10 @@
 #include "hardware/port.h"
 #include "misc/support.h"
 
+#include "utils/checks.h"
+
+CHECK_NARROWING();
+
 constexpr auto Megabyte = 1024 * 1024;
 
 constexpr auto PagesPerMegabyte = Megabyte / DosPageSize;
@@ -197,7 +201,7 @@ Bitu mem_strlen(PhysPt pt)
 {
 	Bitu x = 0;
 	while (x < 1024) {
-		if (!mem_readb_inline(pt + x)) {
+		if (!mem_readb_inline(static_cast<PhysPt>(pt + x))) {
 			return x;
 		}
 		x++;
@@ -353,7 +357,7 @@ MemHandle MEM_AllocatePages(Bitu pages, bool sequence)
 		}
 		MemHandle* next = &ret;
 		while (pages) {
-			*next = index;
+			*next = check_cast<MemHandle>(index);
 			next  = &memory.mhandles[index];
 			index++;
 			pages--;
@@ -370,7 +374,7 @@ MemHandle MEM_AllocatePages(Bitu pages, bool sequence)
 				E_Exit("MEM:corruption during allocate");
 			}
 			while (pages && (!memory.mhandles[index])) {
-				*next = index;
+				*next = check_cast<MemHandle>(index);
 				next  = &memory.mhandles[index];
 				index++;
 				pages--;
@@ -539,14 +543,14 @@ void MEM_A20_Enable(bool enabled)
 uint16_t mem_unalignedreadw(PhysPt address)
 {
 	uint16_t ret = mem_readb_inline(address);
-	ret |= mem_readb_inline(address + 1) << 8;
+	ret |= static_cast<uint16_t>(mem_readb_inline(address + 1) << 8);
 	return ret;
 }
 
 uint32_t mem_unalignedreadd(PhysPt address)
 {
 	uint32_t ret = mem_readb_inline(address);
-	ret |= mem_readb_inline(address + 1) << 8;
+	ret |= static_cast<uint16_t>(mem_readb_inline(address + 1) << 8);
 	ret |= mem_readb_inline(address + 2) << 16;
 	ret |= mem_readb_inline(address + 3) << 24;
 	return ret;

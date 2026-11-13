@@ -11,6 +11,10 @@
 
 #include <string_view>
 
+#include "utils/checks.h"
+
+CHECK_NARROWING();
+
 enum class McbFaultStrategy { Deny, Repair, Report, Allow };
 
 // Constants
@@ -97,10 +101,12 @@ static void DOS_CompressMemory()
 		if ((mcb.GetPSPSeg() == MCB_FREE) &&
 		    (mcb_next.GetPSPSeg() == MCB_FREE)) {
 			faults += triage_block(mcb_next, mcb.GetType());
-			mcb.SetSize(mcb.GetSize() + mcb_next.GetSize() + 1);
+			mcb.SetSize(static_cast<uint16_t>(
+			        mcb.GetSize() + mcb_next.GetSize() + 1));
 			mcb.SetType(mcb_next.GetType());
 		} else {
-			mcb_segment += mcb.GetSize() + 1;
+			mcb_segment = static_cast<uint16_t>(mcb_segment +
+			                                    mcb.GetSize() + 1);
 			mcb.SetPt(mcb_segment);
 		}
 	}
@@ -120,7 +126,7 @@ void DOS_FreeProcessMemory(uint16_t pspseg)
 			break;
 		}
 		faults += triage_block(mcb, middle_mcb_type);
-		mcb_segment += mcb.GetSize() + 1;
+		mcb_segment = static_cast<uint16_t>(mcb_segment + mcb.GetSize() + 1);
 		mcb.SetPt(mcb_segment);
 	}
 
@@ -137,7 +143,8 @@ void DOS_FreeProcessMemory(uint16_t pspseg)
 				break;
 			}
 			faults += triage_block(umb_mcb, middle_mcb_type);
-			umb_start += umb_mcb.GetSize() + 1;
+			umb_start = static_cast<uint16_t>(umb_start +
+			                                  umb_mcb.GetSize() + 1);
 			umb_mcb.SetPt(umb_start);
 		}
 	} else if (umb_start != 0xffff) {
@@ -211,8 +218,9 @@ bool DOS_AllocateMemory(uint16_t* segment, uint16_t* blocks)
 					                          *blocks + 1));
 					mcb_next.SetPSPSeg(MCB_FREE);
 					mcb_next.SetType(mcb.GetType());
-					mcb_next.SetSize(block_size - *blocks - 1);
-					mcb.SetSize(*blocks);
+					mcb_next.SetSize(static_cast<uint16_t>(
+					        block_size - *blocks - 1));
+					mcb.SetSize(static_cast<uint16_t>(*blocks));
 					mcb.SetType(middle_mcb_type);
 					mcb.SetPSPSeg(dos.psp());
 					mcb.SetFileName(psp_name);
@@ -258,10 +266,11 @@ bool DOS_AllocateMemory(uint16_t* segment, uint16_t* blocks)
 						                   *blocks + 1));
 						mcb_next.SetPSPSeg(MCB_FREE);
 						mcb_next.SetType(mcb.GetType());
-						mcb_next.SetSize(found_seg_size -
-						                 *blocks - 1);
+						mcb_next.SetSize(static_cast<uint16_t>(
+						        found_seg_size - *blocks - 1));
 
-						mcb.SetSize(*blocks);
+						mcb.SetSize(static_cast<uint16_t>(
+						        *blocks));
 						mcb.SetType(middle_mcb_type);
 						mcb.SetPSPSeg(dos.psp());
 						mcb.SetFileName(psp_name);
@@ -282,17 +291,19 @@ bool DOS_AllocateMemory(uint16_t* segment, uint16_t* blocks)
 							*segment = found_seg + 1;
 							return true;
 						}
-						*segment = found_seg + 1 +
-						           found_seg_size - *blocks;
+						*segment = static_cast<uint16_t>(
+						        found_seg + 1 +
+						        found_seg_size - *blocks);
 						mcb_next.SetPt(
 						        (uint16_t)(*segment - 1));
-						mcb_next.SetSize(*blocks);
+						mcb_next.SetSize(static_cast<uint16_t>(
+						        *blocks));
 						mcb_next.SetType(mcb.GetType());
 						mcb_next.SetPSPSeg(dos.psp());
 						mcb_next.SetFileName(psp_name);
 						// Old Block
-						mcb.SetSize(found_seg_size -
-						            *blocks - 1);
+						mcb.SetSize(static_cast<uint16_t>(
+						        found_seg_size - *blocks - 1));
 						mcb.SetPSPSeg(MCB_FREE);
 						mcb.SetType(middle_mcb_type);
 					}
@@ -305,7 +316,8 @@ bool DOS_AllocateMemory(uint16_t* segment, uint16_t* blocks)
 				return false;
 			}
 		} else {
-			mcb_segment += mcb.GetSize() + 1;
+			mcb_segment = static_cast<uint16_t>(mcb_segment +
+			                                    mcb.GetSize() + 1);
 		}
 	}
 	return false;
@@ -335,14 +347,14 @@ bool DOS_ResizeMemory(uint16_t segment, uint16_t* blocks)
 		}
 		/* Shrinking MCB */
 		DOS_MCB mcb_new_next(segment + (*blocks));
-		mcb.SetSize(*blocks);
+		mcb.SetSize(static_cast<uint16_t>(*blocks));
 		mcb_new_next.SetType(mcb.GetType());
 		if (mcb.GetType() == ending_mcb_type) {
 			/* Further blocks follow */
 			mcb.SetType(middle_mcb_type);
 		}
 
-		mcb_new_next.SetSize(total - *blocks - 1);
+		mcb_new_next.SetSize(static_cast<uint16_t>(total - *blocks - 1));
 		mcb_new_next.SetPSPSeg(MCB_FREE);
 		mcb.SetPSPSeg(dos.psp());
 		DOS_CompressMemory();
@@ -351,7 +363,7 @@ bool DOS_ResizeMemory(uint16_t segment, uint16_t* blocks)
 	/* MCB will grow, try to join with following MCB */
 	if (mcb.GetType() != ending_mcb_type) {
 		if (mcb_next.GetPSPSeg() == MCB_FREE) {
-			total += mcb_next.GetSize() + 1;
+			total = static_cast<uint16_t>(total + mcb_next.GetSize() + 1);
 		}
 	}
 	if (*blocks < total) {
@@ -359,9 +371,9 @@ bool DOS_ResizeMemory(uint16_t segment, uint16_t* blocks)
 			/* save type of following MCB */
 			mcb.SetType(mcb_next.GetType());
 		}
-		mcb.SetSize(*blocks);
+		mcb.SetSize(static_cast<uint16_t>(*blocks));
 		mcb_next.SetPt((uint16_t)(segment + *blocks));
-		mcb_next.SetSize(total - *blocks - 1);
+		mcb_next.SetSize(static_cast<uint16_t>(total - *blocks - 1));
 		mcb_next.SetType(mcb.GetType());
 		mcb_next.SetPSPSeg(MCB_FREE);
 		mcb.SetType(middle_mcb_type);
@@ -377,7 +389,7 @@ bool DOS_ResizeMemory(uint16_t segment, uint16_t* blocks)
 		/* adjust type of joined MCB */
 		mcb.SetType(mcb_next.GetType());
 	}
-	mcb.SetSize(total);
+	mcb.SetSize(static_cast<uint16_t>(total));
 	mcb.SetPSPSeg(dos.psp());
 	if (*blocks == total) {
 		/* block fit exactly */
@@ -424,14 +436,15 @@ void DOS_BuildUMBChain(bool umb_active, bool ems_active)
 
 		DOS_MCB umb_mcb(first_umb_seg);
 		umb_mcb.SetPSPSeg(0); // currently free
-		umb_mcb.SetSize(first_umb_size - 1);
+		umb_mcb.SetSize(static_cast<uint16_t>(first_umb_size - 1));
 		umb_mcb.SetType(ending_mcb_type);
 
 		/* Scan MCB-chain for last block */
 		uint16_t mcb_segment = dos.firstMCB;
 		DOS_MCB mcb(mcb_segment);
 		while (mcb.GetType() != ending_mcb_type) {
-			mcb_segment += mcb.GetSize() + 1;
+			mcb_segment = static_cast<uint16_t>(mcb_segment +
+			                                    mcb.GetSize() + 1);
 			mcb.SetPt(mcb_segment);
 		}
 
@@ -442,7 +455,7 @@ void DOS_BuildUMBChain(bool umb_active, bool ems_active)
 		mcb.SetPt(cover_mcb);
 		mcb.SetType(middle_mcb_type);
 		mcb.SetPSPSeg(0x0008);
-		mcb.SetSize(first_umb_seg - cover_mcb - 1);
+		mcb.SetSize(static_cast<uint16_t>(first_umb_seg - cover_mcb - 1));
 		mcb.SetFileName("SC      ");
 
 	} else {
@@ -473,7 +486,7 @@ bool DOS_LinkUMBsToMemChain(uint16_t linkstate)
 	DOS_MCB mcb(mcb_segment);
 	while ((mcb_segment != umb_start) && (mcb.GetType() != ending_mcb_type)) {
 		prev_mcb_segment = mcb_segment;
-		mcb_segment += mcb.GetSize() + 1;
+		mcb_segment = static_cast<uint16_t>(mcb_segment + mcb.GetSize() + 1);
 		mcb.SetPt(mcb_segment);
 	}
 	DOS_MCB prev_mcb(prev_mcb_segment);
@@ -505,7 +518,8 @@ static constexpr uint16_t kilobytes_to_segment(size_t address_kb)
 {
 	constexpr auto bytes_per_segment  = 16;
 	constexpr auto bytes_per_kilobyte = 1024;
-	return (address_kb * bytes_per_kilobyte) / bytes_per_segment;
+	return static_cast<uint16_t>((address_kb * bytes_per_kilobyte) /
+	                             bytes_per_segment);
 }
 
 void DOS_SetupMemory(void)
@@ -527,7 +541,7 @@ void DOS_SetupMemory(void)
 	// Create a dummy device MCB with PSPSeg=0x0008
 	DOS_MCB mcb_devicedummy((uint16_t)DOS_MEM_START);
 	mcb_devicedummy.SetPSPSeg(MCB_DOS); // Devices
-	mcb_devicedummy.SetSize(1);
+	mcb_devicedummy.SetSize(static_cast<uint16_t>(1));
 	mcb_devicedummy.SetType(middle_mcb_type); // More blocks will follow
 	//	mcb_devicedummy.SetFileName("SD      ");
 
@@ -535,14 +549,14 @@ void DOS_SetupMemory(void)
 	// Create a small empty MCB (result from a growing environment block)
 	DOS_MCB tempmcb((uint16_t)DOS_MEM_START + mcb_sizes);
 	tempmcb.SetPSPSeg(MCB_FREE);
-	tempmcb.SetSize(4);
+	tempmcb.SetSize(static_cast<uint16_t>(4));
 	mcb_sizes += 5;
 	tempmcb.SetType(middle_mcb_type);
 
 	// Lock the previous empty MCB
 	DOS_MCB tempmcb2((uint16_t)DOS_MEM_START + mcb_sizes);
 	tempmcb2.SetPSPSeg(0x40); // can be removed by loadfix
-	tempmcb2.SetSize(16);
+	tempmcb2.SetSize(static_cast<uint16_t>(16));
 	mcb_sizes += 17;
 	tempmcb2.SetType(middle_mcb_type);
 
@@ -553,10 +567,10 @@ void DOS_SetupMemory(void)
 		const auto end      = kilobytes_to_segment(
                         total_kb - TandyReservedVideoMemoryKb);
 		const auto start = DOS_MEM_START + mcb_sizes;
-		DOS_MCB free_block(start);
+		DOS_MCB free_block(static_cast<uint16_t>(start));
 		free_block.SetPSPSeg(MCB_FREE);
 		free_block.SetType(ending_mcb_type);
-		free_block.SetSize(end - start - 1); // Exclude the MCB paragraph.
+		free_block.SetSize(static_cast<uint16_t>(end - start - 1)); // Exclude the MCB paragraph.
 	} else if (is_machine_pcjr()) {
 		const auto pcjr_start         = DOS_MEM_START + mcb_sizes;
 		constexpr auto mcb_entry_size = 1;
@@ -591,24 +605,24 @@ void DOS_SetupMemory(void)
 			                                  application_segment -
 			                                  mcb_entry_size;
 
-			DOS_MCB reserved(pcjr_start);
+			DOS_MCB reserved(static_cast<uint16_t>(pcjr_start));
 			reserved.SetPSPSeg(MCB_DOS);
-			reserved.SetSize(reserved_size);
+			reserved.SetSize(static_cast<uint16_t>(reserved_size));
 			reserved.SetType(middle_mcb_type);
 
 			DOS_MCB free_block(application_segment);
 			free_block.SetPSPSeg(MCB_FREE);
-			free_block.SetSize(application_size);
+			free_block.SetSize(static_cast<uint16_t>(application_size));
 			free_block.SetType(ending_mcb_type);
 		} else {
 			// No expanded memory means the lower 96KB is usable for
 			// applications
 			assert(pcjr_memory_config == "standard");
 
-			DOS_MCB free_block(pcjr_start);
+			DOS_MCB free_block(static_cast<uint16_t>(pcjr_start));
 			free_block.SetPSPSeg(MCB_FREE);
-			free_block.SetSize(video_memory_start - pcjr_start -
-			                   mcb_entry_size);
+			free_block.SetSize(static_cast<uint16_t>(
+			        video_memory_start - pcjr_start - mcb_entry_size));
 			free_block.SetType(ending_mcb_type);
 		}
 	} else {
@@ -617,7 +631,8 @@ void DOS_SetupMemory(void)
 		DOS_MCB free_block((uint16_t)DOS_MEM_START + mcb_sizes);
 		free_block.SetPSPSeg(MCB_FREE);
 		free_block.SetType(ending_mcb_type);
-		free_block.SetSize(0x9FFE - DOS_MEM_START - mcb_sizes);
+		free_block.SetSize(static_cast<uint16_t>(0x9FFE - DOS_MEM_START -
+		                                         mcb_sizes));
 	}
 
 	dos.firstMCB = DOS_MEM_START;
