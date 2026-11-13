@@ -246,8 +246,8 @@ dw 0aa55h
         ("mounted", [f'mount 0 "{image}" -t floppy -fs none', "boot -l a"]),
     ]
     overlay = image.with_suffix(f".{extension}.overlay")
-    if extension == "scp":
-        boot_cases.append(("dos-path", [f'mount c "{directory}"', "boot c:\\boot.scp"]))
+    if track_image:
+        boot_cases.append(("dos-path", [f'mount c "{directory}"', f"boot c:\\boot.{extension}"]))
     for name, commands in boot_cases:
         image.write_bytes(original)
         overlay.unlink(missing_ok=True)
