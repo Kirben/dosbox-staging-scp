@@ -101,3 +101,6 @@ cmake_test_discovery_*.json
 
 # Python
 __pycache__
+
+# Local, one-use full-test validation for the pre-push gate
+/.floppy-full-validation.json

@@ -9,10 +9,13 @@ from pathlib import Path
 from struct import pack_into
 from tempfile import TemporaryDirectory
 
+from floppy_fixture_cache import cached_fixture
+
 from run_hxc_mfm_probe import check_boot, check_fat, check_overlay_format, encode_track
 from run_raw_floppy_read_probe import run_probe
 
 
+@cached_fixture
 def encode_transcopy(disk, *, step=1, heads=2, weak_bits=False):
     """Build a native track table, with empty slots for skipped cylinders."""
     image = bytearray(0xa00)

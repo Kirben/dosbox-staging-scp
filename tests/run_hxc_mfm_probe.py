@@ -12,6 +12,8 @@ import subprocess
 from tempfile import TemporaryDirectory
 import time
 
+from floppy_fixture_cache import cached_fixture
+
 from run_raw_floppy_read_probe import run_probe
 
 
@@ -28,6 +30,7 @@ def mfm_word(previous, value):
 MFM = tuple(tuple(mfm_word(p, v) for v in range(256)) for p in (0, 1))
 
 
+@cached_fixture
 # pylint: disable-next=R0913,R0917,R0914
 def encode_track(disk, track, duplicate_id=False, verify_errors=False,
                  malformed_id=False, deleted_sector=False):
@@ -69,6 +72,7 @@ def encode_track(disk, track, duplicate_id=False, verify_errors=False,
     return cells
 
 
+@cached_fixture
 def encode(disk, verify_errors=False, malformed_id=False, deleted_sector=False):
     """Encode the complete disk as an HxC MFM image."""
     image = bytearray(19 + 80 * 11)
