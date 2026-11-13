@@ -36,19 +36,23 @@ class FloppyMedia;
 
 class imageDisk final : public SectorMedia {
 public:
-	uint8_t Read_Sector(uint32_t head, uint32_t cylinder, uint32_t sector,
-	                    void* data) override;
-	uint8_t Write_Sector(uint32_t head, uint32_t cylinder, uint32_t sector,
-	                     void* data) override;
-	uint8_t Read_AbsoluteSector(uint32_t sectnum, void* data) override;
-	uint8_t Write_AbsoluteSector(uint32_t sectnum, void* data) override;
+	MediaResult Read_Sector(const uint32_t head, const uint32_t cylinder,
+	                        const uint32_t sector,
+	                        const std::span<uint8_t> data) override;
+	MediaResult Write_Sector(const uint32_t head, const uint32_t cylinder,
+	                         const uint32_t sector,
+	                         const std::span<const uint8_t> data) override;
+	MediaResult Read_AbsoluteSector(const uint32_t sectnum,
+	                                const std::span<uint8_t> data) override;
+	MediaResult Write_AbsoluteSector(const uint32_t sectnum,
+	                                 const std::span<const uint8_t> data) override;
 
 	// The controller schedules its own transfer and requires a full sector.
 	bool ReadSectorForController(const uint32_t head, const uint32_t cylinder,
 	                             const uint32_t sector,
 	                             const std::span<uint8_t> data);
 
-	bool VerifyRawSector(uint32_t sector, std::span<uint8_t> scratch);
+	bool VerifyRawSector(const uint32_t sector, const std::span<uint8_t> scratch);
 
 	bool IsWriteProtected() const;
 	bool WriteSectorForController(const uint32_t head, const uint32_t cylinder,
@@ -88,17 +92,20 @@ public:
 	uint32_t heads, cylinders, sectors;
 
 private:
-	uint8_t write_absolute_sector(const uint32_t sector, const void* data,
-	                              const bool controller_write);
+	MediaResult write_absolute_sector(const uint32_t sector,
+	                                  const std::span<const uint8_t> data,
+	                                  const bool controller_write);
 	bool read_only                            = false;
 	std::shared_ptr<FloppyMedia> floppy_media = {};
 	enum class RawReadMode { Normal, Controller, Verify };
-	uint8_t read_absolute_sector(uint32_t sector, void* data, RawReadMode mode);
+	MediaResult read_absolute_sector(const uint32_t sector,
+	                                 const std::span<uint8_t> data,
+	                                 const RawReadMode mode);
 	cross_off_t current_fpos;
 	enum { NONE, READ, WRITE } last_action;
 };
 
-uint8_t BIOS_GetFloppyCmosType(size_t slot);
+uint8_t BIOS_GetFloppyCmosType(const size_t slot);
 
 #define MAX_HDD_IMAGES 2
 
@@ -110,7 +117,8 @@ std::shared_ptr<imageDisk> BIOS_GetDisk(const size_t slot);
 std::shared_ptr<FloppyMedia> BIOS_GetFloppyMedia(const size_t slot);
 void BIOS_SetDisk(const size_t slot, std::shared_ptr<imageDisk> disk);
 void BIOS_SetBootDisks(BiosBootDisks disks);
-bool BIOS_ReadFloppyBootSector(const std::shared_ptr<imageDisk>& disk, PhysPt address);
+bool BIOS_ReadFloppyBootSector(const std::shared_ptr<imageDisk>& disk,
+                               const PhysPt address);
 
 extern uint16_t imgDTASeg; /* Real memory location of temporary DTA pointer for
                               fat image disk access */

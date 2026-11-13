@@ -466,9 +466,10 @@ uint32_t fatDrive::getClusterValue(uint32_t clustNum)
 
 	if (curFatSect != fatsectnum || !loadedDisk->hardDrive) {
 		/* Load two sectors at once for FAT12 */
-		readSector(fatsectnum, &fatSectBuffer[0]);
+		readSector(fatsectnum, std::span(fatSectBuffer).first(BytePerSector));
 		if (fattype == FAT12) {
-			readSector(fatsectnum + 1, &fatSectBuffer[BytePerSector]);
+			readSector(fatsectnum + 1,
+			           std::span(fatSectBuffer).subspan(BytePerSector, BytePerSector));
 		}
 		curFatSect = fatsectnum;
 	}
@@ -510,9 +511,10 @@ void fatDrive::setClusterValue(uint32_t clustNum, uint32_t clustValue)
 
 	if (curFatSect != fatsectnum || !loadedDisk->hardDrive) {
 		/* Load two sectors at once for FAT12 */
-		readSector(fatsectnum, &fatSectBuffer[0]);
+		readSector(fatsectnum, std::span(fatSectBuffer).first(BytePerSector));
 		if (fattype == FAT12) {
-			readSector(fatsectnum + 1, &fatSectBuffer[BytePerSector]);
+			readSector(fatsectnum + 1,
+			           std::span(fatSectBuffer).subspan(BytePerSector, BytePerSector));
 		}
 		curFatSect = fatsectnum;
 	}
@@ -543,12 +545,14 @@ void fatDrive::setClusterValue(uint32_t clustNum, uint32_t clustValue)
 	}
 	for (int fc = 0; fc < bootbuffer.fatcopies; fc++) {
 		writeSector(fatsectnum + (fc * bootbuffer.sectorsperfat),
-		            &fatSectBuffer[0]);
+		            std::span(fatSectBuffer).first(BytePerSector));
 		if (fattype == FAT12) {
 			if (fatentoff >= 511) {
 				writeSector(fatsectnum + 1 +
 				                    (fc * bootbuffer.sectorsperfat),
-				            &fatSectBuffer[BytePerSector]);
+				            std::span(fatSectBuffer)
+				                    .subspan(BytePerSector,
+				                             BytePerSector));
 			}
 		}
 	}
@@ -686,40 +690,40 @@ bool fatDrive::getDirClustNum(const char* dir, uint32_t* clustNum, bool parDir)
 	return true;
 }
 
-uint8_t fatDrive::readSector(uint32_t sectnum, void* data)
+uint8_t fatDrive::readSector(uint32_t sectnum, const std::span<uint8_t> data)
 {
 	SectorMedia* const media = loadedDisk.get();
 	if (!media) {
-		return 0;
+		return 1;
 	}
 
 	if (absolute) {
-		return media->Read_AbsoluteSector(sectnum, data);
+		return media->Read_AbsoluteSector(sectnum, data) != MediaResult::Ok;
 	}
 	uint32_t cylindersize = bootbuffer.headcount * bootbuffer.sectorspertrack;
 	uint32_t cylinder = sectnum / cylindersize;
 	sectnum %= cylindersize;
 	uint32_t head   = sectnum / bootbuffer.sectorspertrack;
 	uint32_t sector = sectnum % bootbuffer.sectorspertrack + 1L;
-	return media->Read_Sector(head, cylinder, sector, data);
+	return media->Read_Sector(head, cylinder, sector, data) != MediaResult::Ok;
 }
 
-uint8_t fatDrive::writeSector(uint32_t sectnum, void* data)
+uint8_t fatDrive::writeSector(uint32_t sectnum, const std::span<const uint8_t> data)
 {
 	SectorMedia* const media = loadedDisk.get();
 	if (!media) {
-		return 0;
+		return 1;
 	}
 
 	if (absolute) {
-		return media->Write_AbsoluteSector(sectnum, data);
+		return media->Write_AbsoluteSector(sectnum, data) != MediaResult::Ok;
 	}
 	uint32_t cylindersize = bootbuffer.headcount * bootbuffer.sectorspertrack;
 	uint32_t cylinder = sectnum / cylindersize;
 	sectnum %= cylindersize;
 	uint32_t head   = sectnum / bootbuffer.sectorspertrack;
 	uint32_t sector = sectnum % bootbuffer.sectorspertrack + 1L;
-	return media->Write_Sector(head, cylinder, sector, data);
+	return media->Write_Sector(head, cylinder, sector, data) != MediaResult::Ok;
 }
 
 uint32_t fatDrive::getSectorCount()
@@ -967,7 +971,14 @@ fatDrive::fatDrive(const char* sysFilename, uint32_t bytesector,
 		/* Set user specified harddrive parameters */
 		loadedDisk->Set_Geometry(headscyl, cylinders, cylsector, bytesector);
 
-		loadedDisk->Read_Sector(0, 0, 1, &mbrData);
+		if (loadedDisk->Read_Sector(0,
+		                            0,
+		                            1,
+		                            {reinterpret_cast<uint8_t*>(&mbrData),
+		                             sizeof(mbrData)}) != MediaResult::Ok) {
+			created_successfully = false;
+			return;
+		}
 
 		if (mbrData.magic1 != 0x55 || mbrData.magic2 != 0xaa) {
 			LOG_MSG("Possibly invalid partition table in disk image.");
@@ -1010,7 +1021,12 @@ fatDrive::fatDrive(const char* sysFilename, uint32_t bytesector,
 		return;
 	}
 
-	loadedDisk->Read_AbsoluteSector(0 + partSectOff, &bootbuffer);
+	if (loadedDisk->Read_AbsoluteSector(partSectOff,
+	                                    {reinterpret_cast<uint8_t*>(&bootbuffer),
+	                                     sizeof(bootbuffer)}) != MediaResult::Ok) {
+		created_successfully = false;
+		return;
+	}
 
 	bootbuffer.bytespersector    = host_to_le(bootbuffer.bytespersector);
 	bootbuffer.reservedsectors   = host_to_le(bootbuffer.reservedsectors);
@@ -1040,7 +1056,11 @@ fatDrive::fatDrive(const char* sysFilename, uint32_t bytesector,
 		} else {
 			/* Read media descriptor in FAT */
 			uint8_t sectorBuffer[BytePerSector];
-			loadedDisk->Read_AbsoluteSector(1, &sectorBuffer);
+			if (loadedDisk->Read_AbsoluteSector(1, sectorBuffer) !=
+			    MediaResult::Ok) {
+				created_successfully = false;
+				return;
+			}
 			uint8_t mdesc = sectorBuffer[0];
 
 			if (mdesc >= 0xf8) {
@@ -1517,7 +1537,8 @@ nextfile:
 			DOS_SetError(DOSERR_NO_MORE_FILES);
 			return false;
 		}
-		readSector(firstRootDirSect + logentsector, sectbuf);
+		readSector(firstRootDirSect + logentsector,
+		           {reinterpret_cast<uint8_t*>(sectbuf), sizeof(sectbuf)});
 	} else {
 		tmpsector = getAbsoluteSectFromChain(dirClustNumber, logentsector);
 		/* A zero sector number can't happen */
@@ -1525,7 +1546,8 @@ nextfile:
 			DOS_SetError(DOSERR_NO_MORE_FILES);
 			return false;
 		}
-		readSector(tmpsector, sectbuf);
+		readSector(tmpsector,
+		           {reinterpret_cast<uint8_t*>(sectbuf), sizeof(sectbuf)});
 	}
 	dirPos++;
 	dta.SetDirID(dirPos);
@@ -1677,7 +1699,9 @@ bool fatDrive::directoryBrowse(uint32_t dirClustNumber, direntry* useEntry,
 				return false;
 			}
 		}
-		if (readSector(tmpsector, sectbuf)) {
+		if (readSector(tmpsector,
+		               {reinterpret_cast<uint8_t*>(sectbuf),
+		                sizeof(sectbuf)})) {
 			return false;
 		}
 		dirPos++;
@@ -1720,7 +1744,9 @@ bool fatDrive::directoryChange(uint32_t dirClustNumber, direntry* useEntry,
 				return false;
 			}
 		}
-		if (readSector(tmpsector, sectbuf)) {
+		if (readSector(tmpsector,
+		               {reinterpret_cast<uint8_t*>(sectbuf),
+		                sizeof(sectbuf)})) {
 			return false;
 		}
 		dirPos++;
@@ -1733,7 +1759,9 @@ bool fatDrive::directoryChange(uint32_t dirClustNumber, direntry* useEntry,
 	}
 	if (tmpsector != 0) {
 		copyDirEntry(useEntry, &sectbuf[entryoffset]);
-		return writeSector(tmpsector, sectbuf) == 0;
+		return writeSector(tmpsector,
+		                   {reinterpret_cast<uint8_t*>(sectbuf),
+		                    sizeof(sectbuf)}) == 0;
 	} else {
 		return false;
 	}
@@ -1757,7 +1785,9 @@ bool fatDrive::addDirectoryEntry(uint32_t dirClustNumber, direntry useEntry)
 				return false;
 			}
 			tmpsector = firstRootDirSect + logentsector;
-			readSector(tmpsector, sectbuf);
+			readSector(tmpsector,
+			           {reinterpret_cast<uint8_t*>(sectbuf),
+			            sizeof(sectbuf)});
 		} else {
 			tmpsector = getAbsoluteSectFromChain(dirClustNumber,
 			                                     logentsector);
@@ -1778,7 +1808,9 @@ bool fatDrive::addDirectoryEntry(uint32_t dirClustNumber, direntry useEntry)
 					                 directory */
 				}
 			}
-			readSector(tmpsector, sectbuf);
+			readSector(tmpsector,
+			           {reinterpret_cast<uint8_t*>(sectbuf),
+			            sizeof(sectbuf)});
 		}
 		dirPos++;
 
@@ -1786,7 +1818,9 @@ bool fatDrive::addDirectoryEntry(uint32_t dirClustNumber, direntry useEntry)
 		if ((sectbuf[entryoffset].entryname[0] == 0xe5) ||
 		    (sectbuf[entryoffset].entryname[0] == 0x00)) {
 			copyDirEntry(&useEntry, &sectbuf[entryoffset]);
-			writeSector(tmpsector, sectbuf);
+			writeSector(tmpsector,
+			            {reinterpret_cast<uint8_t*>(sectbuf),
+			             sizeof(sectbuf)});
 			break;
 		}
 	}
@@ -1798,11 +1832,11 @@ void fatDrive::zeroOutCluster(uint32_t clustNumber)
 {
 	uint8_t secBuffer[BytePerSector];
 
-	memset(&secBuffer[0], 0, BytePerSector);
+	memset(secBuffer, 0, BytePerSector);
 
 	int i;
 	for (i = 0; i < bootbuffer.sectorspercluster; i++) {
-		writeSector(getAbsoluteSectFromChain(clustNumber, i), &secBuffer[0]);
+		writeSector(getAbsoluteSectFromChain(clustNumber, i), secBuffer);
 	}
 }
 

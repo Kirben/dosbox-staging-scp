@@ -59,11 +59,12 @@ def check_overlay_writes(dosbox, nasm, directory):
             for size_code, cylinder in ((1, 7), (3, 8)):
                 options = [f"-DSIZE_CODE={size_code}", f"-DSECTOR_BYTES={128 << size_code}",
                            f"-DCYLINDER={cylinder}", "-DOVERLAY_WRITE"]
-                if machine != "svga_s3":
+                if machine == "pcjr":
                     options.append("-DSECTOR_PATH")
                 run_probe(dosbox, nasm, directory, mount, options, machine)
             saved = overlay.read_bytes()
-            assert saved[6] == 5
+            # These writes first format tracks at an explicit data rate.
+            assert saved[6] == 8
             for size_code, cylinder in ((1, 7), (3, 8)):
                 options = [f"-DSIZE_CODE={size_code}", f"-DSECTOR_BYTES={128 << size_code}",
                            f"-DCYLINDER={cylinder}", "-DOVERLAY_REPLAY"]

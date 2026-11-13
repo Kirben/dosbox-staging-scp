@@ -3,6 +3,7 @@ find_package(GTest REQUIRED)
 
 add_executable(dosbox_tests
     ansi_code_markup_tests.cpp
+    sector_media_tests.cpp
     batch_file_tests.cpp
     bit_view_tests.cpp
     bitops_tests.cpp
@@ -110,6 +111,7 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Linux" AND NOT CMAKE_CROSSCOMPILING)
 
         add_floppy_guest_test(FloppyFormatRate run_floppy_format_rate_probe.py)
         add_floppy_guest_test(FloppyBiosMotor run_floppy_bios_motor_probe.py)
+        add_floppy_guest_test(FloppySectorContract run_sector_contract_probe.py)
         add_floppy_guest_test(FloppyFatCache run_fat_floppy_cache_probe.py)
         add_floppy_guest_test(FloppyTiming run_floppy_timing_probe.py)
         add_floppy_guest_test(FloppyReporting run_floppy_reporting_probe.py)

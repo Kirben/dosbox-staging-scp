@@ -338,7 +338,7 @@ void BOOT::Run(void)
 	if (!boot_disk ||
 	    (boot_from_files && rombytesize_1 < sizeof(bootarea.rawdata)) ||
 	    boot_disk->getSectSize() != sizeof(bootarea.rawdata) ||
-	    boot_disk->Read_Sector(0, 0, 1, bootarea.rawdata) != 0) {
+	    boot_disk->Read_Sector(0, 0, 1, bootarea.rawdata) != MediaResult::Ok) {
 		WriteOut(MSG_Get("PROGRAM_BOOT_UNABLE"), drive);
 		return;
 	}

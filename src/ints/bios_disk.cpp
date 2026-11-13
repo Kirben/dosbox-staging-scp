@@ -249,140 +249,167 @@ static void swap_disks(bool pressed)
 	swapping_requested = true;
 }
 
-static uint8_t read_track_sector(const FloppyMedia& media, const uint32_t head,
-                                 const uint32_t cylinder, const uint32_t sector,
-                                 const std::span<uint8_t> data)
+static MediaResult read_track_sector(const FloppyMedia& media, const uint32_t head,
+                                     const uint32_t cylinder, const uint32_t sector,
+                                     const std::span<uint8_t> data)
 {
-	uint8_t status = 0x04;
+	auto result = MediaResult::NoSector;
 	for (const auto& candidate : media.GetTrack(cylinder, head)) {
 		if (candidate.cylinder != cylinder || candidate.head != head ||
-		    candidate.id != sector ||
-		    candidate.data.size() != data.size() || candidate.deleted) {
+		    candidate.id != sector || candidate.data.size() != data.size()) {
+			continue;
+		}
+		if (candidate.deleted) {
+			if (result == MediaResult::NoSector) {
+				result = MediaResult::DeletedMark;
+			}
 			continue;
 		}
 		if (candidate.id_crc_error || candidate.data_crc_error) {
-			status = 0x10;
+			result = MediaResult::CrcError;
 			continue;
 		}
 		std::copy(candidate.data.begin(), candidate.data.end(), data.begin());
-		return 0;
+		return MediaResult::Ok;
 	}
-	return status;
+	return result;
 }
 
-uint8_t imageDisk::Read_Sector(uint32_t head, uint32_t cylinder,
-                               uint32_t sector, void* data)
+MediaResult imageDisk::Read_Sector(const uint32_t head, const uint32_t cylinder,
+                                   const uint32_t sector,
+                                   const std::span<uint8_t> data)
 {
-	if (floppy_media) {
-		return read_track_sector(*floppy_media,
-		                         head,
-		                         cylinder,
-		                         sector,
-		                         {static_cast<uint8_t*>(data), sector_size});
+	if (data.size() != sector_size) {
+		return MediaResult::InvalidBuffer;
 	}
-
-	uint32_t sectnum;
-
-	sectnum = ((cylinder * heads + head) * sectors) + sector - 1L;
-
-	return Read_AbsoluteSector(sectnum, data);
+	if (floppy_media) {
+		return read_track_sector(*floppy_media, head, cylinder, sector, data);
+	}
+	if (head >= heads || cylinder >= cylinders || !sector) {
+		return MediaResult::NoSector;
+	}
+	const auto absolute_sector = ((cylinder * heads + head) * sectors) +
+	                             sector - 1;
+	return Read_AbsoluteSector(absolute_sector, data);
 }
 
-uint8_t imageDisk::Read_AbsoluteSector(uint32_t sectnum, void* data)
+MediaResult imageDisk::Read_AbsoluteSector(const uint32_t sector,
+                                           const std::span<uint8_t> data)
 {
+	if (data.size() != sector_size) {
+		return MediaResult::InvalidBuffer;
+	}
 	if (floppy_media) {
-		if (!sectors || sectnum >= cylinders * heads * sectors) {
-			return 0x04;
+		if (!sectors || sector >= cylinders * heads * sectors) {
+			return MediaResult::NoSector;
 		}
-		const auto track = sectnum / sectors;
+		const auto track = sector / sectors;
 		return Read_Sector(track % heads,
 		                   track / heads,
-		                   sectnum % sectors + 1,
+		                   sector % sectors + 1,
 		                   data);
 	}
-	return read_absolute_sector(sectnum, data, RawReadMode::Normal);
+	return read_absolute_sector(sector, data, RawReadMode::Normal);
 }
 
 bool imageDisk::ReadSectorForController(const uint32_t head, const uint32_t cylinder,
                                         const uint32_t sector,
                                         const std::span<uint8_t> data)
 {
-	if (data.size() != sector_size) {
-		return false;
-	}
 	const auto absolute_sector = (cylinder * heads + head) * sectors + sector - 1;
-	return read_absolute_sector(absolute_sector,
-	                            data.data(),
-	                            RawReadMode::Controller) == 0;
+	return read_absolute_sector(absolute_sector, data, RawReadMode::Controller) ==
+	       MediaResult::Ok;
 }
 
 bool imageDisk::VerifyRawSector(const uint32_t sector, const std::span<uint8_t> scratch)
 {
-	return scratch.size() == sector_size &&
-	       read_absolute_sector(sector, scratch.data(), RawReadMode::Verify) == 0;
+	return read_absolute_sector(sector, scratch, RawReadMode::Verify) ==
+	       MediaResult::Ok;
 }
 
-uint8_t imageDisk::read_absolute_sector(const uint32_t sectnum, void* data,
-                                        const RawReadMode mode)
+MediaResult imageDisk::read_absolute_sector(const uint32_t sector,
+                                            const std::span<uint8_t> data,
+                                            const RawReadMode mode)
 {
-	const auto bytenum = check_cast<cross_off_t>(sectnum) * sector_size;
-
+	if (data.size() != sector_size) {
+		return MediaResult::InvalidBuffer;
+	}
+	if (uint64_t{sector} >= uint64_t{cylinders} * heads * sectors) {
+		return MediaResult::NoSector;
+	}
+	if (!diskimg) {
+		return MediaResult::ReadError;
+	}
+	const auto bytenum = check_cast<cross_off_t>(sector) * sector_size;
 	if (last_action == WRITE || bytenum != current_fpos) {
 		if (cross_fseeko(diskimg, bytenum, SEEK_SET) != 0) {
 			LOG_ERR("BIOSDISK: Could not seek to sector %u in file '%s': %s",
-			        sectnum,
+			        sector,
 			        diskname,
 			        strerror(errno));
-			return 0xff;
+			return MediaResult::SeekError;
 		}
 	}
-
-	// Only perform delay if we booted from a disk image
-	// Otherwise this would result in delay duplication in the int21 handler
+	// FAT adds its own delay; the controller schedules its own transfer.
 	if (mode != RawReadMode::Controller && DOS_IsGuestOsBooted()) {
-		DiskType type = hardDrive ? DiskType::HardDisk : DiskType::Floppy;
+		const auto type = hardDrive ? DiskType::HardDisk : DiskType::Floppy;
 		DOS_PerformDiskIoDelay(sector_size, type);
 	}
-
-	size_t ret   = fread(data, 1, sector_size, diskimg);
-	current_fpos = bytenum + ret;
-	last_action  = READ;
-
-	return mode != RawReadMode::Normal && ret != sector_size ? 0xff : 0;
+	const auto count = fread(data.data(), 1, data.size(), diskimg);
+	current_fpos     = bytenum + check_cast<cross_off_t>(count);
+	last_action      = READ;
+	return count == data.size() ? MediaResult::Ok : MediaResult::ReadError;
 }
 
-uint8_t imageDisk::Write_Sector(uint32_t head, uint32_t cylinder,
-                                uint32_t sector, void* data)
+MediaResult imageDisk::Write_Sector(const uint32_t head, const uint32_t cylinder,
+                                    const uint32_t sector,
+                                    const std::span<const uint8_t> data)
 {
-	if (floppy_media) {
-		if (IsWriteProtected()) {
-			return 0x03;
-		}
-		const std::span bytes(static_cast<const uint8_t*>(data), sector_size);
-		return floppy_media->WriteSector(cylinder, head, sector, bytes)
-		             ? 0
-		             : 0x05;
+	if (data.size() != sector_size) {
+		return MediaResult::InvalidBuffer;
 	}
-	uint32_t sectnum;
-
-	sectnum = ((cylinder * heads + head) * sectors) + sector - 1L;
-
-	return Write_AbsoluteSector(sectnum, data);
+	if (IsWriteProtected()) {
+		return MediaResult::WriteProtected;
+	}
+	if (floppy_media) {
+		const auto track = floppy_media->GetTrack(cylinder, head);
+		if (std::ranges::none_of(track, [&](const auto& candidate) {
+			    return candidate.cylinder == cylinder &&
+			           candidate.head == head &&
+			           candidate.id == sector &&
+			           candidate.data.size() == data.size();
+		    })) {
+			return MediaResult::NoSector;
+		}
+		return floppy_media->WriteSector(cylinder, head, sector, data)
+		             ? MediaResult::Ok
+		             : MediaResult::WriteError;
+	}
+	if (head >= heads || cylinder >= cylinders || !sector) {
+		return MediaResult::NoSector;
+	}
+	const auto absolute_sector = ((cylinder * heads + head) * sectors) +
+	                             sector - 1;
+	return Write_AbsoluteSector(absolute_sector, data);
 }
 
-uint8_t imageDisk::Write_AbsoluteSector(uint32_t sectnum, void* data)
+MediaResult imageDisk::Write_AbsoluteSector(const uint32_t sector,
+                                            const std::span<const uint8_t> data)
 {
+	if (data.size() != sector_size) {
+		return MediaResult::InvalidBuffer;
+	}
 	if (floppy_media) {
-		if (!sectors || sectnum >= cylinders * heads * sectors) {
-			return 0x04;
+		if (!sectors || sector >= cylinders * heads * sectors) {
+			return MediaResult::NoSector;
 		}
-		const auto track = sectnum / sectors;
+		const auto track = sector / sectors;
 		return Write_Sector(track % heads,
 		                    track / heads,
-		                    sectnum % sectors + 1,
+		                    sector % sectors + 1,
 		                    data);
 	}
-	return write_absolute_sector(sectnum, data, false);
+	return write_absolute_sector(sector, data, false);
 }
 
 bool imageDisk::IsWriteProtected() const
@@ -394,49 +421,50 @@ bool imageDisk::WriteSectorForController(const uint32_t head, const uint32_t cyl
                                          const uint32_t sector,
                                          const std::span<const uint8_t> data)
 {
-	if (data.size() != sector_size || floppy_media) {
+	if (floppy_media) {
 		return false;
 	}
 	const auto absolute_sector = (cylinder * heads + head) * sectors + sector - 1;
-	return write_absolute_sector(absolute_sector, data.data(), true) == 0;
+	return write_absolute_sector(absolute_sector, data, true) == MediaResult::Ok;
 }
 
-uint8_t imageDisk::write_absolute_sector(const uint32_t sectnum, const void* data,
-                                         const bool controller_write)
+MediaResult imageDisk::write_absolute_sector(const uint32_t sector,
+                                             const std::span<const uint8_t> data,
+                                             const bool controller_write)
 {
-	if (IsWriteProtected()) {
-		return 0x03;
+	if (data.size() != sector_size) {
+		return MediaResult::InvalidBuffer;
 	}
-
-	const auto bytenum = check_cast<cross_off_t>(sectnum) * sector_size;
-
-	// LOG_MSG("Writing sectors to %ld at bytenum %d", sectnum, bytenum);
-
+	if (IsWriteProtected()) {
+		return MediaResult::WriteProtected;
+	}
+	if (uint64_t{sector} >= uint64_t{cylinders} * heads * sectors) {
+		return MediaResult::NoSector;
+	}
+	if (!diskimg) {
+		return MediaResult::WriteError;
+	}
+	const auto bytenum = check_cast<cross_off_t>(sector) * sector_size;
 	if (last_action == READ || bytenum != current_fpos) {
 		if (cross_fseeko(diskimg, bytenum, SEEK_SET) != 0) {
 			LOG_ERR("BIOSDISK: Could not seek to byte %lld in file '%s': %s",
-			        static_cast<long long int>(bytenum),
+			        static_cast<long long>(bytenum),
 			        diskname,
 			        strerror(errno));
-			return 0xff;
+			return MediaResult::SeekError;
 		}
 	}
-
-	// Only perform delay if we booted from a disk image
-	// Otherwise this would result in delay duplication in the int21 handler
 	if (!controller_write && DOS_IsGuestOsBooted()) {
-		DiskType type = hardDrive ? DiskType::HardDisk : DiskType::Floppy;
+		const auto type = hardDrive ? DiskType::HardDisk : DiskType::Floppy;
 		DOS_PerformDiskIoDelay(sector_size, type);
 	}
-
-	size_t ret   = fwrite(data, 1, sector_size, diskimg);
-	current_fpos = bytenum + ret;
-	last_action  = WRITE;
-
-	if (controller_write) {
-		return ret == sector_size && fflush(diskimg) == 0 ? 0 : 0x05;
+	const auto count = fwrite(data.data(), 1, data.size(), diskimg);
+	current_fpos     = bytenum + check_cast<cross_off_t>(count);
+	last_action      = WRITE;
+	if (count != data.size() || (controller_write && fflush(diskimg) != 0)) {
+		return MediaResult::WriteError;
 	}
-	return ((ret > 0) ? 0x00 : 0x05);
+	return MediaResult::Ok;
 }
 
 imageDisk::imageDisk(FILE* img_file, const char* img_name, uint32_t img_size_k,
@@ -673,6 +701,23 @@ struct DiskServiceResult {
 	std::optional<uint32_t> fixed_disk_sectors = {};
 };
 
+static uint8_t media_result_to_bios(const MediaResult result)
+{
+	switch (result) {
+	case MediaResult::Ok: return 0x00;
+	case MediaResult::InvalidBuffer: return 0x01;
+	case MediaResult::WriteProtected: return 0x03;
+	case MediaResult::DeletedMark:
+	case MediaResult::NoSector: return 0x04;
+	case MediaResult::WriteError: return 0x05;
+	case MediaResult::CrcError: return 0x10;
+	case MediaResult::ReadError:
+	case MediaResult::SeekError: return 0xff;
+	}
+	assert(false);
+	return 0xff;
+}
+
 static FloppyBiosTransferResult bios_track_sector_transfer(
         const DiskServiceRequest& request, const uint8_t unit,
         const FloppyBiosTransfer operation, const uint8_t size_code)
@@ -715,8 +760,8 @@ static FloppyBiosTransferResult bios_track_sector_transfer(
 		} else {
 			const auto status = read_track_sector(
 			        media, head, cylinder, sector, data);
-			if (status) {
-				return {status, completed};
+			if (status != MediaResult::Ok) {
+				return {media_result_to_bios(status), completed};
 			}
 			if (operation == FloppyBiosTransfer::Read) {
 				for (const auto byte : data) {
@@ -884,10 +929,11 @@ static DiskServiceResult run_disk_service(const DiskServiceRequest& request)
 		const auto segat = RealSegment(request.buffer);
 		auto bufptr      = RealOffset(request.buffer);
 		for (uint32_t i = 0; i < request.count; ++i) {
-			last_status = disk.Read_Sector(request.head,
-			                               request.cylinder,
-			                               request.sector + i,
-			                               sectbuf.data());
+			last_status = media_result_to_bios(
+			        disk.Read_Sector(request.head,
+			                         request.cylinder,
+			                         request.sector + i,
+			                         sectbuf));
 			if ((last_status != 0x00) || killRead) {
 				LOG_MSG("Error in disk read");
 				killRead = false;
@@ -921,13 +967,13 @@ static DiskServiceResult run_disk_service(const DiskServiceRequest& request)
 			for (auto& byte : sectbuf) {
 				byte = real_readb(segat, bufptr++);
 			}
-			last_status = disk.Write_Sector(request.head,
-			                                request.cylinder,
-			                                request.sector + i,
-			                                sectbuf.data());
+			last_status = media_result_to_bios(
+			        disk.Write_Sector(request.head,
+			                          request.cylinder,
+			                          request.sector + i,
+			                          sectbuf));
 			if (last_status != 0x00) {
-				result.carry = true;
-				return result;
+				return {.status = last_status, .carry = true};
 			}
 		}
 		if (unit < 2 && request.count) {
