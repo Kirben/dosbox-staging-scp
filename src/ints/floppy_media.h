@@ -3,6 +3,7 @@
 #ifndef DOSBOX_FLOPPY_MEDIA_H
 #define DOSBOX_FLOPPY_MEDIA_H
 
+#include <cassert>
 #include <cstddef>
 #include <cstdint>
 #include <memory>
@@ -24,6 +25,20 @@ struct FloppyMfmTrack {
 	size_t bit_count             = 0;
 	size_t index                 = 0;
 	std::vector<bool> weak_cells = {};
+	// Cumulative cell boundaries when several captured turns share one stream.
+	std::vector<size_t> revolution_ends_bits = {};
+
+	size_t GetRevolutionBitCount(const size_t revolution) const
+	{
+		if (revolution_ends_bits.empty()) {
+			return bit_count;
+		}
+		assert(revolution < revolution_ends_bits.size());
+		const auto start = revolution
+		                         ? revolution_ends_bits[revolution - 1]
+		                         : 0;
+		return revolution_ends_bits[revolution] - start;
+	}
 };
 
 struct FloppySector {

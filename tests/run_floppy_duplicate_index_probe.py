@@ -31,7 +31,7 @@ def duplicate_cells():
     def field(data):
         sync()
         append(data + pack('>H', crc_hqx(b'\xa1' * 3 + data, 0xffff)))
-    for value, end in ((0x11, 6250), (0x22, 12500)):
+    for value, end in ((0x12, 6250), (0x22, 12500)):
         field(bytes((0xfe, 0, 0, 1, 2)))
         append(b'\x4e' * 22 + bytes(12))
         field(b'\xfb' + bytes([value]) * 512)
@@ -39,11 +39,22 @@ def duplicate_cells():
     return cells
 
 
+# pylint: disable-next=too-many-locals
 def image_bytes(crossing):
     """Move the first duplicate across index on the second revolution."""
     base = duplicate_cells()
-    tracks = (base[-64:] + base[:-64],
-              base[64:] + base[:64] if crossing else base[-64:] + base[:-64])
+    # Keep enough separation for both complete data fields across the
+    # capture-loop splice. The old +/-64-byte fixture overlapped those fields.
+    shift = 640
+    first = base[-shift:] + base[:-shift]
+    second = base[shift:] + base[:shift] if crossing else first
+    if crossing:
+        sync = b"\x44\x89" * 3
+        data_mark = base.find(sync, base.find(sync) + 6)
+        field_end = data_mark + 8 + 512 * 2 + 4
+        prefix = field_end + 2 - shift
+        first[:prefix] = base[shift:field_end + 2]
+    tracks = (first, second)
     turns = []
     last = 0
     elapsed = 0
@@ -113,7 +124,7 @@ def main():
             image = directory / f'crossing{crossing}.scp'
             original = image_bytes(crossing)
             image.write_bytes(original)
-            before = (0x11, 0x22, 0x22, 0x11) if crossing else (0x11, 0x22, 0x11, 0x22)
+            before = (0x12, 0x22, 0x22, 0x12) if crossing else (0x12, 0x22, 0x12, 0x22)
             after = (0x66, 0x22, 0x22, 0x66) if crossing else (0x66, 0x22, 0x66, 0x22)
             run_guest(args.dosbox.resolve(), args.nasm, directory, image,
                       program(RESET + read_copies(before), COMMANDS),

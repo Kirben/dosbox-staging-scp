@@ -401,12 +401,12 @@ void schedule_track_sector(const FloppyMedia& image, const bool read_id)
 		const auto& sector = *fdc.track_sector;
 		const auto start = sector.revolution ? ends[sector.revolution - 1]
 		                                     : 0;
-		const auto bit_ms = sector.mfm_track
-		                          ? (ends[sector.revolution] - start) *
-		                                    cycle_ms /
-		                                    static_cast<double>(
-		                                            sector.mfm_track->bit_count)
-		                          : pio_byte_ms / 16;
+		const auto bit_ms =
+		        sector.mfm_track
+		                ? (ends[sector.revolution] - start) * cycle_ms /
+		                          static_cast<double>(sector.mfm_track->GetRevolutionBitCount(
+		                                  sector.revolution))
+		                : pio_byte_ms / 16;
 		// The rotational ID position is the first A1 sync cell.
 		// Read all three sync bytes, FE, CHRN and CRC before reporting
 		// Read ID results or rejecting a data command's bad ID CRC.
@@ -557,11 +557,13 @@ void transfer_track_sector(uint32_t)
 		                         rotation_cycle_ms();
 		const auto header_ms = static_cast<double>(sector.data_delay_bits) *
 		                       duration_ms /
-		                       static_cast<double>(sector.mfm_track->bit_count);
+		                       static_cast<double>(sector.mfm_track->GetRevolutionBitCount(
+		                               sector.revolution));
 		fdc.track_transfer_ms = static_cast<double>(sector.data_delay_bits +
 		                                            (size + 2) * 16) *
 		                        duration_ms /
-		                        static_cast<double>(sector.mfm_track->bit_count);
+		                        static_cast<double>(sector.mfm_track->GetRevolutionBitCount(
+		                                sector.revolution));
 		fdc.track_sample_turn = static_cast<uint64_t>(
 		        rotation_elapsed_ms() / rotation_cycle_ms());
 		fdc.track_transfer_ready = true;
@@ -755,7 +757,8 @@ void transfer_sector(uint32_t)
 			                         : 0;
 			bit_ms           = (ends[field->revolution] - start) *
 			         rotation_cycle_ms() /
-			         static_cast<double>(field->mfm_track->bit_count);
+			         static_cast<double>(field->mfm_track->GetRevolutionBitCount(
+			                 field->revolution));
 			header_ms = static_cast<double>(field->data_delay_bits) *
 			            bit_ms;
 		}
