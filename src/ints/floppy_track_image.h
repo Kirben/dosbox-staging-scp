@@ -137,7 +137,7 @@ private:
 	                            const std::span<const double> ends);
 	static std::vector<FloppySector> DecodeFluxTrack(
 	        const FluxTrack& flux, const std::span<const double> ends,
-	        const uint64_t cycle, const uint16_t rate_kbps);
+	        const uint16_t rate_kbps);
 	std::vector<Track> tracks = {};
 };
 

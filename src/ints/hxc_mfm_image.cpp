@@ -141,11 +141,6 @@ std::shared_ptr<FloppyMfmTrack> FloppyMfmTrack::RecoverFlux(
 	return raw;
 }
 
-void FloppyMfmTrack::DetectWeakCells()
-{
-	weak_cells = find_weak_cells({cells, bit_count});
-}
-
 std::shared_ptr<FloppyMfmTrack> FloppyMfmTrack::Sample(const uint64_t cycle,
                                                        const double duration_ms,
                                                        const uint16_t rate_kbps) const
@@ -837,7 +832,6 @@ std::vector<FloppySector> FloppyTrackImage::SampleTrack(const uint32_t cylinder,
 	if (track.flux && !track.cells_changed) {
 		sectors = DecodeFluxTrack(*track.flux,
 		                          track.revolution_ends,
-		                          cycle,
 		                          rate_kbps);
 	} else {
 		auto raws = track.raw_tracks;
