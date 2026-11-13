@@ -10,7 +10,7 @@ python3 scripts/tools/test_floppy.py smoke --build /path/to/build
 python3 scripts/tools/test_floppy.py full --build /path/to/build
 ```
 
-`focused` runs format-rate, motor-reporting and sector-contract regressions. `smoke` exercises
+`focused` runs the Read Deleted Data regressions. `smoke` exercises
 all six image formats, sector contracts, FAT coherence, representative
 controller reads, and the cache/workflow checks. These groups are for iteration.
 `full` runs **every registered CTest test**, including the unit and floppy suites.
