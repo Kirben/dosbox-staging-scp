@@ -1,5 +1,6 @@
 target_sources(dosboxcommon PRIVATE
   86f_track_image.cpp
+  bitstream_capture.cpp
   bios.cpp
   bios_disk.cpp
   bios_keyboard.cpp

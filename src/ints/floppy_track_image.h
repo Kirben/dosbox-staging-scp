@@ -16,6 +16,8 @@
 #include "ints/floppy_media.h"
 #include "misc/support.h"
 
+struct BitstreamCapture;
+
 class FloppyTrackImage final : public FloppyMedia {
 public:
 	static std::unique_ptr<FloppyTrackImage> LoadHxcMfm(FILE* file,
@@ -60,6 +62,11 @@ public:
 	uint32_t logical_sectors = 0;
 
 private:
+	static std::unique_ptr<FloppyTrackImage> FromBitstreamCapture(
+	        const BitstreamCapture& capture, const std::string& path,
+	        const bool read_only, const uint64_t fingerprint,
+	        std::string& error);
+
 	// Cylinder, head, logical ID, physical slot (zero for CHS), and size code.
 	using OverlayKey = std::array<uint32_t, 5>;
 	struct OverlaySector {
