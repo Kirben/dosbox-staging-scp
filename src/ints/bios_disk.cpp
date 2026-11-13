@@ -1151,8 +1151,10 @@ void BIOS_SetupDisks(void)
 	CALLBACK_Setup(call_int13, &INT13_DiskHandler, CB_INT13, "Int 13 Bios disk");
 	RealSetVec(0x13, CALLBACK_RealPointer(call_int13));
 
-	// Clean any the numbered images
-	disk_slots.fill({});
+	// Clear numbered disk images without attachment side effects.
+	for (size_t slot = 0; slot < disk_slots.size(); ++slot) {
+		exchange_disk_slot(slot, {});
+	}
 
 	// Clear any raw disk images
 	boot_disks.fill(nullptr);
