@@ -453,7 +453,55 @@ check_watchdog:
     jne report
     mov al,81h
     out 0f2h,al
+
+    mov byte [stage],14
+    ; BIOS Reset must cancel both a pending head load and the adapter timer.
+    mov si,reset_specify
+    mov cx,3
+    call send
+    mov si,reset_read_id
+    mov cx,2
+    call send
+    mov al,0e1h
+    out 0f2h,al
+    mov al,0a1h
+    out 0f2h,al
+    xor ax,ax
+    xor dx,dx
+    int 13h
+    jc report
+    cmp ah,0
+    jne report
+    mov cx,60
+    call wait_ticks
+    cmp byte [watchdog_count],2
+    jne report
+    in al,MSR
+    cmp al,80h
+    jne report
+    mov al,8
+    out DATA,al
+    in al,DATA
+    cmp al,80h
+    jne report
+
+    mov byte [stage],15
+    ; A reset also discards a partially submitted command.
+    mov al,0fh
+    out DATA,al
+    xor al,al
+    out DATA,al
+    xor ax,ax
+    xor dx,dx
+    int 13h
+    jc report
+    in al,MSR
+    cmp al,80h
+    jne report
     ret
+
+reset_specify db 3,0f1h,1
+reset_read_id db 4ah,0
 
 wait_ticks:
     push es

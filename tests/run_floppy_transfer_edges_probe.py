@@ -318,7 +318,7 @@ check_guard:
     jne done
     loop check_guard
 """
-        command = "command db 46h,0,0,0,1,0,1,54h,16\nspecify db 3,0dfh,1\n"
+        command = "command db 46h,0,0,0,1,0,1,54h,16\nspecify db 3,0dfh,3\n"
         run_guest(dosbox, nasm, directory, image, program(checks, command))
         assert image.read_bytes() == original
 

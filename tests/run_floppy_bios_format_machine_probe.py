@@ -277,13 +277,7 @@ def check_busy(args, directory, machine):
     pending = "mov dx,3f5h\nmov al,0fh\nout dx,al\nxor al,al\nout dx,al\n"
     checks = SETUP + request(Case(2), machine == "pcjr")
     checks += pending + format_checks(Scenario(machine, status=0x80), order).replace(FINISH, "")
-    if machine == "pcjr":
-        # PCjr BIOS reset is a compatibility no-op; reset the native adapter.
-        checks += "mov dx,0f2h\nxor al,al\nout dx,al\nmov al,81h\nout dx,al\n"
-        checks += "mov dx,0f5h\n"
-        checks += "mov al,8\nout dx,al\nin al,dx\nin al,dx\n" * 4
-    else:
-        checks += "xor ax,ax\nxor dx,dx\nint 13h\njc done\n"
+    checks += "xor ax,ax\nxor dx,dx\nint 13h\njc done\n"
     checks += format_checks(Scenario(machine), order)
     run_guest(args.dosbox.resolve(), args.nasm, directory, image, checks,
               machine=machine, read_only=False,

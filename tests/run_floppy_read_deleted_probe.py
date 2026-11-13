@@ -268,11 +268,14 @@ def check_duplicates(args, directory, extension, pio):
           flush=True)
 
 
-def check_delay(directory, extension, case, _pio):
+def check_delay(directory, extension, case, pio):
     """Check skipped-mark recognition and the final two physical CRC bytes."""
     t0, p0, t1, p1 = unpack("<IHIH", (directory / "CLOCK.BIN").read_bytes())
     delay = (65536 * (t1 - t0) + p0 - p1) * 1000 / 1193182
     bounds = (4.2, 4.8) if case.name == "all-skipped-track" else (0.045, 0.13)
+    if case.name == "all-skipped-track" and pio:
+        # HLT=1 at 250 kbit/s misses the near-index ID until the next turn.
+        bounds = (204.2, 204.8)
     assert bounds[0] < delay < bounds[1], (extension, case.name, delay)
 
 

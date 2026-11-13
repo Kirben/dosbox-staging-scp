@@ -790,7 +790,7 @@ static DiskServiceResult run_disk_service(const DiskServiceRequest& request)
 				     disk_slots[0].sector->active) ||
 				    (disk_slots[1].sector &&
 				     disk_slots[1].sector->active)) {
-					if (!is_machine_pcjr() && request.drive < 2) {
+					if (request.drive < 2) {
 						FLOPPY_BiosReset(request.drive);
 					}
 					last_status  = 0x00;
@@ -799,7 +799,7 @@ static DiskServiceResult run_disk_service(const DiskServiceRequest& request)
 			}
 			return result;
 		}
-		if (!is_machine_pcjr() && request.drive < 2) {
+		if (request.drive < 2) {
 			FLOPPY_BiosReset(request.drive);
 		}
 		last_status = 0x00;
