@@ -91,3 +91,22 @@ TEST(FloppyTrackData, SampleWeakCellsBeforeFieldDecoding)
 	EXPECT_EQ(raw.cells, original);
 	EXPECT_TRUE(raw.weak_cells[0]);
 }
+
+TEST(FloppyTrackData, RecoverTransitionsAtSelectedRate)
+{
+	// Pulses every four microseconds form alternating raw cells at 250 kbps.
+	const std::array<uint64_t, 4> transitions = {4000, 8000, 12000, 16000};
+	const auto normal = FloppyMfmTrack::RecoverFlux(transitions, 16000, 2000);
+	ASSERT_TRUE(normal);
+	EXPECT_EQ(normal->bit_count, size_t{8});
+	EXPECT_EQ(normal->cells, std::vector<uint8_t>({0x55}));
+	const auto fast = FloppyMfmTrack::RecoverFlux(transitions, 16000, 1000);
+	ASSERT_TRUE(fast);
+	EXPECT_EQ(fast->bit_count, size_t{16});
+	EXPECT_EQ(fast->cells, std::vector<uint8_t>({0x11, 0x11}));
+	EXPECT_EQ(normal->Sample(0, 0.016, 250)->cells, normal->cells);
+	const auto resampled = normal->Sample(0, 0.016, 500);
+	ASSERT_TRUE(resampled);
+	EXPECT_EQ(resampled->cells, fast->cells);
+	EXPECT_EQ(normal->cells, std::vector<uint8_t>({0x55}));
+}
