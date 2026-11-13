@@ -94,3 +94,19 @@ The format probe also checks busy-command rejection and recovery using BIOS
 Reset on PCjr and Tandy, preserving keyboard interrupt handling.
 
 `Guest.FloppySpecify` measures SRT across all four data rates and verifies head-load delays, head-unload expiry, and maximum-delay zero codes in standard-PC and PCjr modes. The PCjr watchdog probe also verifies BIOS Reset cancels delayed head loading, the watchdog, and an incomplete command without changing keyboard IRQ handling. BIOS Format machine tests also check recovery from an unfinished command using BIOS Reset. Timer values follow Intel 82077AA Table 5-10 (500 kbit/s base, scaled by data rate).
+
+## Image probing and standalone parsers
+
+`DiskImageFactory.*` and `DiskImageFactoryPathTest.*` check content signatures,
+file-position preservation, raw fallback, malformed-container rejection, and
+explicit hard-disk selection. `Guest.FloppyImageProbe` boots renamed MFM, SCP,
+86F, and TransCopy captures through host paths, DOS paths, and mounted slots.
+
+`BitstreamCapture.*` tests container parsing without starting an emulator:
+TransCopy native step tables and index skew, HxC track extents, 86F bit counts,
+index and physical-hole write protection, and SCP flux entries and atomic
+failure handling. The bitstream parsers produce capture records; sector
+recognition and persistent overlays remain in the media adapter.
+
+Shared FAT-cache, timing, disk-change, and BIOS/CMOS reporting tests include
+IMG, IMA, SCP, MFM, 86F, and TransCopy.
