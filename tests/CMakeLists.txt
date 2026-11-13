@@ -3,14 +3,14 @@ find_package(GTest REQUIRED)
 
 add_executable(dosbox_tests
     ansi_code_markup_tests.cpp
-    disk_image_factory_tests.cpp
-    sector_media_tests.cpp
     batch_file_tests.cpp
     bit_view_tests.cpp
     bitops_tests.cpp
+    bitstream_capture_tests.cpp
     clap_plugin_tests.cpp
     cmd_move_tests.cpp
     config_tests.cpp
+    disk_image_factory_tests.cpp
     dos_files_tests.cpp
     dos_memory_struct_tests.cpp
     dosbox_pause_fsm_tests.cpp
@@ -33,6 +33,7 @@ add_executable(dosbox_tests
     rgb_tests.cpp
     ring_buffer_tests.cpp
     rwqueue_tests.cpp
+    sector_media_tests.cpp
     shader_pragma_parser_tests.cpp
     shell_cmds_tests.cpp
     shell_redirection_tests.cpp
@@ -117,19 +118,13 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Linux" AND NOT CMAKE_CROSSCOMPILING)
             set_tests_properties(Guest.${name} PROPERTIES LABELS floppy TIMEOUT 300)
         endfunction()
 
-        add_floppy_guest_test(FloppyFormatRate run_floppy_format_rate_probe.py)
-        add_floppy_guest_test(FloppyBiosMotor run_floppy_bios_motor_probe.py)
-        add_floppy_guest_test(FloppySectorContract run_sector_contract_probe.py)
-        add_floppy_guest_test(FloppyReadDeleted run_floppy_read_deleted_probe.py)
-        add_floppy_guest_test(FloppyReadDeletedSmoke run_floppy_read_deleted_probe.py --smoke)
-        add_floppy_guest_test(FloppyWriteDeleted run_floppy_write_deleted_probe.py)
-        add_floppy_guest_test(FloppyBiosMachine run_floppy_bios_machine_probe.py)
-        add_floppy_guest_test(FloppyBiosFormatMachine run_floppy_bios_format_machine_probe.py)
-        add_floppy_guest_test(FloppySpecify run_floppy_specify_probe.py)
-        add_floppy_guest_test(FloppyImageProbe run_floppy_image_probe.py)
         add_floppy_guest_test(FloppyFatCache run_fat_floppy_cache_probe.py)
         add_floppy_guest_test(FloppyTiming run_floppy_timing_probe.py)
         add_floppy_guest_test(FloppyReporting run_floppy_reporting_probe.py)
+        add_floppy_guest_test(FloppyBiosMotor run_floppy_bios_motor_probe.py)
+        add_floppy_guest_test(FloppyBiosMachine run_floppy_bios_machine_probe.py)
+        add_floppy_guest_test(FloppyBiosFormatMachine run_floppy_bios_format_machine_probe.py)
+        add_floppy_guest_test(FloppySectorContract run_sector_contract_probe.py)
         add_floppy_guest_test(FloppyDiskChange run_floppy_disk_change_probe.py)
         add_floppy_guest_test(FloppyBiosRead run_bios_floppy_read_probe.py)
         add_floppy_guest_test(FloppyBiosWrite run_bios_floppy_read_probe.py --scp-write)
@@ -142,6 +137,8 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Linux" AND NOT CMAKE_CROSSCOMPILING)
         add_floppy_guest_test(FloppyBiosResult run_floppy_bios_result_probe.py)
         add_floppy_guest_test(FloppyZeroSector run_floppy_zero_sector_probe.py)
         add_floppy_guest_test(FloppyResetPosition run_floppy_reset_position_probe.py)
+        add_floppy_guest_test(FloppyImageProbe run_floppy_image_probe.py)
+        add_floppy_guest_test(FloppySpecify run_floppy_specify_probe.py)
         add_floppy_guest_test(FloppySeekStatus run_floppy_seek_status_probe.py)
         add_floppy_guest_test(FloppyOverlapWrite run_floppy_overlap_write_probe.py)
         add_floppy_guest_test(FloppyIdOnlyWrite run_floppy_id_only_write_probe.py)
@@ -162,6 +159,9 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Linux" AND NOT CMAKE_CROSSCOMPILING)
         add_floppy_guest_test(FloppyPioTrackTiming run_floppy_pio_track_timing_probe.py)
         add_floppy_guest_test(FloppyTrackEot run_floppy_track_eot_probe.py)
         add_floppy_guest_test(FloppyPcjrWatchdog run_pcjr_floppy_pio_probe.py --watchdog)
+        add_floppy_guest_test(FloppyReadDeleted run_floppy_read_deleted_probe.py)
+        add_floppy_guest_test(FloppyWriteDeleted run_floppy_write_deleted_probe.py)
+        add_floppy_guest_test(FloppyReadDeletedSmoke run_floppy_read_deleted_probe.py --smoke)
         add_floppy_guest_test(FloppyReadTrack run_bios_floppy_read_probe.py --read-track)
         add_floppy_guest_test(FloppyLongReadTrack run_long_read_track_probe.py)
         add_floppy_guest_test(FloppyReadTrackSizeCrc run_floppy_read_track_size_probe.py --case crc)
@@ -175,6 +175,7 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Linux" AND NOT CMAKE_CROSSCOMPILING)
         add_floppy_guest_test(FloppyFormattedSize run_formatted_floppy_probe.py --case size)
         add_floppy_guest_test(FloppyFormattedCrc run_formatted_floppy_probe.py --case crc)
         add_floppy_guest_test(FloppyFormattedTiming run_formatted_floppy_probe.py --case timing)
+        add_floppy_guest_test(FloppyFormatRate run_floppy_format_rate_probe.py)
         add_floppy_guest_test(FloppyRawController run_raw_floppy_read_probe.py --write --format)
         add_floppy_guest_test(FloppyRawBiosFormat run_raw_floppy_read_probe.py --bios-format)
         add_floppy_guest_test(FloppyScpAttachment run_scp_attachment_probe.py)
@@ -192,5 +193,7 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Linux" AND NOT CMAKE_CROSSCOMPILING)
         add_floppy_guest_test(FloppyBiosSectorIds run_transcopy_layout_probe.py --sector-ids)
         add_floppy_guest_test(FloppyBiosLegacyDpt run_bios_floppy_dpt_probe.py)
         add_floppy_guest_test(FloppyWriteSafety run_floppy_write_safety_probe.py)
+        set_property(TEST Guest.FloppyReadDeletedSmoke Guest.FloppySectorContract
+                          Guest.FloppyFatCache APPEND PROPERTY LABELS floppy-smoke)
     endif()
 endif()
