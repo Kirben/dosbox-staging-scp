@@ -45,6 +45,9 @@ public:
 
 	std::span<const FloppySector> GetTrack(const uint32_t cylinder,
 	                                       const uint32_t head) const override;
+	std::vector<FloppySector> SampleTrack(const uint32_t cylinder,
+	                                      const uint32_t head,
+	                                      const uint64_t cycle) const override;
 	bool SupportsTrackWrites() const override;
 	bool IsWriteProtected() const override;
 	bool WriteSector(const uint32_t cylinder, const uint32_t head,
@@ -105,10 +108,13 @@ private:
 	Overlay overlay              = {};
 	TrackFormats track_formats   = {};
 
+	struct FluxTrack;
 	struct Track {
 		std::vector<FloppySector> sectors                 = {};
 		mutable std::vector<FloppySector> visible_sectors = {};
 		mutable bool dirty                                = true;
+		std::vector<std::shared_ptr<FloppyMfmTrack>> raw_tracks = {};
+		std::shared_ptr<const FluxTrack> flux                   = {};
 		bool cells_changed                                = false;
 		double cycle_ms                                   = 200.0;
 		double format_cycle_ms                            = 200.0;
@@ -126,6 +132,11 @@ private:
 	        const double duration_ms, const TrackFormat& format);
 	void UpdateLogicalGeometry(const uint32_t cylinder, const uint32_t head,
 	                           const std::span<const FloppySector> sectors);
+	static void PositionSectors(std::vector<FloppySector>& sectors,
+	                            const std::span<const double> ends);
+	static std::vector<FloppySector> DecodeFluxTrack(const FluxTrack& flux,
+	                                                 const std::span<const double> ends,
+	                                                 const uint64_t cycle);
 	std::vector<Track> tracks = {};
 };
 
