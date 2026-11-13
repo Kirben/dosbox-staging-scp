@@ -8,20 +8,12 @@
 #include <cmath>
 #include <map>
 
+#include "ints/bitstream_capture.h"
 #include "utils/checks.h"
 
 CHECK_NARROWING();
 
 namespace {
-
-uint32_t read_le(const std::span<const uint8_t> bytes)
-{
-	uint32_t value = 0;
-	for (size_t i = 0; i < bytes.size(); ++i) {
-		value |= uint32_t{bytes[i]} << (i * 8);
-	}
-	return value;
-}
 
 struct MfmBitstream {
 	std::span<const uint8_t> bytes = {};
@@ -520,92 +512,66 @@ std::vector<FloppySector> FloppyTrackImage::FormatMfmTrack(
 	return DecodeMfmTrack(captured->cells, bits, 0, false, captured);
 }
 
-std::unique_ptr<FloppyTrackImage> FloppyTrackImage::LoadHxcMfm(
-        FILE* file, const std::string& path, const bool read_only, std::string& error)
+std::unique_ptr<FloppyTrackImage> FloppyTrackImage::FromBitstreamCapture(
+        const BitstreamCapture& capture, const std::string& path,
+        const bool read_only, const uint64_t fingerprint, std::string& error)
 {
-	constexpr size_t HeaderSize   = 19;
-	constexpr size_t EntrySize    = 11;
-	constexpr long MaxImageSize   = 16 * 1024 * 1024;
-	constexpr size_t MaxTrackSize = 64 * 1024;
-	constexpr std::array<uint8_t, 7> Signature = {'H', 'X', 'C', 'M', 'F', 'M', 0};
-
-	if (fseek(file, 0, SEEK_END) != 0) {
-		return {};
-	}
-	const auto size = ftell(file);
-	if (size < static_cast<long>(HeaderSize) || size > MaxImageSize ||
-	    fseek(file, 0, SEEK_SET) != 0) {
-		return {};
-	}
-	std::vector<uint8_t> bytes(static_cast<size_t>(size));
-	if (fread(bytes.data(), 1, bytes.size(), file) != bytes.size() ||
-	    !std::ranges::equal(Signature, std::span(bytes).first(Signature.size()))) {
-		return {};
-	}
-	const std::span<const uint8_t> input = bytes;
-	const auto cylinders                 = read_le(input.subspan(7, 2));
-	const auto heads                     = input[9];
-	const auto rpm                       = read_le(input.subspan(10, 2));
-	const auto rate_kbps                 = read_le(input.subspan(12, 2));
-	const auto table = static_cast<size_t>(read_le(input.subspan(15, 4)));
-	const auto count = static_cast<size_t>(cylinders) * heads;
-	if (cylinders == 0 || cylinders > 128 || heads == 0 || heads > 2 ||
-	    (rpm && (rpm < 200 || rpm > 600)) || rate_kbps < 245 ||
-	    rate_kbps > 1020 || table < HeaderSize || table > input.size() ||
-	    count > (input.size() - table) / EntrySize) {
-		return {};
-	}
-
-	auto image         = std::make_unique<FloppyTrackImage>();
-	image->cylinders   = cylinders;
-	image->heads       = heads;
-	const auto turn_ms = rpm ? 60'000.0 / rpm : 200.0;
-	image->tracks.resize(count);
-	std::vector<bool> seen(count);
-	std::map<size_t, size_t> extents = {};
-	const auto data_start            = table + count * EntrySize;
-	for (size_t i = 0; i < count; ++i) {
-		const auto entry = input.subspan(table + i * EntrySize, EntrySize);
-		const auto cylinder = read_le(entry.first(2));
-		const auto head     = entry[2];
-		const auto length = static_cast<size_t>(read_le(entry.subspan(3, 4)));
-		const auto offset = static_cast<size_t>(read_le(entry.subspan(7, 4)));
-		if (cylinder >= cylinders || head >= heads) {
-			return {};
-		}
-		const auto track = static_cast<size_t>(cylinder) * heads + head;
-		if (seen[track]) {
-			return {};
-		}
-		seen[track]             = true;
-		auto& decoded           = image->tracks[track];
-		decoded.cycle_ms        = turn_ms;
-		decoded.format_cycle_ms = turn_ms;
-		if (!length) {
+	auto image       = std::make_unique<FloppyTrackImage>();
+	image->cylinders = capture.cylinders;
+	image->heads     = capture.heads;
+	image->tracks.resize(capture.tracks.size());
+	bool found_ids = false;
+	for (size_t i = 0; i < capture.tracks.size(); ++i) {
+		const auto& captured  = capture.tracks[i];
+		auto& track           = image->tracks[i];
+		track.cycle_ms        = captured.cycle_ms;
+		track.format_cycle_ms = track.cycle_ms;
+		if (captured.cells.empty()) {
 			continue;
 		}
-		if (length < 16 || length > MaxTrackSize || offset < data_start ||
-		    offset > input.size() || length > input.size() - offset) {
-			return {};
-		}
-		const auto next = extents.lower_bound(offset);
-		if ((next != extents.end() && offset + length > next->first) ||
-		    (next != extents.begin() && std::prev(next)->second > offset)) {
-			return {};
-		}
-		extents.emplace_hint(next, offset, offset + length);
-		decoded.sectors = DecodeMfmTrack(input.subspan(offset, length));
-		image->UpdateLogicalGeometry(cylinder, head, decoded.sectors);
+		track.sectors = DecodeMfmTrack(captured.cells,
+		                               captured.bit_count,
+		                               captured.index,
+		                               captured.detect_weak);
+		image->UpdateLogicalGeometry(check_cast<uint32_t>(i / image->heads),
+		                             check_cast<uint32_t>(i % image->heads),
+		                             track.sectors);
+		found_ids |= !track.sectors.empty();
 	}
-	if (std::ranges::all_of(image->tracks, [](const auto& track) {
-		    return track.sectors.empty();
-	    })) {
+	if (!found_ids) {
+		error = "no IBM MFM sector IDs found";
 		return {};
 	}
-	if (!image->OpenOverlay(path, read_only, FloppyImageFingerprint(bytes), error)) {
+	if (!image->OpenOverlay(path, read_only || capture.read_only, fingerprint, error)) {
 		return {};
 	}
 	return image;
+}
+
+std::unique_ptr<FloppyTrackImage> FloppyTrackImage::LoadHxcMfm(
+        FILE* file, const std::string& path, const bool read_only, std::string& error)
+{
+	error.clear();
+	if (fseek(file, 0, SEEK_END)) {
+		error = "cannot seek HxC MFM image";
+		return {};
+	}
+	const auto size = ftell(file);
+	if (size < 19 || size > 16 * 1024 * 1024 || fseek(file, 0, SEEK_SET)) {
+		error = "invalid HxC MFM image size";
+		return {};
+	}
+	std::vector<uint8_t> bytes(static_cast<size_t>(size));
+	if (fread(bytes.data(), 1, bytes.size(), file) != bytes.size()) {
+		error = "cannot read HxC MFM image";
+		return {};
+	}
+	const auto capture = ParseHxcMfmCapture(bytes, error);
+	if (!capture) {
+		return {};
+	}
+	return FromBitstreamCapture(
+	        *capture, path, read_only, FloppyImageFingerprint(bytes), error);
 }
 
 std::span<const FloppySector> FloppyTrackImage::GetTrack(const uint32_t cylinder,
