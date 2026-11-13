@@ -108,6 +108,7 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Linux" AND NOT CMAKE_CROSSCOMPILING)
             set_tests_properties(Guest.${name} PROPERTIES LABELS floppy TIMEOUT 300)
         endfunction()
 
+        add_floppy_guest_test(FloppyFormatRate run_floppy_format_rate_probe.py)
         add_floppy_guest_test(FloppyFatCache run_fat_floppy_cache_probe.py)
         add_floppy_guest_test(FloppyTiming run_floppy_timing_probe.py)
         add_floppy_guest_test(FloppyReporting run_floppy_reporting_probe.py)

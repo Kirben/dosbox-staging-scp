@@ -82,23 +82,33 @@ def check_sizes(dosbox, nasm, directory, extension):
                   program(format_checks(1) + checks, commands), read_only=False)
         overlay = Path(str(image) + ".overlay")
         saved = overlay.read_bytes()
-        # Ordinary formats retain the old layout. A mismatched command N
-        # needs version 7, whose format record stores the physical size.
-        assert saved[6] == (7 if size_code == 2 else 4)
+        assert saved[6] == 8
         run_guest(dosbox, nasm, directory, image, program(RESET + checks, commands))
         assert overlay.read_bytes() == saved
+        # Earlier records inferred the clock from the original capture.
+        legacy = bytearray(saved)
+        del legacy[22:24]
+        legacy[6] = 7 if size_code == 2 else 4
+        if size_code == 1:
+            del legacy[21]
+        overlay.write_bytes(legacy)
+        run_guest(dosbox, nasm, directory, image, program(RESET + checks, commands))
+        assert overlay.read_bytes() == legacy
+        overlay.write_bytes(saved)
         if size_code == 2:
             check_invalid_overlay(dosbox, nasm, directory, image, saved)
         assert image.read_bytes() == original
 
 
 def check_invalid_overlay(dosbox, nasm, directory, image, saved):
-    """Reject an invalid physical size and a truncated version-7 format ID."""
+    """Reject invalid field sizes, data rates and truncated format IDs."""
     overlay = Path(str(image) + ".overlay")
     invalid = bytearray(saved)
     # Header (16), track address (3), count and fill precede command N.
     invalid[21] = 8
-    for damaged in (invalid, saved[:-1]):
+    invalid_rate = bytearray(saved)
+    invalid_rate[22:24] = b"\x7b\0"
+    for damaged in (invalid, invalid_rate, saved[:-1]):
         overlay.write_bytes(damaged)
         run_guest(dosbox, nasm, directory, image, """
     mov ax,0800h
