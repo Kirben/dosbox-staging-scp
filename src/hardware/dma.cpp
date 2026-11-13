@@ -242,8 +242,10 @@ void DmaController::WriteControllerReg(const io_port_t reg,
 			chan->base_addr = (chan->base_addr & 0xff00) | val;
 			chan->curr_addr = (chan->curr_addr & 0xff00) | val;
 		} else {
-			chan->base_addr = (chan->base_addr & 0x00ff) | (val << 8);
-			chan->curr_addr = (chan->curr_addr & 0x00ff) | (val << 8);
+			chan->base_addr = static_cast<uint16_t>(
+			        (chan->base_addr & 0x00ff) | (val << 8));
+			chan->curr_addr = static_cast<uint16_t>(
+			        (chan->curr_addr & 0x00ff) | (val << 8));
 		}
 		break;
 	/* set DMA transfer count (1st byte low part, 2nd byte high part) */
@@ -258,8 +260,10 @@ void DmaController::WriteControllerReg(const io_port_t reg,
 			chan->base_count = (chan->base_count & 0xff00) | val;
 			chan->curr_count = (chan->curr_count & 0xff00) | val;
 		} else {
-			chan->base_count = (chan->base_count & 0x00ff) | (val << 8);
-			chan->curr_count = (chan->curr_count & 0x00ff) | (val << 8);
+			chan->base_count = static_cast<uint16_t>(
+			        (chan->base_count & 0x00ff) | (val << 8));
+			chan->curr_count = static_cast<uint16_t>(
+			        (chan->curr_count & 0x00ff) | (val << 8));
 		}
 		break;
 	case 0x8: /* Comand reg not used */ break;
