@@ -102,6 +102,7 @@ struct Seek {
 
 struct Controller {
 	ByteTransfer bytes      = {};
+	bool fm                 = false;
 	bool fifo_enabled       = false;
 	uint8_t fifo_threshold  = 0;
 	double transfer_byte_ms = 8.0 / DefaultDataRateKbps;
@@ -135,7 +136,7 @@ struct Controller {
 	bool sector_transfer_ready                = false;
 	double sector_end_ms                      = 0;
 	uint64_t sector_sample_turn               = 0;
-	std::map<std::tuple<uint8_t, uint8_t, uint64_t, uint16_t>, std::vector<FloppySector>>
+	std::map<std::tuple<uint8_t, uint8_t, uint64_t, uint16_t, bool>, std::vector<FloppySector>>
 	        track_samples                     = {};
 	uint64_t track_cycle                      = 0;
 	FloppySector selected_field               = {};
@@ -382,12 +383,10 @@ const std::vector<FloppySector>& sampled_track(const uint64_t cycle)
 		return sampled_cycle < cycle && cycle - sampled_cycle > 1;
 	});
 	auto [entry, inserted] = fdc.track_samples.try_emplace(
-	        std::tuple{fdc.cylinder, fdc.head, cycle, data_rate_kbps});
+	        std::tuple{fdc.cylinder, fdc.head, cycle, data_rate_kbps, fdc.fm});
 	if (inserted) {
-		entry->second = fdc.media->SampleTrack(fdc.cylinder,
-		                                       fdc.head,
-		                                       cycle,
-		                                       data_rate_kbps);
+		entry->second = fdc.media->SampleTrack(
+		        fdc.cylinder, fdc.head, cycle, data_rate_kbps, fdc.fm);
 	}
 	return entry->second;
 }
@@ -1346,6 +1345,8 @@ void acknowledge_pio_byte()
 
 void start_data(const Command command)
 {
+	fdc.fm                    = (fdc.command[0] & 0x40) == 0;
+	pio_byte_ms               = (fdc.fm ? 16.0 : 8.0) / data_rate_kbps;
 	fdc.skipped_control_mark  = false;
 	fdc.wrong_cylinder_sector = nullptr;
 	const auto unit           = selected_unit();
@@ -1366,6 +1367,12 @@ void start_data(const Command command)
 	if ((is_write_command(command) || command == Command::FormatTrack) &&
 	    fdc.disk->IsWriteProtected()) {
 		finish_data(0x02);
+		return;
+	}
+	if (fdc.fm && (is_write_command(command) || command == Command::FormatTrack)) {
+		// FM writes need encoding-aware persistent records.
+		fdc.track_sector = nullptr;
+		finish_data(0x04);
 		return;
 	}
 	// Raw sector files cannot retain the deleted data-address mark.
@@ -1398,6 +1405,14 @@ void start_loaded_data(uint32_t)
 	const auto command = static_cast<Command>(fdc.command[0] & 0x1f);
 	if (!media_ready(selected_unit())) {
 		finish_data(0x04);
+		return;
+	}
+	if (fdc.fm && !fdc.media) {
+		// Raw sector disks expose a synthesized MFM layout only.
+		fdc.missing_address_mark = true;
+		fdc.track_sector         = nullptr;
+		PIC_AddEvent(missing_sector,
+		             2 * rotation_cycle_ms() - rotation_ms());
 		return;
 	}
 	if (command == Command::FormatTrack) {
@@ -1762,7 +1777,7 @@ void write_ccr(io_port_t, const io_val_t value, io_width_t)
 {
 	constexpr std::array<uint16_t, 4> DataRatesKbps = {500, 300, 250, 1000};
 	data_rate_kbps = DataRatesKbps[value & 3u];
-	pio_byte_ms    = 8.0 / data_rate_kbps;
+	pio_byte_ms    = (fdc.fm ? 16.0 : 8.0) / data_rate_kbps;
 }
 
 void reset_controller()

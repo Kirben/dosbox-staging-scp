@@ -220,3 +220,34 @@ preserves the captured transition stream, including gaps, and cycles through
 actual recorded turns. Annotated 86F weak cells and the TransCopy weak-cell
 model are unchanged. A single-turn SCP remains deterministic in this digital
 model; physical noise cannot be established merely from the duration of a gap.
+
+### FM read decoding
+
+`Guest.FloppyFm` checks the command's FM/MFM bit independently of the programmed
+rate. It covers FM Read ID, Read Data, Read Deleted Data, Read Track and Verify
+on SCP, HxC MFM, 86F and TransCopy captures, including 128-, 256- and 512-byte
+sectors, duplicate IDs, deleted marks, ID/data CRC errors and DMA buffer guards.
+A mixed-encoding track checks selection, wrong-rate rejection and recovery.
+The live DMA counter and PIT check that 512 FM bytes take approximately 32.8 ms
+at the 250-kbps selector. `BitstreamCapture.F86FmUsesHalfTheMfmDataRate` checks
+86F's FM rate interpretation and rejection of unsupported M2FM/GCR encodings.
+
+FM uses the C7 clock pattern for FE/FB/F8 address marks and a CRC initialized
+to FFFF at the mark. At the same rate selector its byte period is twice MFM's.
+Track sampling caches include encoding as well as rate and revolution, allowing
+a guest to select different encodings within the same physical track.
+
+This milestone supports FM reads only. FM Write Data, Write Deleted Data and
+Format Track are rejected; sector-view writes also reject FM records. Existing
+MFM writes and overlays keep their current representation. Raw IMG/IMA media
+expose a synthesized MFM layout. Standard BIOS requests still select MFM;
+a guest must issue FM controller commands to access FM fields.
+
+The automated fixtures are synthetic. No original PC game whose protection
+requires FM decoding has yet been validated. FM duplication metadata on a
+protected disk must not be confused with an FM-dependent protection check.
+
+FM is a 765-compatible feature of this combined controller model, rather than
+an assertion of exact 82077AA behavior. NEC's uPD765A/B documentation describes
+FM and MFM; Intel's final 82077AA datasheet explicitly removes FM support.
+The branch also offers selected later-controller features such as the FIFO.

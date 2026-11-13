@@ -149,6 +149,23 @@ std::vector<uint8_t> f86_capture()
 	return bytes;
 }
 
+TEST(BitstreamCapture, F86FmUsesHalfTheMfmDataRate)
+{
+	auto bytes = f86_capture();
+	write_le16(bytes, 0x408, 2);
+	std::string error  = {};
+	const auto capture = Parse86fCapture(bytes, error);
+	ASSERT_TRUE(capture) << error;
+	ASSERT_EQ(capture->tracks.size(), size_t{1});
+	EXPECT_DOUBLE_EQ(capture->tracks[0].cycle_ms, 0.512);
+	EXPECT_EQ(capture->tracks[0].bit_count, size_t{128});
+	EXPECT_EQ(capture->tracks[0].index, size_t{32});
+	for (const uint16_t encoding : {uint16_t{0x12}, uint16_t{0x1a}}) {
+		write_le16(bytes, 0x408, encoding);
+		EXPECT_FALSE(Parse86fCapture(bytes, error));
+	}
+}
+
 TEST(BitstreamCapture, F86PreservesBitCountIndexAndSurfaceWriteProtection)
 {
 	auto bytes        = f86_capture();
