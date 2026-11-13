@@ -4,6 +4,7 @@
 
 #include "boot.h"
 
+#include <algorithm>
 #include <cstdio>
 #include <limits>
 
@@ -18,6 +19,7 @@
 #include "hardware/input/mouse.h"
 #include "hardware/virtualbox.h"
 #include "hardware/vmware.h"
+#include "ints/bios.h"
 #include "ints/bios_disk.h"
 #include "ints/disk_image_factory.h"
 #include "misc/video.h"
@@ -624,6 +626,21 @@ void BOOT::Run(void)
 			MEM_BlockWrite(boot_address,
 			               bootarea.rawdata,
 			               sizeof(bootarea.rawdata));
+		}
+
+		// Disk boot starts without the internal DOS kernel. Preserve
+		// the BIOS workspace, reserved memory and the sector already
+		// read by DMA, but discard DOS data that boot loaders can
+		// mistake for cold-start RAM contents (for example, decryption
+		// keys).
+		constexpr PhysPt boot_end = boot_address + sizeof(bootarea.rawdata);
+		const auto memory_end = std::min<PhysPt>(
+		        static_cast<PhysPt>(mem_readw(BIOS_MEMORY_SIZE)) * 1024,
+		        0xa0000);
+		for (PhysPt address = 0x600; address < memory_end; ++address) {
+			if (address < boot_address || address >= boot_end) {
+				mem_writeb(address, 0);
+			}
 		}
 
 		/* revector some dos-allocated interrupts */
