@@ -89,6 +89,59 @@ TEST(BitstreamCapture, TransCopyRejectsTruncatedAndInvalidTrackTables)
 	EXPECT_TRUE(error.empty());
 }
 
+TEST(BitstreamCapture, TransCopyPcTypesPreserveCellsAndSelectClock)
+{
+	constexpr std::array<std::pair<uint8_t, double>, 6> cases = {
+	        std::pair<uint8_t, double>{0x02, 1.024},
+	        {0x03, 1.024},
+	        {0x05, 4.096},
+	        {0x07, 2.048},
+	        {0x0c, 4.096},
+	        {0xff, 2.048},
+	};
+	for (const auto& [type, cycle_ms] : cases) {
+		auto bytes         = stepped_capture();
+		bytes[0x100]       = type;
+		std::string error  = {};
+		const auto capture = ParseTransCopyCapture(bytes, error);
+		ASSERT_TRUE(capture) << error;
+		EXPECT_DOUBLE_EQ(capture->tracks[0].cycle_ms, cycle_ms);
+		EXPECT_EQ(capture->tracks[0].cells, std::vector<uint8_t>(128, 0x11));
+		EXPECT_EQ(capture->tracks[2].index, size_t{768});
+	}
+	for (const uint8_t type : {0x00, 0x01, 0x04, 0x06, 0x08, 0x09, 0xfe}) {
+		auto bytes        = stepped_capture();
+		bytes[0x100]      = type;
+		std::string error = {};
+		EXPECT_FALSE(ParseTransCopyCapture(bytes, error));
+		EXPECT_FALSE(error.empty());
+	}
+}
+
+TEST(BitstreamCapture, TransCopyTrackTypesOverrideDiskType)
+{
+	auto bytes   = stepped_capture();
+	bytes[0x100] = 5;
+	write_le16(bytes, 0x705, 0x0709);
+	write_le16(bytes, 0x70d, 0x8589);
+	std::string error = {};
+	auto capture      = ParseTransCopyCapture(bytes, error);
+	ASSERT_TRUE(capture) << error;
+	EXPECT_DOUBLE_EQ(capture->tracks[0].cycle_ms, 2.048);
+	EXPECT_DOUBLE_EQ(capture->tracks[2].cycle_ms, 4.096);
+	// PCE-style files can omit track types; unused table entries have
+	// a separate sentinel rather than a defined encoding.
+	for (const uint16_t flags : {0x0000, 0x7f09, 0xff09, 0x4444}) {
+		write_le16(bytes, 0x705, flags);
+		capture = ParseTransCopyCapture(bytes, error);
+		ASSERT_TRUE(capture) << error;
+		EXPECT_DOUBLE_EQ(capture->tracks[0].cycle_ms, 4.096);
+	}
+	write_le16(bytes, 0x705, 0x0409);
+	EXPECT_FALSE(ParseTransCopyCapture(bytes, error));
+	EXPECT_EQ(error, "unsupported TransCopy track encoding");
+}
+
 void write_le32(std::vector<uint8_t>& bytes, const size_t offset, const uint32_t value)
 {
 	for (size_t i = 0; i < 4; ++i) {
