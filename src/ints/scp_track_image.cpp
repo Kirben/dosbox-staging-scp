@@ -32,16 +32,17 @@ struct FluxTurn {
 };
 
 constexpr std::array<uint8_t, 8> OverlayMagic = {'S', 'C', 'P', 'O', 'V', 'L', 1, 0};
-constexpr uint8_t TrackFormatMarker        = 0xff;
-constexpr uint8_t PartialFormatMarker      = 0xfe;
-constexpr uint8_t PhysicalWriteMarker      = 0xfd;
-constexpr uint8_t LegacyOverlayVersion     = 4;
-constexpr uint8_t SizedOverlayVersion      = 5;
-constexpr uint8_t OrderedOverlayVersion    = 6;
-constexpr uint8_t FormatSizeOverlayVersion = 7;
-constexpr uint8_t FormatRateOverlayVersion = 8;
-constexpr uint32_t LegacySizeCode          = 2;
-constexpr size_t ChrnSize                  = 4;
+constexpr uint8_t TrackFormatMarker         = 0xff;
+constexpr uint8_t PartialFormatMarker       = 0xfe;
+constexpr uint8_t PhysicalWriteMarker       = 0xfd;
+constexpr uint8_t LegacyOverlayVersion      = 4;
+constexpr uint8_t SizedOverlayVersion       = 5;
+constexpr uint8_t OrderedOverlayVersion     = 6;
+constexpr uint8_t FormatSizeOverlayVersion  = 7;
+constexpr uint8_t FormatRateOverlayVersion  = 8;
+constexpr uint8_t DeletedMarkOverlayVersion = 9;
+constexpr uint32_t LegacySizeCode           = 2;
+constexpr size_t ChrnSize                   = 4;
 
 auto overlay_header(const uint64_t fingerprint, const uint8_t version)
 {
@@ -338,9 +339,9 @@ void FloppyTrackImage::ApplyOverlaySector(const OverlayKey& key,
 	const auto apply                      = [&](FloppySector& sector) {
                 const auto create_data_mark = sector.data.empty();
                 tracks[cylinder * heads + head].cells_changed |= bool(sector.mfm_track);
-                sector.data.assign(data.begin(), data.end());
+                sector.data           = data.bytes;
                 sector.data_crc_error = false;
-                sector.deleted        = false;
+                sector.deleted        = data.deleted;
                 sector.weak_mask.clear();
                 sector.extended_data.clear();
                 sector.UpdateTrackData(create_data_mark);
@@ -377,7 +378,8 @@ bool FloppyTrackImage::LoadOverlay()
 	     header != overlay_header(capture_fingerprint, SizedOverlayVersion) &&
 	     header != overlay_header(capture_fingerprint, OrderedOverlayVersion) &&
 	     header != overlay_header(capture_fingerprint, FormatSizeOverlayVersion) &&
-	     header != overlay_header(capture_fingerprint, FormatRateOverlayVersion))) {
+	     header != overlay_header(capture_fingerprint, FormatRateOverlayVersion) &&
+	     header != overlay_header(capture_fingerprint, DeletedMarkOverlayVersion))) {
 		return false;
 	}
 	const auto version         = header[6];
@@ -467,13 +469,22 @@ bool FloppyTrackImage::LoadOverlay()
 			if (!CanOverlaySector(address)) {
 				return false;
 			}
-			OverlaySector data(size_t{128} << size_code);
+			// Version 9 stores a normal/deleted mark flag before
+			// the payload.
+			const auto mark = version >= DeletedMarkOverlayVersion
+			                        ? fgetc(input.get())
+			                        : 0;
+			if (mark != 0 && mark != 1) {
+				return false;
+			}
+			const auto size = size_t{128} << size_code;
+			OverlaySector data = {std::vector<uint8_t>(size), mark == 1};
 			const auto repeated = std::ranges::any_of(
 			        overlay, [&](const auto& entry) {
 				        return entry.first == address;
 			        });
-			if (fread(data.data(), 1, data.size(), input.get()) !=
-			            data.size() ||
+			if (fread(data.bytes.data(), 1, data.bytes.size(), input.get()) !=
+			            data.bytes.size() ||
 			    (version < OrderedOverlayVersion && repeated)) {
 				return false;
 			}
@@ -549,7 +560,20 @@ bool FloppyTrackImage::SaveOverlay(const Overlay& entries,
 			return format.rate_kbps != 0;
 		});
 	});
-	const auto version = formatted_rate ? FormatRateOverlayVersion
+	const auto has_deleted = [](const Overlay& writes) {
+		return std::ranges::any_of(writes, [](const auto& entry) {
+			return entry.second.deleted;
+		});
+	};
+	const auto deleted =
+	        has_deleted(entries) ||
+	        std::ranges::any_of(formats, [&](const auto& track) {
+		        return std::ranges::any_of(track.second, [&](const auto& format) {
+			        return has_deleted(format.prior_writes);
+		        });
+	        });
+	const auto version = deleted        ? DeletedMarkOverlayVersion
+	                   : formatted_rate ? FormatRateOverlayVersion
 	                   : formatted_size ? FormatSizeOverlayVersion
 	                   : ordered        ? OrderedOverlayVersion
 	                   : sized          ? SizedOverlayVersion
@@ -583,8 +607,10 @@ bool FloppyTrackImage::SaveOverlay(const Overlay& entries,
 			success = success &&
 			          (version < SizedOverlayVersion ||
 			           fputc(check_cast<int>(size_code), file) != EOF) &&
-			          fwrite(data.data(), 1, data.size(), file) ==
-			                  data.size();
+			          (version < DeletedMarkOverlayVersion ||
+			           fputc(data.deleted ? 1 : 0, file) != EOF) &&
+			          fwrite(data.bytes.data(), 1, data.bytes.size(), file) ==
+			                  data.bytes.size();
 		}
 	};
 	for (const auto& [address, history] : formats) {
@@ -662,7 +688,7 @@ bool FloppyTrackImage::HasOverlappingFields(const uint32_t cylinder,
 bool FloppyTrackImage::WriteSector(const uint32_t cylinder, const uint32_t head,
                                    const uint32_t sector,
                                    const std::span<const uint8_t> data,
-                                   const FloppySector* selected)
+                                   const FloppySector* selected, const bool deleted)
 {
 	if (IsWriteProtected() || cylinder >= cylinders || head >= heads ||
 	    sector > UINT8_MAX || data.size() < 256 || data.size() > 1024 ||
@@ -739,7 +765,8 @@ bool FloppyTrackImage::WriteSector(const uint32_t cylinder, const uint32_t head,
 	} else {
 		return false;
 	}
-	const OverlaySector updated(data.begin(), data.end());
+	const OverlaySector updated = {std::vector<uint8_t>(data.begin(), data.end()),
+	                               deleted};
 	auto entries       = overlay;
 	const auto ordered = HasOverlappingFields(cylinder, head);
 	for (const auto& key : targets) {

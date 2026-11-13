@@ -397,8 +397,12 @@ Writes to overlapping sectors replay in their original order; independent sector
 writes keep only their latest contents. Sidecars containing ordered, repeated
 write records require a build supporting overlay version 6; earlier sidecar
 versions remain readable by this build.
-Formats whose physical data length differs from the size stored in their
-sector IDs require overlay version 7. Ordinary formats keep the earlier layout.
+Version 7 records a physical data length that differs from the sector ID size.
+New formats use overlay version 8 to preserve their selected data rate as well
+as their data length. Deleted-data writes use overlay version 9 to retain
+the sector data-address mark. Ordinary Write Data restores a normal mark.
+Earlier sidecar versions remain readable. IMG/IMA cannot store deleted marks,
+so the controller rejects Write Deleted Data for those raw formats.
 The original image stays intact.
 
 Only one writable mount can hold an image's sidecar at a time. Use `-ro` for
