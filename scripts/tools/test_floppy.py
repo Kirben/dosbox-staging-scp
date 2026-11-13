@@ -16,7 +16,7 @@ import sys
 INPUT_DIRECTORIES = ("src", "include", "tests", "cmake", "scripts", "resources", ".github")
 STAMP = ".floppy-full-validation.json"
 GROUPS = {
-    "focused": r"^Guest\.Floppy(FormatRate|BiosMotor|SectorContract)$",
+    "focused": r"^Guest\.FloppyReadDeleted",
     "smoke": (r"^SectorMedia\.|^FloppyFixtureCache$|^FloppyWorkflow$|"
               r"^Guest\.(FloppyReadDeletedSmoke|FloppySectorContract|FloppyFatCache)$"),
 }

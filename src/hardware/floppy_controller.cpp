@@ -44,16 +44,17 @@ constexpr size_t FormatIdSize = 4;
 
 enum class Phase { Command, Execution, Result };
 enum class Command {
-	ReadTrack      = 0x02,
-	Specify        = 0x03,
-	WriteData      = 0x05,
-	ReadData       = 0x06,
-	Verify         = 0x16,
-	Recalibrate    = 0x07,
-	SenseInterrupt = 0x08,
-	ReadId         = 0x0a,
-	FormatTrack    = 0x0d,
-	Seek           = 0x0f,
+	ReadTrack       = 0x02,
+	Specify         = 0x03,
+	WriteData       = 0x05,
+	ReadData        = 0x06,
+	ReadDeletedData = 0x0c,
+	Verify          = 0x16,
+	Recalibrate     = 0x07,
+	SenseInterrupt  = 0x08,
+	ReadId          = 0x0a,
+	FormatTrack     = 0x0d,
+	Seek            = 0x0f,
 };
 
 struct Drive {
@@ -112,7 +113,7 @@ struct Controller {
 	uint8_t sector                            = 0;
 	bool irq_pending                          = false;
 	bool seek_irq_pending                     = false;
-	bool skipped_deleted                      = false;
+	bool skipped_control_mark                 = false;
 	bool missing_address_mark                 = false;
 	bool non_dma                              = false;
 };
@@ -196,7 +197,8 @@ void finish_data(const uint8_t status_1, const uint8_t status_2 = 0,
 	                                                  : fdc.command[5];
 	fdc.result           = {status_0,
 	                        status_1,
-	                        check_cast<uint8_t>(status_2 | (fdc.skipped_deleted ? 0x40 : 0)),
+	                        check_cast<uint8_t>(status_2 |
+                                          (fdc.skipped_control_mark ? 0x40 : 0)),
                       sector ? sector->cylinder : fdc.cylinder,
                       sector ? sector->head : fdc.head,
                       sector ? sector->id : fdc.sector,
@@ -608,16 +610,29 @@ void advance_data_sector()
 	}
 }
 
+bool data_mark_mismatch()
+{
+	const auto command = static_cast<Command>(fdc.command[0] & 0x1f);
+	if (command != Command::ReadData && command != Command::ReadDeletedData) {
+		return false;
+	}
+	const auto* sector = fdc.track_sector;
+	if (sector && sector->data.empty()) {
+		return false;
+	}
+	const auto deleted = sector && sector->deleted;
+	return deleted != (command == Command::ReadDeletedData);
+}
+
 void finish_sector_transfer(const std::span<const uint8_t> write_data,
                             const bool terminal_count)
 {
-	const auto deleted = write_data.empty() && fdc.track_sector &&
-	                     fdc.track_sector->deleted;
+	const auto wrong_mark = write_data.empty() && data_mark_mismatch();
 	if (!write_data.empty() && !commit_sector_write(write_data)) {
 		finish_data(0x20);
 	} else if (fdc.sector_data_crc_error) {
-		finish_data(0x20, 0x20 | (deleted ? 0x40 : 0));
-	} else if (deleted) {
+		finish_data(0x20, 0x20 | (wrong_mark ? 0x40 : 0));
+	} else if (wrong_mark) {
 		finish_data(0, 0x40);
 	} else if (terminal_count) {
 		// Normal Read/Write Data completion reports the next logical
@@ -657,9 +672,8 @@ void transfer_sector(uint32_t)
 	const auto command = static_cast<Command>(fdc.command[0] & 0x1f);
 	const auto* field  = fdc.track_sector;
 	const auto writing = command == Command::WriteData;
-	const auto skip    = command == Command::ReadData && field &&
-	                  field->deleted && (fdc.command[0] & 0x20);
-	if (!fdc.sector_transfer_ready && !skip &&
+	const auto skip    = data_mark_mismatch() && (fdc.command[0] & 0x20);
+	if (!fdc.sector_transfer_ready &&
 	    (!field || (!field->id_crc_error && (writing || !field->data.empty())))) {
 		// The ID identifies a sector; completion follows its data and
 		// CRC. PIO transfers start at the data field instead of its
@@ -696,7 +710,8 @@ void transfer_sector(uint32_t)
 		fdc.sector_transfer_ready = true;
 		const auto pio = fdc.non_dma && command != Command::Verify &&
 		                 (fdc.command[5] || fdc.command[8]);
-		PIC_AddEvent(transfer_sector, header_ms + (pio ? 0 : data_ms));
+		PIC_AddEvent(transfer_sector,
+		             header_ms + ((pio || skip) ? 0 : data_ms));
 		return;
 	}
 	if (command == Command::Verify) {
@@ -721,16 +736,16 @@ void transfer_sector(uint32_t)
 	std::span<const uint8_t> data    = transfer_buffer;
 	std::vector<uint8_t> sampled     = {};
 	fdc.sector_data_crc_error        = false;
+	if (field && field->id_crc_error) {
+		finish_data(0x20);
+		return;
+	}
+	if (skip) {
+		fdc.skipped_control_mark = true;
+		advance_data_sector();
+		return;
+	}
 	if (const auto* sector = fdc.track_sector) {
-		if (sector->id_crc_error) {
-			finish_data(0x20);
-			return;
-		}
-		if (!writing && sector->deleted && (fdc.command[0] & 0x20)) {
-			fdc.skipped_deleted = true;
-			advance_data_sector();
-			return;
-		}
 		if (!writing && sector->data.empty()) {
 			finish_data(0x01, 0x01);
 			return;
@@ -912,8 +927,8 @@ void format_raw_track(uint32_t)
 void finish_pio_transfer()
 {
 	const auto command = static_cast<Command>(fdc.command[0] & 0x1f);
-	if ((command == Command::ReadData || command == Command::WriteData ||
-	     command == Command::ReadTrack) &&
+	if ((command == Command::ReadData || command == Command::ReadDeletedData ||
+	     command == Command::WriteData || command == Command::ReadTrack) &&
 	    !fdc.pio_waiting_crc && PIC_FullIndex() < fdc.sector_end_ms) {
 		// Defer once: rounding at the target timestamp must not queue
 		// an endless sequence of events with effectively zero delay.
@@ -930,7 +945,8 @@ void finish_pio_transfer()
 		finish_track_sector(false, elapsed_ms);
 		break;
 	case Command::WriteData: finish_sector_transfer(data, false); break;
-	case Command::ReadData: finish_sector_transfer({}, false); break;
+	case Command::ReadData:
+	case Command::ReadDeletedData: finish_sector_transfer({}, false); break;
 	case Command::FormatTrack:
 		if (!fdc.media) {
 			finish_raw_format(data);
@@ -1006,7 +1022,7 @@ void acknowledge_pio_byte()
 
 void start_data(const Command command)
 {
-	fdc.skipped_deleted       = false;
+	fdc.skipped_control_mark  = false;
 	fdc.wrong_cylinder_sector = nullptr;
 	const auto unit           = selected_unit();
 	fdc.disk                  = BIOS_GetDisk(unit);
@@ -1199,6 +1215,7 @@ void execute_command(const Command command)
 	case Command::FormatTrack:
 	case Command::WriteData:
 	case Command::ReadData:
+	case Command::ReadDeletedData:
 	case Command::ReadTrack:
 	case Command::Verify: start_data(command); break;
 	default:
@@ -1214,6 +1231,7 @@ size_t command_length(const Command command)
 	case Command::FormatTrack: return 6;
 	case Command::WriteData:
 	case Command::ReadData:
+	case Command::ReadDeletedData:
 	case Command::ReadTrack:
 	case Command::Verify: return 9;
 	case Command::Seek:
@@ -1750,10 +1768,8 @@ void FLOPPY_BiosPosition(const uint8_t unit, const uint8_t cylinder)
 		drive.motor_started_ms = PIC_FullIndex();
 	}
 	fdc.dor = check_cast<uint8_t>((fdc.dor & 0xf0) | (0x10u << unit) |
-	                              ResetReleased | InterruptEnabled |
-	                              unit); // Boot loaders can use the BIOS
-	                                     // motor mask to identify their
-	                                     // boot drive.
+	                              ResetReleased | InterruptEnabled | unit);
+	// Boot loaders can use the BIOS motor mask to identify their boot drive.
 	mem_writeb(BIOS_DRIVE_RUNNING,
 	           check_cast<uint8_t>((mem_readb(BIOS_DRIVE_RUNNING) & 0xf0) |
 	                               (fdc.dor >> 4)));
