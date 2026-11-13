@@ -1,0 +1,13 @@
+#!/bin/sh
+# SPDX-License-Identifier: GPL-2.0-or-later
+# A fast/smoke result never authorizes a push.
+root=$(git rev-parse --show-toplevel) || exit 1
+runner="$root/scripts/tools/test_floppy.py"
+if [ ! -f "$runner" ]; then
+    echo "Full-test push gate is unavailable on this branch; validate it before pushing." >&2
+    exit 1
+fi
+if command -v python >/dev/null 2>&1; then
+    exec python "$runner" verify-push
+fi
+exec python3 "$runner" verify-push

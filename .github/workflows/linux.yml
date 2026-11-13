@@ -207,8 +207,19 @@ jobs:
           set -xo pipefail
           ctest -j 4 --preset ${{ matrix.conf.cmake_preset }} -LE '^floppy$' 2>&1 | tee tests.log
 
+      - name: Cache synthetic floppy fixtures
+        if: matrix.conf.floppy_tests
+        uses: actions/cache@v4
+        with:
+          path: ${{ runner.temp }}/floppy-fixture-cache
+          key: floppy-fixtures-${{ runner.os }}-${{ hashFiles('tests/floppy_fixture_cache.py', 'tests/run_hxc_mfm_probe.py', 'tests/run_scp_attachment_probe.py', 'tests/run_86f_attachment_probe.py', 'tests/run_transcopy_attachment_probe.py', 'tests/run_floppy_zero_sector_probe.py') }}
+          restore-keys: |
+            floppy-fixtures-${{ runner.os }}-
+
       - name: Run floppy guest tests
         if: matrix.conf.floppy_tests
+        env:
+          DOSBOX_FLOPPY_FIXTURE_CACHE: ${{ runner.temp }}/floppy-fixture-cache
         run: |
           ctest -j 4 --preset ${{ matrix.conf.cmake_preset }} -L '^floppy$' --output-on-failure --no-tests=error
 

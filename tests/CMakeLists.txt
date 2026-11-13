@@ -101,6 +101,13 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Linux" AND NOT CMAKE_CROSSCOMPILING)
     find_package(Python3 QUIET COMPONENTS Interpreter)
     find_program(NASM_EXECUTABLE NAMES nasm)
     if(Python3_Interpreter_FOUND AND NASM_EXECUTABLE)
+        add_test(NAME FloppyFixtureCache
+            COMMAND "${Python3_EXECUTABLE}" -B "${CMAKE_CURRENT_SOURCE_DIR}/test_floppy_fixture_cache.py")
+        add_test(NAME FloppyWorkflow
+            COMMAND "${Python3_EXECUTABLE}" -B "${CMAKE_CURRENT_SOURCE_DIR}/test_floppy_workflow.py")
+        set_tests_properties(FloppyFixtureCache FloppyWorkflow PROPERTIES
+            LABELS "floppy;floppy-smoke" TIMEOUT 60)
+
         function(add_floppy_guest_test name script)
             add_test(NAME Guest.${name}
                 COMMAND "${Python3_EXECUTABLE}" -B "${CMAKE_CURRENT_SOURCE_DIR}/${script}"

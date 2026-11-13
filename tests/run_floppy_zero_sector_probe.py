@@ -9,6 +9,8 @@ from pathlib import Path
 from struct import pack, pack_into
 from tempfile import TemporaryDirectory
 
+from floppy_fixture_cache import cached_fixture
+
 from run_hxc_mfm_probe import MFM
 from run_transcopy_layout_probe import run_guest
 
@@ -51,6 +53,7 @@ def encode_image(extension, zero_present):
     return encode_tracks(extension, tracks)
 
 
+@cached_fixture
 def encode_tracks(extension, tracks):
     """Wrap single-sided MFM cell streams without changing their contents."""
     cylinders = len(tracks)
