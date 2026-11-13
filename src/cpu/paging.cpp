@@ -27,6 +27,16 @@ uint8_t PageHandler::readb(PhysPt addr)
 	E_Exit("No byte handler for read from %d",addr);	
 	return 0;
 }
+uint8_t PageHandler::readb_physical(const PhysPt addr)
+{
+	return readb(addr);
+}
+
+void PageHandler::writeb_physical(const PhysPt addr, const uint8_t val)
+{
+	writeb(addr, val);
+}
+
 uint16_t PageHandler::readw(PhysPt addr)
 {
 	uint16_t ret = (readb(addr+0) << 0);

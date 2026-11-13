@@ -52,6 +52,10 @@ public:
 	virtual uint32_t readd(PhysPt addr);
 	virtual uint64_t readq(PhysPt addr);
 	virtual void writeb(PhysPt addr, uint8_t val);
+	// Bus masters supply resolved physical addresses, not CPU linear
+	// addresses.
+	virtual uint8_t readb_physical(PhysPt addr);
+	virtual void writeb_physical(PhysPt addr, uint8_t val);
 	virtual void writew(PhysPt addr, uint16_t val);
 	virtual void writed(PhysPt addr, uint32_t val);
 	virtual void writeq(PhysPt addr, uint64_t val);
