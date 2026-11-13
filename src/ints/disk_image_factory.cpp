@@ -2,8 +2,11 @@
 
 #include "ints/disk_image_factory.h"
 
+#include <algorithm>
+#include <array>
 #include <cstdio>
 #include <limits>
+#include <span>
 
 #include "ints/bios_disk.h"
 #include "ints/floppy_track_image.h"
@@ -16,28 +19,61 @@ CHECK_NARROWING();
 
 namespace {
 
-enum class TrackFormat { None, HxcMfm, Scp, F86, TransCopy };
+using TrackLoader = std::unique_ptr<FloppyTrackImage> (*)(FILE*, const std::string&,
+                                                          bool, std::string&);
 
-TrackFormat track_format(const std::string_view path)
+struct TrackProbe {
+	std::string_view extension         = {};
+	std::span<const uint8_t> signature = {};
+	TrackLoader load                   = nullptr;
+};
+
+constexpr std::array<uint8_t, 7> HxcSignature = {'H', 'X', 'C', 'M', 'F', 'M', 0};
+constexpr std::array<uint8_t, 3> ScpSignature       = {'S', 'C', 'P'};
+constexpr std::array<uint8_t, 4> F86Signature       = {'8', '6', 'B', 'F'};
+constexpr std::array<uint8_t, 2> TransCopySignature = {0x5a, 0xa5};
+constexpr std::array TrackProbes                    = {
+        TrackProbe{".mfm",       HxcSignature,    FloppyTrackImage::LoadHxcMfm},
+        TrackProbe{".scp",       ScpSignature,       FloppyTrackImage::LoadScp},
+        TrackProbe{".86f",       F86Signature,       FloppyTrackImage::Load86f},
+        TrackProbe{ ".tc", TransCopySignature, FloppyTrackImage::LoadTransCopy},
+};
+
+const TrackProbe* extension_probe(const std::string_view path)
 {
 	const auto dot = path.rfind('.');
 	if (dot == std::string_view::npos) {
-		return TrackFormat::None;
+		return nullptr;
 	}
-	const auto extension = path.substr(dot);
-	if (iequals(extension, ".mfm")) {
-		return TrackFormat::HxcMfm;
+	for (const auto& probe : TrackProbes) {
+		if (iequals(path.substr(dot), probe.extension)) {
+			return &probe;
+		}
 	}
-	if (iequals(extension, ".scp")) {
-		return TrackFormat::Scp;
+	return nullptr;
+}
+
+const TrackProbe* track_probe(FILE* file, const std::string_view path)
+{
+	const auto position = ftell(file);
+	if (position < 0 || fseek(file, 0, SEEK_SET)) {
+		return nullptr;
 	}
-	if (iequals(extension, ".86f")) {
-		return TrackFormat::F86;
+	std::array<uint8_t, HxcSignature.size()> prefix = {};
+	const auto size = fread(prefix.data(), 1, prefix.size(), file);
+	if (fseek(file, position, SEEK_SET)) {
+		return nullptr;
 	}
-	if (iequals(extension, ".tc")) {
-		return TrackFormat::TransCopy;
+	for (const auto& probe : TrackProbes) {
+		if (size >= probe.signature.size() &&
+		    std::ranges::equal(probe.signature,
+		                       std::span(prefix).first(
+		                               probe.signature.size()))) {
+			return &probe;
+		}
 	}
-	return TrackFormat::None;
+	// A known suffix must not turn a malformed container into a raw disk.
+	return extension_probe(path);
 }
 
 } // namespace
@@ -46,25 +82,28 @@ std::shared_ptr<imageDisk> OpenSectorDiskImage(const std::string& path,
                                                bool& read_only,
                                                const std::optional<bool> hard_disk)
 {
-	const auto is_track_image = IsFloppyTrackImagePath(path);
-	if (is_track_image && hard_disk.value_or(false)) {
-		return {};
-	}
 	const auto close_file = [](FILE* file) { fclose(file); };
-	std::unique_ptr<FILE, decltype(close_file)> file(
-	        is_track_image ? fopen(path.c_str(), "rb")
-	                       : fopen_wrap_ro_fallback(path, read_only),
-	        close_file);
+	std::unique_ptr<FILE, decltype(close_file)> file(fopen(path.c_str(), "rb"),
+	                                                 close_file);
 	if (!file) {
 		return {};
 	}
-
-	if (is_track_image) {
+	if (track_probe(file.get(), path)) {
+		if (hard_disk.value_or(false)) {
+			return {};
+		}
 		auto disk = LoadFloppyTrackDisk(file.get(), path, read_only);
 		if (disk) {
 			read_only = disk->IsWriteProtected();
 		}
 		return disk;
+	}
+
+	// Raw images retain direct writes; track containers only use overlays.
+	file.reset();
+	file.reset(fopen_wrap_ro_fallback(path, read_only));
+	if (!file) {
+		return {};
 	}
 
 	const auto size_kb = stdio_size_kb(file.get());
@@ -82,31 +121,30 @@ std::shared_ptr<imageDisk> OpenSectorDiskImage(const std::string& path,
 	return disk;
 }
 
+bool IsFloppyTrackImage(FILE* file, const std::string_view path)
+{
+	return track_probe(file, path) != nullptr;
+}
+
 bool IsFloppyTrackImagePath(const std::string_view path)
 {
-	return track_format(path) != TrackFormat::None;
+	const auto close_file = [](FILE* file) { fclose(file); };
+	const std::string filename(path);
+	const std::unique_ptr<FILE, decltype(close_file)> file(
+	        fopen(filename.c_str(), "rb"), close_file);
+	return file ? IsFloppyTrackImage(file.get(), path)
+	            : extension_probe(path) != nullptr;
 }
 
 std::shared_ptr<imageDisk> LoadFloppyTrackDisk(FILE* file, const std::string& path,
                                                const bool read_only)
 {
-	std::string error                       = {};
-	std::unique_ptr<FloppyTrackImage> image = {};
-	switch (track_format(path)) {
-	case TrackFormat::HxcMfm:
-		image = FloppyTrackImage::LoadHxcMfm(file, path, read_only, error);
-		break;
-	case TrackFormat::Scp:
-		image = FloppyTrackImage::LoadScp(file, path, read_only, error);
-		break;
-	case TrackFormat::F86:
-		image = FloppyTrackImage::Load86f(file, path, read_only, error);
-		break;
-	case TrackFormat::TransCopy:
-		image = FloppyTrackImage::LoadTransCopy(file, path, read_only, error);
-		break;
-	case TrackFormat::None: return {};
+	const auto* probe = track_probe(file, path);
+	if (!probe) {
+		return {};
 	}
+	std::string error = {};
+	auto image        = probe->load(file, path, read_only, error);
 	if (!image) {
 		LOG_WARNING("Could not load floppy track image '%s': %s",
 		            path.c_str(),

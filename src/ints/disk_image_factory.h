@@ -16,6 +16,9 @@ std::shared_ptr<imageDisk> OpenSectorDiskImage(
         const std::string& path, bool& read_only,
         const std::optional<bool> hard_disk = std::nullopt);
 
+// Probing preserves the file position; a known suffix also rejects malformed
+// images.
+bool IsFloppyTrackImage(FILE* file, const std::string_view path);
 bool IsFloppyTrackImagePath(const std::string_view path);
 std::shared_ptr<imageDisk> LoadFloppyTrackDisk(FILE* file, const std::string& path,
                                                const bool read_only);

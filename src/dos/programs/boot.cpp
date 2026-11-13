@@ -64,7 +64,7 @@ FILE* BOOT::getFSFile_mounted(const char* filename, uint32_t* ksize,
 
 		*ksize = (ftell(tmpfile) / 1024);
 		*bsize = ftell(tmpfile);
-		if (IsFloppyTrackImagePath(filename)) {
+		if (IsFloppyTrackImage(tmpfile, filename)) {
 			if (read_only) {
 				*read_only = ldp->IsReadOnly();
 			}
@@ -109,7 +109,7 @@ FILE* BOOT::getFSFile(const char* filename, uint32_t* ksize, uint32_t* bsize,
 	}
 	// File not found on mounted filesystem. Try regular filesystem
 	const auto filename_s  = resolve_home(filename).string();
-	const auto track_image = IsFloppyTrackImagePath(filename);
+	const auto track_image = IsFloppyTrackImagePath(filename_s);
 	tmpfile = fopen(filename_s.c_str(), track_image ? "rb" : "rb+");
 	if (track_image && host_path) {
 		*host_path = filename_s;
@@ -289,7 +289,7 @@ void BOOT::Run(void)
                                                   &read_only,
                                                   &host_path);
 			if (usefile != nullptr) {
-				if (IsFloppyTrackImagePath(temp_line)) {
+				if (IsFloppyTrackImage(usefile, temp_line)) {
 					const auto close_file = [](FILE* file) {
 						fclose(file);
 					};

@@ -121,13 +121,21 @@ static void update_floppy_equipment()
 	BIOS_SetEquipment(equipment);
 }
 
+// The only mutation point for a BIOS slot. Temporary BOOT transactions use
+// the same storage operation without permanent mount/swap side effects.
+static BiosDiskSlot exchange_disk_slot(const size_t slot, BiosDiskSlot replacement)
+{
+	assert(slot < disk_slots.size());
+	return std::exchange(disk_slots[slot], std::move(replacement));
+}
+
 static void set_disk_slot(const size_t slot, std::shared_ptr<imageDisk> disk)
 {
 	if (slot < 2 && disk_slots[slot].sector != disk) {
 		FLOPPY_SetDiskChanged(slot, true);
 	}
-	auto floppy      = slot < 2 && disk ? disk->GetFloppyMedia() : nullptr;
-	disk_slots[slot] = {std::move(disk), std::move(floppy)};
+	auto floppy = slot < 2 && disk ? disk->GetFloppyMedia() : nullptr;
+	exchange_disk_slot(slot, {std::move(disk), std::move(floppy)});
 	if (slot < 2) {
 		update_floppy_equipment();
 	} else {
@@ -199,10 +207,9 @@ void BIOS_SetBootDisks(BiosBootDisks disks)
 bool BIOS_ReadFloppyBootSector(const std::shared_ptr<imageDisk>& disk,
                                const PhysPt address)
 {
-	constexpr uint8_t unit  = 0;
-	const auto old_slot     = std::exchange(disk_slots[unit],
-                                            BiosDiskSlot{disk,
-                                                         disk->GetFloppyMedia()});
+	constexpr uint8_t unit = 0;
+	const auto old_slot    = exchange_disk_slot(
+                unit, BiosDiskSlot{disk, disk->GetFloppyMedia()});
 	const auto disk_changed = FLOPPY_IsDiskChanged(unit);
 
 	// A failed DMA read can still modify the destination before reporting CRC.
@@ -214,7 +221,7 @@ bool BIOS_ReadFloppyBootSector(const std::shared_ptr<imageDisk>& disk,
 	if (!success) {
 		MEM_BlockWrite(address, previous.data(), previous.size());
 	}
-	disk_slots[unit] = old_slot;
+	exchange_disk_slot(unit, old_slot);
 	if (!success || old_slot.sector != disk) {
 		FLOPPY_SetDiskChanged(unit, disk_changed);
 	}
