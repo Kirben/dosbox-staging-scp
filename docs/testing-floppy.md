@@ -10,7 +10,7 @@ python3 scripts/tools/test_floppy.py smoke --build /path/to/build
 python3 scripts/tools/test_floppy.py full --build /path/to/build
 ```
 
-`focused` runs the PCjr/Tandy BIOS transfer and format regressions. `smoke` exercises
+`focused` runs SPECIFY timing, seek status, and PCjr/Tandy BIOS transfer and format regressions. `smoke` exercises
 all six image formats, sector contracts, FAT coherence, representative
 controller reads, and the cache/workflow checks. These groups are for iteration.
 `full` runs **every registered CTest test**, including the unit and floppy suites.
@@ -66,3 +66,31 @@ during testing never create one. Do not bypass this check with `--no-verify`.
 Cache integrity/concurrency and the push-gate rejection paths have their own
 standalone Python regressions. A local hook is an accidental-push safeguard,
 not a substitute for CI or repository branch protection.
+
+## PCjr and Tandy BIOS routing
+
+Track-image INT 13h reads, writes and Verify execute through the shared FDC.
+BIOS Format Track executes through the FDC for both raw and track images.
+PCjr BIOS data transfers service its non-DMA FIFO at the controller byte cadence,
+retain 16-bit buffer-offset wrapping, and preserve the keyboard interrupt vector.
+The BIOS restores the guest-selected transfer mode after its command.
+Tandy uses DMA channel 2 and IRQ6, including physical 64 KiB boundary checks.
+Verify leaves the guest buffer and DMA channel untouched on both machines.
+Raw IMG/IMA BIOS reads, writes and Verify keep their sector path. DOS FAT
+keeps its logical sector view.
+PCjr Format Track uses the same wrapped FIFO transfer for its ID table;
+Tandy supplies that table through DMA, including terminal count and IRQ6.
+
+Guest.FloppyBiosMachine checks controller results, CRC/deleted/missing-sector
+status, partial counts, DMA/FIFO behavior, buffers, keyboard/PIC state, duplicate
+IDs, and overlay replay across SCP, MFM, 86F and TransCopy.
+
+`Guest.FloppyBiosFormatMachine` formats A/B images, checks controller results,
+ID order, FIFO/DMA state, IRQ6 and table guards, then reopens the image for
+readback. It covers all six formats, variable-size track sectors, write protection,
+invalid table sizes, and ID tables ending at or crossing a 64 KiB boundary.
+
+The format probe also checks busy-command rejection and recovery using BIOS
+Reset on PCjr and Tandy, preserving keyboard interrupt handling.
+
+`Guest.FloppySpecify` measures SRT across all four data rates and verifies head-load delays, head-unload expiry, and maximum-delay zero codes in standard-PC and PCjr modes. The PCjr watchdog probe also verifies BIOS Reset cancels delayed head loading, the watchdog, and an incomplete command without changing keyboard IRQ handling. BIOS Format machine tests also check recovery from an unfinished command using BIOS Reset. Timer values follow Intel 82077AA Table 5-10 (500 kbit/s base, scaled by data rate).

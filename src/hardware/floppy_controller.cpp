@@ -6,6 +6,7 @@
 #include <array>
 #include <cassert>
 #include <cmath>
+#include <limits>
 #include <memory>
 #include <utility>
 #include <vector>
@@ -33,7 +34,7 @@ constexpr auto SectorSizeCode             = 2;
 constexpr auto StandardRevolutionMs       = 200.0;
 constexpr auto HighDensity525RevolutionMs = 1000.0 / 6;
 constexpr auto DefaultDataRateKbps        = 250;
-constexpr auto StepMs                     = 3.0;
+constexpr auto DefaultStepMs              = 3.0;
 
 constexpr auto PcjrWatchdogEnable  = 0x20;
 constexpr auto PcjrWatchdogTrigger = 0x40;
@@ -59,8 +60,9 @@ enum class Command {
 };
 
 struct Drive {
-	uint8_t cylinder        = 0;
-	double motor_started_ms = 0;
+	uint8_t cylinder            = 0;
+	double motor_started_ms     = 0;
+	double head_loaded_until_ms = 0;
 };
 
 struct Seek {
@@ -117,6 +119,10 @@ struct Controller {
 	bool skipped_control_mark                 = false;
 	bool missing_address_mark                 = false;
 	bool non_dma                              = false;
+	bool timing_specified                     = false;
+	uint8_t step_rate                         = 0;
+	uint8_t head_load                         = 0;
+	uint8_t head_unload                       = 0;
 };
 
 double pio_byte_ms      = 8.0 / DefaultDataRateKbps;
@@ -183,6 +189,7 @@ bool media_ready(const size_t unit)
 }
 
 void pio_byte_event(uint32_t);
+void start_loaded_data(uint32_t);
 
 void begin_result(const size_t length, const bool interrupt)
 {
@@ -193,10 +200,37 @@ void begin_result(const size_t length, const bool interrupt)
 	update_irq();
 }
 
+// SPECIFY timers use the 500 kbit/s table and scale with the data rate.
+// Zero encodes the maximum HLT/HUT delay, rather than disabling the timer.
+double timer_ms(const double milliseconds)
+{
+	return milliseconds * 500.0 / data_rate_kbps;
+}
+
+double head_load_delay_ms(const size_t unit)
+{
+	if (!fdc.timing_specified ||
+	    PIC_FullIndex() < fdc.drives[unit].head_loaded_until_ms) {
+		return 0;
+	}
+	return timer_ms(2.0 * (fdc.head_load ? fdc.head_load : 128));
+}
+
 void finish_data(const uint8_t status_1, const uint8_t status_2 = 0,
                  const bool terminal_count = false)
 {
 	PIC_RemoveEvents(pio_byte_event);
+	PIC_RemoveEvents(start_loaded_data);
+	const auto unit = selected_unit();
+	if (unit < fdc.drives.size() && fdc.phase == Phase::Execution &&
+	    motor_on(unit)) {
+		fdc.drives[unit].head_loaded_until_ms =
+		        PIC_FullIndex() +
+		        (fdc.timing_specified
+		                 ? timer_ms(16.0 * (fdc.head_unload ? fdc.head_unload
+		                                                    : 16))
+		                 : 0);
+	}
 	fdc.pio_data.clear();
 	fdc.pio_ready       = false;
 	fdc.pio_underrun    = false;
@@ -1081,6 +1115,25 @@ void start_data(const Command command)
 	}
 	fdc.phase = Phase::Execution;
 	if (command == Command::FormatTrack) {
+		fdc.formatted_ids = 0;
+	}
+	const auto load_ms = head_load_delay_ms(unit);
+	fdc.drives[unit].head_loaded_until_ms = std::numeric_limits<double>::infinity();
+	if (load_ms > 0) {
+		PIC_AddEvent(start_loaded_data, load_ms);
+	} else {
+		start_loaded_data(0);
+	}
+}
+
+void start_loaded_data(uint32_t)
+{
+	const auto command = static_cast<Command>(fdc.command[0] & 0x1f);
+	if (!media_ready(selected_unit())) {
+		finish_data(0x04);
+		return;
+	}
+	if (command == Command::FormatTrack) {
 		fdc.format_rate_kbps = data_rate_kbps;
 		const auto raw       = !fdc.media;
 		if (fdc.command[3] == 0 || fdc.command[2] > 7 ||
@@ -1200,7 +1253,13 @@ void complete_seek(const uint32_t unit)
 void execute_command(const Command command)
 {
 	switch (command) {
-	case Command::Specify: fdc.non_dma = (fdc.command[2] & 1) != 0; break;
+	case Command::Specify:
+		fdc.non_dma          = (fdc.command[2] & 1) != 0;
+		fdc.step_rate        = fdc.command[1] >> 4;
+		fdc.head_unload      = fdc.command[1] & 0x0f;
+		fdc.head_load        = fdc.command[2] >> 1;
+		fdc.timing_specified = true;
+		break;
 	case Command::SenseInterrupt: {
 		fdc.seek_irq_pending = false;
 		const auto pending   = std::ranges::find_if(
@@ -1237,7 +1296,12 @@ void execute_command(const Command command)
 		const auto steps = std::max(1, std::abs(cylinder - seek.cylinder));
 		// Seek has no result phase of its own. Keep accepting commands,
 		// and latch the drive independently until Sense Interrupt.
-		PIC_AddEvent(complete_seek, steps * StepMs, check_cast<uint32_t>(unit));
+		const auto step_ms = fdc.timing_specified
+		                           ? timer_ms(16.0 - fdc.step_rate)
+		                           : DefaultStepMs;
+		PIC_AddEvent(complete_seek,
+		             steps * step_ms,
+		             check_cast<uint32_t>(unit));
 		break;
 	}
 	case Command::ReadId:
@@ -1372,6 +1436,7 @@ void write_ccr(io_port_t, const io_val_t value, io_width_t)
 
 void reset_controller()
 {
+	PIC_RemoveEvents(start_loaded_data);
 	PIC_RemoveEvents(complete_seek);
 	PIC_RemoveEvents(complete_read_id);
 	PIC_RemoveEvents(transfer_sector);
@@ -1384,6 +1449,9 @@ void reset_controller()
 	fdc               = {};
 	// Resetting the controller does not move the physical drive heads.
 	fdc.drives = drives;
+	for (auto& drive : fdc.drives) {
+		drive.head_loaded_until_ms = 0;
+	}
 }
 
 void write_dor(io_port_t, const io_val_t value, io_width_t)
@@ -1406,6 +1474,9 @@ void write_dor(io_port_t, const io_val_t value, io_width_t)
 	}
 	fdc.dor = check_cast<uint8_t>(value);
 	for (size_t unit = 0; unit < fdc.drives.size(); ++unit) {
+		if (!motor_on(unit)) {
+			fdc.drives[unit].head_loaded_until_ms = 0;
+		}
 		if (motor_on(unit) && !(previous & (0x10u << unit))) {
 			fdc.drives[unit].motor_started_ms = PIC_FullIndex();
 		}
@@ -1583,8 +1654,9 @@ BiosCommandResult bios_command(const uint8_t unit, const uint32_t cylinder,
 	const auto track    = BIOS_GetFloppyMedia(unit);
 	const auto cycle_ms = track ? track->GetCycleMs(cylinder, head)
 	                            : StandardRevolutionMs;
-	const auto deadline = PIC_FullIndex() + revolutions * cycle_ms;
-	const auto mask     = IO_ReadB(0x21);
+	const auto deadline = PIC_FullIndex() + head_load_delay_ms(unit) +
+	                      revolutions * cycle_ms;
+	const auto mask = IO_ReadB(0x21);
 	if (!pcjr) {
 		PIC_SetIRQMask(FloppyIrq, false);
 	}
@@ -1858,14 +1930,26 @@ void FLOPPY_BiosReset(const uint8_t unit)
 	const auto dor = check_cast<uint8_t>((fdc.dor & 0xf0) | ResetReleased |
 	                                     InterruptEnabled | unit);
 	const auto was_masked = (IO_ReadB(0x21) & (1u << FloppyIrq)) != 0;
-	PIC_SetIRQMask(FloppyIrq, false);
+	if (is_machine_pcjr()) {
+		// Cancel the adapter watchdog without touching its shared
+		// keyboard NMI.
+		PIC_RemoveEvents(pcjr_watchdog_expired);
+		pcjr_watchdog_asserted = false;
+		pcjr_dor = check_cast<uint8_t>(0x80u | ((dor & 0x10) ? 1u : 0u));
+	} else {
+		PIC_SetIRQMask(FloppyIrq, false);
+	}
 	mem_writeb(BIOS_DRIVE_ACTIVE, mem_readb(BIOS_DRIVE_ACTIVE) & 0x7f);
 	write_dor(0x3f2, dor & ~ResetReleased, io_width_t::byte);
 	write_dor(0x3f2, dor, io_width_t::byte);
-	const auto shutdown = CALLBACK_Idle();
-	PIC_SetIRQMask(FloppyIrq, was_masked);
-	if (shutdown) {
-		return;
+	if (is_machine_pcjr()) {
+		fdc.non_dma = true;
+	} else {
+		const auto shutdown = CALLBACK_Idle();
+		PIC_SetIRQMask(FloppyIrq, was_masked);
+		if (shutdown) {
+			return;
+		}
 	}
 	// Sense Interrupt Status consumes the reset status for each drive.
 	while (fdc.phase == Phase::Command && !fdc.command_count &&

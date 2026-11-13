@@ -21,7 +21,7 @@ def recovery_checks(unit):
     mov si,seek
     mov cx,3
     call send_command
-''' + wait_microseconds(10000) + f'''
+''' + wait_microseconds(20000) + f'''
     mov dx,3f5h
     mov al,8
     out dx,al
@@ -44,7 +44,7 @@ def recovery_checks(unit):
     mov al,{0x1c if unit == 0 else 0x2d}
     out dx,al
     call drain_reset
-''' + wait_microseconds(10000) + '''
+''' + wait_microseconds(20000) + '''
     mov dx,3f4h
     in al,dx
     cmp al,80h
@@ -59,7 +59,7 @@ def recovery_checks(unit):
     mov si,recalibrate
     mov cx,2
     call send_command
-''' + wait_microseconds(10000) + f'''
+''' + wait_microseconds(20000) + f'''
     mov dx,3f5h
     mov al,8
     out dx,al
@@ -112,7 +112,7 @@ def main():
         mov si,specify
         mov cx,3
         call send_command
-    ''' + wait_microseconds(10000) + f'''
+    ''' + wait_microseconds(20000) + f'''
         mov dx,3f4h
         in al,dx
         cmp al,{0x80 | (1 << unit)}

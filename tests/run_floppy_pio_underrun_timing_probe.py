@@ -43,7 +43,7 @@ def check_abort(args, directory, extension, reset):
     mov si,write_command
     mov cx,9
     call send_command
-''' + wait_microseconds(10000) + f'''
+''' + wait_microseconds(210000) + f'''
     mov dx,3f4h
     in al,dx
     cmp al,30h
@@ -80,7 +80,7 @@ def check_abort(args, directory, extension, reset):
     repe scasb
     jne done
 '''
-    commands = ('specify_pio db 3,0dfh,1\nspecify_dma db 3,0dfh,0\n'
+    commands = ('specify_pio db 3,0dfh,3\nspecify_dma db 3,0dfh,2\n'
                 'write_command db 45h,0,0,0,1,2,1,54h,0ffh\n'
                 'read_command db 46h,0,0,0,1,2,1,54h,0ffh\n')
     run_guest(args.dosbox.resolve(), args.nasm, directory, image,
@@ -162,14 +162,16 @@ def main():
         cmp byte [ids+2],0
         jne done
     ''' + SAVE
-                commands = DECLARATIONS + ('\nspecify db 3,0dfh,1\n'
+                commands = DECLARATIONS + ('\nspecify db 3,0dfh,3\n'
                                            'command db 45h,0,0,0,1,2,1,54h,0ffh\n')
                 body = setup + '\n    jmp checked\n' + commands + ROUTINES + 'checked:\n'
                 run_guest(args.dosbox.resolve(), args.nasm, directory, image, body, read_only=False,
                           extra_commands=('config -set cpu cpu_cycles=20000',))
                 t0,p0,t1,p1 = unpack('<IHIH', (directory / 'CLOCK.BIN').read_bytes())
                 elapsed = (65536*(t1-t0)+p0-p1)*1000/1193182
-                assert 20.928 <= elapsed < 21.1, (extension, pio, elapsed)
+                # Loading the head misses the near-index ID on the first turn.
+                turn = 200 if pio else 0
+                assert 20.928 + turn <= elapsed < 21.1 + turn, (extension, pio, elapsed)
                 saved = Path(str(image) + '.overlay').read_bytes()
                 readback = RESET + DMA + '''
         mov si,read_command
