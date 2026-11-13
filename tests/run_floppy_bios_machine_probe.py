@@ -147,7 +147,7 @@ def request(case, pcjr, size_code=2, offset=0x4000):
     xor ax,ax
     mov es,ax
     test byte [es:43eh],80h
-    {'jnz' if pcjr or boundary else 'jz'} done
+    jnz done
     cmp byte [es:443h],{st1 if hardware else 0xa5}
     jne done
     cmp byte [es:444h],{case.st2 if hardware else 0xa5}

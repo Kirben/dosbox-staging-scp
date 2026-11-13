@@ -475,8 +475,9 @@ irq_reset_test:
     jne report
     mov ax,40h
     mov es,ax
+    ; BIOS Reset consumes its IRQ flag, but must still deliver IRQ6 above.
     test byte [es:3eh],80h
-    jz report
+    jnz report
     in al,21h
     test al,40h
     jz report

@@ -1676,6 +1676,9 @@ BiosCommandResult bios_command(const uint8_t unit, const uint32_t cylinder,
 	if (!pcjr && !shutdown && fdc.phase == Phase::Result && fdc.irq_pending) {
 		shutdown = CALLBACK_Idle();
 	}
+	// Like the BIOS WAIT_INT routine, consume the interrupt occurrence
+	// after a BIOS-owned command. Direct FDC users own their own flag.
+	mem_writeb(BIOS_DRIVE_ACTIVE, mem_readb(BIOS_DRIVE_ACTIVE) & 0x7f);
 	bios_pio    = nullptr;
 	fdc.non_dma = previous_non_dma;
 	if (!pcjr) {
@@ -1954,6 +1957,7 @@ void FLOPPY_BiosReset(const uint8_t unit)
 			return;
 		}
 	}
+	mem_writeb(BIOS_DRIVE_ACTIVE, mem_readb(BIOS_DRIVE_ACTIVE) & 0x7f);
 	// Sense Interrupt Status consumes the reset status for each drive.
 	while (fdc.phase == Phase::Command && !fdc.command_count &&
 	       fdc.reset_unit < 4) {

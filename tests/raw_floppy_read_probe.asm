@@ -413,8 +413,9 @@ bios_format_probe:
     jz finish
     mov ax,0040h
     mov es,ax
+    ; The BIOS consumes its completion flag; the IRQ counter above survives.
     test byte [es:003eh],80h
-    jz finish
+    jnz finish
     out 0ch,al
     in al,04h
     cmp al,SECTORS * 4
