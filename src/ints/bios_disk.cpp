@@ -690,11 +690,11 @@ static FloppyBiosTransferResult bios_track_sector_transfer(
 
 	const auto& media = *disk_slots[unit].floppy;
 	std::vector<uint8_t> data(size_t{128} << size_code);
-	auto cylinder                 = uint32_t{request.cylinder};
-	auto head                     = uint32_t{request.head};
-	auto sector                   = uint32_t{request.sector};
-	auto offset                   = RealOffset(request.buffer);
-	const auto segment            = RealSegment(request.buffer);
+	auto cylinder      = uint32_t{request.cylinder};
+	auto head          = uint32_t{request.head};
+	auto sector        = uint32_t{request.sector};
+	auto offset        = RealOffset(request.buffer);
+	const auto segment = RealSegment(request.buffer);
 	// Protection tracks can contain IDs beyond the logical geometry.
 	const auto cross_tracks = sector <= disk.sectors;
 	for (uint8_t completed = 0; completed < request.count; ++completed) {
@@ -797,9 +797,9 @@ static DiskServiceResult bios_floppy_transfer(const DiskServiceRequest& request,
 
 static DiskServiceResult run_disk_service(const DiskServiceRequest& request)
 {
-	DiskServiceResult result         = {};
-	last_drive                       = request.drive;
-	const auto unit                  = GetDosDriveNumber(request.drive);
+	DiskServiceResult result = {};
+	last_drive               = request.drive;
+	const auto unit          = GetDosDriveNumber(request.drive);
 	const auto any_images = std::ranges::any_of(disk_slots, [](const auto& slot) {
 		return slot.sector != nullptr;
 	});
@@ -825,7 +825,7 @@ static DiskServiceResult run_disk_service(const DiskServiceRequest& request)
 					if (!is_machine_pcjr() && request.drive < 2) {
 						FLOPPY_BiosReset(request.drive);
 					}
-					last_status = 0x00;
+					last_status  = 0x00;
 					result.carry = false;
 				}
 			}
@@ -990,13 +990,14 @@ static DiskServiceResult run_disk_service(const DiskServiceRequest& request)
 		                                      &tmpsect,
 		                                      &tmpsize);
 		if (tmpcyl == 0) {
-			LOG(LOG_BIOS,
-			    LOG_ERROR)("INT13 DrivParm: cylinder count zero!");
+			LOG(LOG_BIOS, LOG_ERROR)
+			("INT13 DrivParm: cylinder count zero!");
 		} else {
 			tmpcyl--; // cylinder count -> max cylinder
 		}
 		if (tmpheads == 0) {
-			LOG(LOG_BIOS, LOG_ERROR)("INT13 DrivParm: head count zero!");
+			LOG(LOG_BIOS, LOG_ERROR)
+			("INT13 DrivParm: head count zero!");
 		} else {
 			tmpheads--; // head count -> max head
 		}
@@ -1075,7 +1076,7 @@ static DiskServiceResult run_disk_service(const DiskServiceRequest& request)
 		break;
 	case 0x17: /* Set disk type for format */
 		/* Pirates! needs this to load */
-		killRead = true;
+		killRead      = true;
 		result.status = 0x00;
 		result.carry  = false;
 		break;
@@ -1177,8 +1178,8 @@ void BIOS_SetupDisks(void)
 	swap_position      = 0;
 	swapping_requested = false;
 
-	diskparm0    = CALLBACK_Allocate();
-	diskparm1    = CALLBACK_Allocate();
+	diskparm0 = CALLBACK_Allocate();
+	diskparm1 = CALLBACK_Allocate();
 
 	RealSetVec(0x41, CALLBACK_RealPointer(diskparm0));
 	RealSetVec(0x46, CALLBACK_RealPointer(diskparm1));
