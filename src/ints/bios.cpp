@@ -25,6 +25,7 @@
 #include "hardware/serialport/serialport.h"
 #include "int10.h"
 #include "utils/bitops.h"
+#include "utils/checks.h"
 #include "utils/math_utils.h"
 
 // Constants
@@ -35,6 +36,8 @@ constexpr uint32_t BiosMachineSignatureAddress = 0xfffff;
 #else
 #include <sys/timeb.h>
 #endif
+
+CHECK_NARROWING();
 
 // Reference:
 // - Ralf Brown's Interrupt List
@@ -143,8 +146,10 @@ static bool Tandy_TransferInProgress(void)
 	}
 
 	IO_Write(0x0c, 0x00);
-	uint16_t datalen = (uint8_t)(IO_ReadB(tandy_dma * 2 + 1) & 0xff);
-	datalen |= (IO_ReadB(tandy_dma * 2 + 1) << 8);
+	uint16_t datalen = (uint8_t)(IO_ReadB(check_cast<io_port_t>(tandy_dma * 2 + 1)) &
+	                             0xff);
+	datalen = check_cast<uint16_t>(
+	        datalen | (IO_ReadB(check_cast<io_port_t>(tandy_dma * 2 + 1)) << 8));
 	if (datalen == 0xffff) {
 		return false; /* no DMA transfer */
 	} else if ((datalen < 0x10) && (real_readb(0x40, 0xd4) == 0x0f) &&
@@ -196,14 +201,16 @@ static void Tandy_SetupTransfer(PhysPt bufpt, bool isplayback)
 
 	if (tandy_sb.port) {
 		IO_Write(tandy_sb.port + 0xc, 0xd0); /* stop DMA transfer */
-		IO_Write(0x21, IO_Read(0x21) & (~(1 << tandy_irq))); /* unmask
-		                                                        IRQ */
+		IO_Write(0x21,
+		         check_cast<uint8_t>(IO_Read(0x21) & (~(1 << tandy_irq)))); /* unmask
+		                                                  IRQ */
 		IO_Write(tandy_sb.port + 0xc, 0xd1); /* turn speaker on */
 	} else {
 		IO_Write(tandy_dac.port, IO_Read(tandy_dac.port) & 0x60); /* disable
 		                                                             DAC */
-		IO_Write(0x21, IO_Read(0x21) & (~(1 << tandy_irq))); /* unmask
-		                                                        IRQ */
+		IO_Write(0x21,
+		         check_cast<uint8_t>(IO_Read(0x21) & (~(1 << tandy_irq)))); /* unmask
+		                                                  IRQ */
 	}
 
 	IO_Write(0x0a, 0x04 | tandy_dma); /* mask DMA channel */
@@ -230,13 +237,15 @@ static void Tandy_SetupTransfer(PhysPt bufpt, bool isplayback)
 	if (tlength + (bufpt & 0xffff) > 0x10000) {
 		tlength = 0x10000 - (bufpt & 0xffff);
 	}
-	real_writew(0x40, 0xd0, (uint16_t)(length - tlength)); /* remaining buffer
-	                                                          length */
+	real_writew(0x40, 0xd0, (uint16_t)(length - tlength)); /* remaining
+	                                                          buffer length
+	                                                        */
 	tlength--;
 
 	/* set transfer size */
-	IO_Write(tandy_dma * 2 + 1, (uint8_t)(tlength & 0xff));
-	IO_Write(tandy_dma * 2 + 1, (uint8_t)((tlength >> 8) & 0xff));
+	IO_Write(check_cast<io_port_t>(tandy_dma * 2 + 1), (uint8_t)(tlength & 0xff));
+	IO_Write(check_cast<io_port_t>(tandy_dma * 2 + 1),
+	         (uint8_t)((tlength >> 8) & 0xff));
 
 	auto delay     = (uint16_t)(real_readw(0x40, 0xd2) & 0xfff);
 	auto amplitude = (uint8_t)((real_readw(0x40, 0xd2) >> 13) & 0x7);
@@ -244,7 +253,8 @@ static void Tandy_SetupTransfer(PhysPt bufpt, bool isplayback)
 		IO_Write(0x0a, tandy_dma); /* enable DMA channel */
 		/* set frequency */
 		IO_Write(tandy_sb.port + 0xc, 0x40);
-		IO_Write(tandy_sb.port + 0xc, 256 - delay * 100 / 358);
+		IO_Write(tandy_sb.port + 0xc,
+		         static_cast<uint8_t>(256 - delay * 100 / 358));
 		/* set playback type to 8bit */
 		if (isplayback) {
 			IO_Write(tandy_sb.port + 0xc, 0x14);
@@ -619,7 +629,7 @@ static Bitu INT14_Handler(void)
 		// Parameters:				Return:
 		// AL: port parameters		AL: modem status
 		//							AH: line
-		//status
+		// status
 
 		// set baud rate
 		Bitu baudrate = {};
@@ -660,9 +670,9 @@ static Bitu INT14_Handler(void)
 		// AH: 0x01					AH: line status
 		// from just before the char was sent
 		//								(0x80
-		//| unpredicted) in case of timeout 						[undoc]	(0x80 | line
-		//status) in case of tx timeout 						[undoc]	(0x80 | modem status) in
-		//case of dsr/cts timeout
+		//| unpredicted) in case of timeout
+		//[undoc]	(0x80 | line status) in case of tx timeout
+		// [undoc]	(0x80 | modem status) in case of dsr/cts timeout
 
 		// set DTR & RTS on
 		IO_WriteB(port + 4, 0x3);
@@ -686,10 +696,11 @@ static Bitu INT14_Handler(void)
 		// AH: 0x02					AL: received
 		// character
 		//						[undoc]	will be
-		//trashed in case of timeout 							AH: (line status & 0x1E) in case of
-		//success 								(0x80 | unpredicted) in case of timeout 						[undoc]
-		//(0x80 | line status) in case of rx timeout 						[undoc]	(0x80 |
-		//modem status) in case of dsr timeout
+		// trashed in case of timeout
+		// AH: (line status & 0x1E) in case of success
+		// (0x80 | unpredicted) in case of timeout
+		// [undoc] (0x80 | line status) in case of rx timeout
+		//[undoc]	(0x80 | modem status) in case of dsr timeout
 
 		// set DTR on
 		IO_WriteB(port + 4, 0x1);
@@ -1173,7 +1184,7 @@ static Bitu reboot_handler()
 	// We want the text mostly centered, but we don't want to change the
 	// start column if the plural grammar form is longer/shorter than
 	// the singular one
-	const uint8_t start_column = (screen_width - max_length) / 2;
+	const auto start_column = check_cast<uint8_t>((screen_width - max_length) / 2);
 
 	// Display the text/counter
 	while (!conunter_text.empty()) {
@@ -1358,7 +1369,10 @@ bool BIOS_ConfigureTandyDacCallbacks(const std::optional<bool> maybe_request_dac
 			RealPt current_irq = RealGetVec(tandy_irq_vector);
 			real_writed(0x40, 0xd6, current_irq);
 			for (auto i = 0; i < 0x10; i++) {
-				phys_writeb(PhysicalMake(0xf000, 0xa084 + i), 0x80);
+				phys_writeb(PhysicalMake(0xf000,
+				                         check_cast<uint16_t>(
+				                                 0xa084 + i)),
+				            0x80);
 			}
 			return true;
 		}
@@ -1423,8 +1437,10 @@ public:
 			                               : ConventionalMemorySizeKb;
 			const auto available_kb = standard ? total_kb - TandyReservedVideoMemoryKb
 			                                   : 624;
-			mem_writew(BIOS_MEMORY_SIZE, available_kb);
-			mem_writew(BIOS_TRUE_MEMORY_SIZE, total_kb);
+			mem_writew(BIOS_MEMORY_SIZE,
+			           check_cast<uint16_t>(available_kb));
+			mem_writew(BIOS_TRUE_MEMORY_SIZE,
+			           check_cast<uint16_t>(total_kb));
 
 		} else if (is_machine_pcjr()) {
 			const auto section = get_section("dos");
@@ -1681,7 +1697,8 @@ public:
 		IO_Write(0x70, 0x30);
 		size_extended = IO_Read(0x71);
 		IO_Write(0x70, 0x31);
-		size_extended |= (IO_Read(0x71) << 8);
+		size_extended = check_cast<uint16_t>(size_extended |
+		                                     (IO_Read(0x71) << 8));
 		BIOS_HostTimeSync();
 	}
 	~BIOS()

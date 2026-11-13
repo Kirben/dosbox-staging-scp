@@ -10,6 +10,10 @@
 #include "ints/bios_disk.h"
 #include "utils/string_utils.h"
 
+#include "utils/checks.h"
+
+CHECK_NARROWING();
+
 extern char sfn[DOS_NAMELENGTH_ASCII];
 
 // TODO Right now label formatting seems to be a bit of mess, with various
@@ -55,7 +59,9 @@ void Set_Label(const char* const input, char* const output, bool cdrom)
 		// another mscdex quirk. Label is not always uppercase.
 		// (Daggerfall)
 		output[labelPos] = (cdrom ? input[vnamePos]
-		                          : toupper(input[vnamePos]));
+		                          : static_cast<char>(toupper(
+		                                    static_cast<unsigned char>(
+		                                            input[vnamePos]))));
 
 		labelPos++;
 		vnamePos++;
@@ -112,7 +118,11 @@ std::string generate_8x3(const char* lfn, const unsigned int num, const bool sta
 			if (input[i] != ' ') {
 				result += is_special_character(input[i])
 				                ? "_"
-				                : std::string(1, toupper(input[i]));
+				                : std::string(
+				                          1,
+				                          static_cast<char>(toupper(
+				                                  static_cast<unsigned char>(
+				                                          input[i]))));
 				if (result.size() >= tilde_pos) {
 					break;
 				}
@@ -132,7 +142,11 @@ std::string generate_8x3(const char* lfn, const unsigned int num, const bool sta
 				}
 				result += is_special_character(input[i])
 				                ? "_"
-				                : std::string(1, toupper(input[i]));
+				                : std::string(
+				                          1,
+				                          static_cast<char>(toupper(
+				                                  static_cast<unsigned char>(
+				                                          input[i]))));
 				if (++len_ext >= 3) {
 					break;
 				}
@@ -276,7 +290,7 @@ void DriveManager::CycleDisks(int requested_drive, bool notify)
 		const auto old_disk     = drive_info.disks[current_disk];
 		current_disk            = (current_disk + 1) % num_disks;
 		const auto new_disk     = drive_info.disks[current_disk];
-		drive_info.current_disk = current_disk;
+		drive_info.current_disk = check_cast<uint16_t>(current_disk);
 		if (BIOS_GetDisk(drive) && new_disk &&
 		    new_disk->GetType() == DosDriveType::Fat) {
 			const auto fat_drive = std::dynamic_pointer_cast<fatDrive>(
@@ -321,7 +335,7 @@ int DriveManager::UnmountDrive(int drive)
 	const auto is_cdrom = Drives.at(drive) &&
 	                      (Drives[drive]->GetType() == DosDriveType::Iso);
 	if (is_cdrom) {
-		IDE_CDROM_Detach(drive);
+		IDE_CDROM_Detach(check_cast<int8_t>(drive));
 	}
 
 	// short-hand reference
@@ -329,11 +343,11 @@ int DriveManager::UnmountDrive(int drive)
 
 	// unmanaged drive
 	if (drive_info.disks.size() == 0) {
-		result = Drives.at(drive)->UnMount();
+		result = check_cast<int>(Drives.at(drive)->UnMount());
 	} else {
 		// managed drive
 		int current_disk = drive_info.current_disk;
-		result           = drive_info.disks[current_disk]->UnMount();
+		result = check_cast<int>(drive_info.disks[current_disk]->UnMount());
 	}
 	// only clear on success
 	if (result == 0) {

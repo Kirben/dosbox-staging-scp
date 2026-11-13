@@ -18,6 +18,10 @@
 #include "misc/support.h"
 #include "utils/string_utils.h"
 
+#include "utils/checks.h"
+
+CHECK_NARROWING();
+
 #define IMGTYPE_FLOPPY 0
 #define IMGTYPE_ISO    1
 #define IMGTYPE_HDD    2

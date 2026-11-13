@@ -15,6 +15,10 @@
 #include "hardware/pic.h"
 #include "hardware/port.h"
 
+#include "utils/checks.h"
+
+CHECK_NARROWING();
+
 std::unique_ptr<DmaController> primary   = {};
 std::unique_ptr<DmaController> secondary = {};
 
@@ -187,7 +191,9 @@ static void DMA_Write_Port(const io_port_t port, const io_val_t value, io_width_
 		primary->WriteControllerReg(port, val, io_width_t::byte);
 	} else if (port >= 0xc0 && port <= 0xdf) {
 		/* write to the second DMA controller (channels 4-7) */
-		secondary->WriteControllerReg((port - 0xc0) >> 1, val, io_width_t::byte);
+		secondary->WriteControllerReg(check_cast<io_port_t>((port - 0xc0) >> 1),
+		                              val,
+		                              io_width_t::byte);
 	} else {
 		UpdateEMSMapping();
 		auto channel = GetChannelFromPort(port);
@@ -205,7 +211,9 @@ static uint16_t DMA_Read_Port(const io_port_t port, const io_width_t width)
 		return primary->ReadControllerReg(port, width);
 	} else if (port >= 0xc0 && port <= 0xdf) {
 		/* read from the second DMA controller (channels 4-7) */
-		return secondary->ReadControllerReg((port - 0xc0) >> 1, width);
+		return secondary->ReadControllerReg(check_cast<io_port_t>(
+		                                            (port - 0xc0) >> 1),
+		                                    width);
 	} else {
 		const auto channel = GetChannelFromPort(port);
 		if (channel) {
@@ -654,6 +662,6 @@ void DMA_Init()
 
 	Bitu i;
 	for (i = 0; i < LINK_START; i++) {
-		ems_board_mapping[i] = i;
+		ems_board_mapping[i] = check_cast<uint32_t>(i);
 	}
 }

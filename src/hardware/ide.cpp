@@ -23,6 +23,10 @@
 #include "ints/bios_disk.h"
 #include "utils/string_utils.h"
 
+#include "utils/checks.h"
+
+CHECK_NARROWING();
+
 extern int bootdrive;
 extern bool bootguest, bootvm, use_quick_reboot;
 
@@ -1144,7 +1148,7 @@ void IDEATAPICDROMDevice::on_atapi_busy_time()
 		               leadOut.fr - 150u;
 
 		prepare_read(0, std::min((uint32_t)8, host_maximum_byte_count));
-		sector[0] = sec >> 24u;
+		sector[0] = check_cast<uint8_t>(sec >> 24u);
 		sector[1] = check_cast<uint8_t>(sec >> 16u);
 		sector[2] = check_cast<uint8_t>(sec >> 8u);
 		sector[3] = sec & 0xFF;
@@ -3230,8 +3234,11 @@ void IDE_EmuINT13DiskReadByBIOS(uint8_t disk, uint32_t cyl, uint32_t head,
 						lba = (head * dsk->sectors) +
 						      (cyl * dsk->sectors * dsk->heads) +
 						      sect - 1;
-						sect = (lba % ata->sects) + 1;
-						head = (lba / ata->sects) % ata->heads;
+						sect = check_cast<unsigned int>(
+						        (lba % ata->sects) + 1);
+						head = check_cast<uint32_t>(
+						        (lba / ata->sects) %
+						        ata->heads);
 						cyl = check_cast<uint32_t>(
 						        lba / ata->sects / ata->heads);
 					}

@@ -25,6 +25,22 @@
 #include "utils/fs_utils.h"
 #include "utils/string_utils.h"
 
+#include "utils/checks.h"
+
+CHECK_NARROWING();
+
+// File sizes come from an untrusted container, not a guest-sized integer.
+static bool set_boot_file_sizes(FILE* file, uint32_t* ksize, uint32_t* bsize)
+{
+	const auto size = ftell(file);
+	if (size < 0 || static_cast<uint64_t>(size) > UINT32_MAX) {
+		return false;
+	}
+	*bsize = static_cast<uint32_t>(size);
+	*ksize = *bsize / 1024;
+	return true;
+}
+
 FILE* BOOT::getFSFile_mounted(const char* filename, uint32_t* ksize,
                               uint32_t* bsize, uint8_t* error, bool* read_only,
                               std::string* host_path)
@@ -62,8 +78,10 @@ FILE* BOOT::getFSFile_mounted(const char* filename, uint32_t* ksize,
 			return nullptr;
 		}
 
-		*ksize = (ftell(tmpfile) / 1024);
-		*bsize = ftell(tmpfile);
+		if (!set_boot_file_sizes(tmpfile, ksize, bsize)) {
+			fclose(tmpfile);
+			return nullptr;
+		}
 		if (IsFloppyTrackImage(tmpfile, filename)) {
 			if (read_only) {
 				*read_only = ldp->IsReadOnly();
@@ -137,8 +155,10 @@ FILE* BOOT::getFSFile(const char* filename, uint32_t* ksize, uint32_t* bsize,
 			                 SEEK_END)) {
 				return nullptr;
 			}
-			*ksize = (ftell(tmpfile) / 1024);
-			*bsize = ftell(tmpfile);
+			if (!set_boot_file_sizes(tmpfile, ksize, bsize)) {
+				fclose(tmpfile);
+				return nullptr;
+			}
 			return tmpfile;
 		}
 		// Give the delayed errormessages from the mounted variant (or
@@ -154,8 +174,10 @@ FILE* BOOT::getFSFile(const char* filename, uint32_t* ksize, uint32_t* bsize,
 	if (!check_fseek(ModuleName, FileDescription, filename, tmpfile, 0L, SEEK_END)) {
 		return nullptr;
 	}
-	*ksize = (ftell(tmpfile) / 1024);
-	*bsize = ftell(tmpfile);
+	if (!set_boot_file_sizes(tmpfile, ksize, bsize)) {
+		fclose(tmpfile);
+		return nullptr;
+	}
 	return tmpfile;
 }
 
@@ -188,7 +210,7 @@ void BOOT::Run(void)
 
 	FILE* usefile_1          = nullptr;
 	FILE* usefile_2          = nullptr;
-	Bitu i                   = 0;
+	unsigned int i           = 0;
 	BiosBootDisks boot_disks = {};
 	size_t boot_disk_count   = 0;
 	uint32_t floppysize      = 0;
@@ -219,7 +241,8 @@ void BOOT::Run(void)
 		if (cmd->FindCommand(1, temp_line)) {
 			if (temp_line.length() == 2 && toupper(temp_line[0]) >= 'A' &&
 			    toupper(temp_line[0]) <= 'Z' && temp_line[1] == ':') {
-				drive = toupper(temp_line[0]);
+				drive = static_cast<char>(toupper(
+				        static_cast<unsigned char>(temp_line[0])));
 				if ((drive != 'A') && (drive != 'C') &&
 				    (drive != 'D')) {
 					printError();
@@ -236,7 +259,9 @@ void BOOT::Run(void)
 				 * drive */
 				i++;
 				if (cmd->FindCommand(i + 1, temp_line)) {
-					drive = toupper(temp_line[0]);
+					drive = static_cast<char>(
+					        toupper(static_cast<unsigned char>(
+					                temp_line[0])));
 					if ((drive != 'A') && (drive != 'C') &&
 					    (drive != 'D')) {
 						printError();
@@ -255,11 +280,7 @@ void BOOT::Run(void)
 				/* Command mode for PCJr cartridges */
 				i++;
 				if (cmd->FindCommand(i + 1, temp_line)) {
-					for (size_t ct = 0; ct < temp_line.size();
-					     ct++) {
-						temp_line[ct] = toupper(
-						        temp_line[ct]);
-					}
+					upcase(temp_line);
 					cart_cmd = temp_line;
 				} else {
 					printError();
@@ -572,7 +593,9 @@ void BOOT::Run(void)
 					/* run cartridge setup */
 					SegSet16(ds, dos.psp());
 					SegSet16(es, dos.psp());
-					CALLBACK_RunRealFar(romseg, cfound_at);
+					CALLBACK_RunRealFar(romseg,
+					                    check_cast<uint16_t>(
+					                            cfound_at));
 				}
 			}
 		}
