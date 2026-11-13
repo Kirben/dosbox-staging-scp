@@ -1750,7 +1750,15 @@ void FLOPPY_BiosPosition(const uint8_t unit, const uint8_t cylinder)
 		drive.motor_started_ms = PIC_FullIndex();
 	}
 	fdc.dor = check_cast<uint8_t>((fdc.dor & 0xf0) | (0x10u << unit) |
-	                              ResetReleased | InterruptEnabled | unit);
+	                              ResetReleased | InterruptEnabled |
+	                              unit); // Boot loaders can use the BIOS
+	                                     // motor mask to identify their
+	                                     // boot drive.
+	mem_writeb(BIOS_DRIVE_RUNNING,
+	           check_cast<uint8_t>((mem_readb(BIOS_DRIVE_RUNNING) & 0xf0) |
+	                               (fdc.dor >> 4)));
+	const auto parameters = RealToPhysical(RealGetVec(0x1e));
+	mem_writeb(BIOS_DISK_MOTOR_TIMEOUT, mem_readb(parameters + 2));
 }
 
 void FLOPPY_BiosReset(const uint8_t unit)
