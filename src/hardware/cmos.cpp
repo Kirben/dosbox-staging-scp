@@ -187,7 +187,8 @@ static uint8_t cmos_readreg(io_port_t, io_width_t)
 			return val;
 		}
 	case 0x10: // Floppy drive types
-		return (BIOS_GetFloppyCmosType(0) << 4) | BIOS_GetFloppyCmosType(1);
+		return check_cast<uint8_t>((BIOS_GetFloppyCmosType(0) << 4) |
+		                           BIOS_GetFloppyCmosType(1));
 	/* First harddrive info */
 	case 0x12:
 		hdparm = 0;
@@ -230,7 +231,7 @@ static uint8_t cmos_readreg(io_port_t, io_width_t)
 		return 0;
 	case 0x20:
 		if (const auto disk = BIOS_GetDisk(2)) {
-			return (0xc0 | (((disk->heads) > 8) << 3));
+			return check_cast<uint8_t>(0xc0 | ((disk->heads > 8) << 3));
 		}
 		return 0;
 	case 0x21:
@@ -281,7 +282,7 @@ static uint8_t cmos_readreg(io_port_t, io_width_t)
 		return 0;
 	case 0x29:
 		if (const auto disk = BIOS_GetDisk(3)) {
-			return (0xc0 | (((disk->heads) > 8) << 3));
+			return check_cast<uint8_t>(0xc0 | ((disk->heads > 8) << 3));
 		}
 		return 0;
 	case 0x2a:

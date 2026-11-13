@@ -371,7 +371,10 @@ static void TandyDAC_Handler(uint8_t tfunction)
 		/* store buffer length */
 		real_writew(0x40, 0xd0, reg_cx);
 		/* store delay and volume */
-		real_writew(0x40, 0xd2, (reg_dx & 0xfff) | ((reg_al & 7) << 13));
+		real_writew(0x40,
+		            0xd2,
+		            check_cast<uint16_t>((reg_dx & 0xfff) |
+		                                 ((reg_al & 7) << 13)));
 		Tandy_SetupTransfer(PhysicalMake(SegValue(es), reg_bx),
 		                    reg_ah == 0x83);
 		reg_ah = 0x00;

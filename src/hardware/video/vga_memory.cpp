@@ -75,8 +75,8 @@ inline static uint32_t ModeOperation(uint8_t val)
 		// data and which come from the latch register. Finally, only
 		// the bit planes enabled by the Memory Plane Write Enable field
 		// are written to memory.
-		val  = ((val >> vga.config.data_rotate) |
-                       (val << (8 - vga.config.data_rotate)));
+		val  = static_cast<uint8_t>((val >> vga.config.data_rotate) |
+                                           (val << (8 - vga.config.data_rotate)));
 		full = ExpandTable[val];
 		full = (full & vga.config.full_not_enable_set_reset) |
 		       vga.config.full_enable_and_set_reset;
@@ -111,8 +111,8 @@ inline static uint32_t ModeOperation(uint8_t val)
 		// expansion of the Set/Reset field and which come from the
 		// latch register. Finally, only the bit planes enabled by the
 		// Memory Plane Write Enable field are written to memory.
-		val  = ((val >> vga.config.data_rotate) |
-                       (val << (8 - vga.config.data_rotate)));
+		val  = static_cast<uint8_t>((val >> vga.config.data_rotate) |
+                                           (val << (8 - vga.config.data_rotate)));
 		full = RasterOp(vga.config.full_set_reset,
 		                ExpandTable[val] & vga.config.full_bit_mask);
 		break;
