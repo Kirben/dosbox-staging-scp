@@ -118,7 +118,10 @@ private:
 	        const std::span<const uint8_t> bitstream, const size_t bit_count = 0,
 	        const size_t index = 0, const bool detect_weak = false,
 	        std::shared_ptr<FloppyMfmTrack> captured = {});
-	static std::vector<FloppySector> FormatMfmTrack(
+	static std::vector<FloppySector> DecodeMfmRevolutions(
+	        const std::span<const std::shared_ptr<FloppyMfmTrack>> revolutions,
+	        const std::span<const double> ends);
+	static std::shared_ptr<FloppyMfmTrack> FormatMfmTrack(
 	        const std::span<const FloppySector> previous, const size_t revolution,
 	        const double duration_ms, const TrackFormat& format);
 	void UpdateLogicalGeometry(const uint32_t cylinder, const uint32_t head,

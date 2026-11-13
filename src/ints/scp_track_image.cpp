@@ -101,8 +101,8 @@ std::vector<FluxTurn> split_at_index(const ScpCapture::Header& header,
 	return turns;
 }
 
-std::vector<uint8_t> recover_bitstream(const FluxTurn& turn,
-                                       const double nominal_cell_ns)
+std::shared_ptr<FloppyMfmTrack> recover_bitstream(const FluxTurn& turn,
+                                                  const double nominal_cell_ns)
 {
 	constexpr size_t MaxCells      = 2'100'000;
 	std::vector<uint8_t> bitstream = {};
@@ -138,8 +138,12 @@ std::vector<uint8_t> recover_bitstream(const FluxTurn& turn,
 	if (tail > MaxCells - cells_written) {
 		return {};
 	}
-	bitstream.resize((cells_written + tail + 7) / 8);
-	return bitstream;
+	const auto bit_count = cells_written + tail;
+	bitstream.resize((bit_count + 7) / 8);
+	auto raw       = std::make_shared<FloppyMfmTrack>();
+	raw->cells     = std::move(bitstream);
+	raw->bit_count = bit_count;
+	return raw;
 }
 
 } // namespace
@@ -186,56 +190,52 @@ std::unique_ptr<FloppyTrackImage> FloppyTrackImage::LoadScp(FILE* file,
 		}
 
 		double elapsed_ms = 0;
-		for (size_t revolution = 0; revolution < turns.size(); ++revolution) {
-			const auto& turn = turns[revolution];
-			const auto turn_ms = static_cast<double>(turn.duration_ns) /
-			                     1'000'000;
-			track.revolution_ends.push_back((elapsed_ms + turn_ms) /
-			                                track.cycle_ms);
-			if (turn.transitions_ns.empty()) {
-				elapsed_ms += turn_ms;
+		for (const auto& turn : turns) {
+			elapsed_ms += static_cast<double>(turn.duration_ns) / 1'000'000;
+			track.revolution_ends.push_back(elapsed_ms / track.cycle_ms);
+		}
+		if (std::ranges::all_of(turns, [](const auto& turn) {
+			    return turn.transitions_ns.empty();
+		    })) {
+			continue;
+		}
+		std::vector<FloppySector> decoded = {};
+		int best_score                    = 0;
+		for (const auto cell_ns : CellTimesNs) {
+			std::vector<std::shared_ptr<FloppyMfmTrack>> revolutions = {};
+			for (const auto& turn : turns) {
+				auto raw = recover_bitstream(turn, cell_ns);
+				if (!raw || !raw->bit_count) {
+					break;
+				}
+				revolutions.push_back(std::move(raw));
+			}
+			if (revolutions.size() != turns.size()) {
 				continue;
 			}
-			std::vector<FloppySector> decoded = {};
-			int best_score                    = 0;
-			for (const auto cell_ns : CellTimesNs) {
-				const auto bitstream = recover_bitstream(turn, cell_ns);
-				if (bitstream.size() < 16) {
-					continue;
-				}
-				auto candidate = DecodeMfmTrack(bitstream);
-				int score      = 0;
-				for (const auto& sector : candidate) {
-					if (!sector.id_crc_error) {
-						score += sector.data.empty() ||
-						                         sector.data_crc_error
-						               ? 1
-						               : 4;
-					}
-				}
-				if (score > best_score ||
-				    (decoded.empty() && !candidate.empty())) {
-					decoded    = std::move(candidate);
-					best_score = score;
+			// Index does not restart the data separator. A field
+			// can continue into the following captured turn.
+			auto candidate = DecodeMfmRevolutions(revolutions,
+			                                      track.revolution_ends);
+			int score      = 0;
+			for (const auto& sector : candidate) {
+				if (!sector.id_crc_error) {
+					score += sector.data.empty() || sector.data_crc_error
+					               ? 1
+					               : 4;
 				}
 			}
-
-			image->UpdateLogicalGeometry(static_cast<uint32_t>(index / 2),
-			                             static_cast<uint32_t>(index % 2),
-			                             decoded);
-			found_ids |= !decoded.empty();
-			for (auto& sector : decoded) {
-				sector.revolution     = revolution;
-				sector.cycle_fraction = (elapsed_ms +
-				                         sector.cycle_fraction *
-				                                 turn_ms) /
-				                        track.cycle_ms;
+			if (score > best_score ||
+			    (decoded.empty() && !candidate.empty())) {
+				decoded    = std::move(candidate);
+				best_score = score;
 			}
-			track.sectors.insert(track.sectors.end(),
-			                     std::make_move_iterator(decoded.begin()),
-			                     std::make_move_iterator(decoded.end()));
-			elapsed_ms += turn_ms;
 		}
+		image->UpdateLogicalGeometry(static_cast<uint32_t>(index / 2),
+		                             static_cast<uint32_t>(index % 2),
+		                             decoded);
+		found_ids |= !decoded.empty();
+		track.sectors = std::move(decoded);
 	}
 	if (!found_ids) {
 		error = "no IBM MFM sector IDs found";
@@ -669,7 +669,8 @@ bool FloppyTrackImage::HasOverlappingFields(const uint32_t cylinder,
 		};
 		for (const auto& other : sectors) {
 			if (&other == &sector ||
-			    other.revolution != sector.revolution) {
+			    (other.revolution != sector.revolution &&
+			     other.mfm_track != sector.mfm_track)) {
 				continue;
 			}
 			// A write can erase another ID or change an enclosing
@@ -836,28 +837,31 @@ void FloppyTrackImage::ApplyTrackFormat(const TrackAddress& address,
 		track.cycle_ms        = track.format_cycle_ms;
 		track.revolution_ends = {1.0};
 	}
-	std::vector<FloppySector> sectors = {};
-	double start                      = 0;
+	std::vector<std::shared_ptr<FloppyMfmTrack>> revolutions = {};
 	for (size_t revolution = 0; revolution < track.revolution_ends.size();
 	     ++revolution) {
-		const auto end      = track.revolution_ends[revolution];
-		const auto duration = end - start;
-		auto decoded        = FormatMfmTrack(previous,
-                                              revolution,
-                                              duration * track.cycle_ms,
-                                              format);
-		for (auto& sector : decoded) {
-			sector.revolution = revolution;
-			sector.cycle_fraction = start + duration * sector.cycle_fraction;
-		}
-		sectors.insert(sectors.end(),
-		               std::make_move_iterator(decoded.begin()),
-		               std::make_move_iterator(decoded.end()));
-		// ID-only tracks have no retained data-field bitstream. Preserve
-		// their surviving ID records as well as the formatted prefix.
-		if (partial && std::ranges::none_of(previous, [&](const auto& sector) {
-			    return sector.revolution == revolution && sector.mfm_track;
-		    })) {
+		const auto start    = revolution
+		                            ? track.revolution_ends[revolution - 1]
+		                            : 0;
+		const auto duration = track.revolution_ends[revolution] - start;
+		revolutions.push_back(FormatMfmTrack(
+		        previous, revolution, duration * track.cycle_ms, format));
+	}
+	auto sectors = DecodeMfmRevolutions(revolutions, track.revolution_ends);
+	if (partial) {
+		for (size_t revolution = 0;
+		     revolution < track.revolution_ends.size();
+		     ++revolution) {
+			if (std::ranges::any_of(previous, [&](const auto& sector) {
+				    return sector.revolution == revolution &&
+				           sector.mfm_track;
+			    })) {
+				continue;
+			}
+			const auto start = revolution
+			                         ? track.revolution_ends[revolution - 1]
+			                         : 0;
+			const auto duration = track.revolution_ends[revolution] - start;
 			const auto cutoff = start +
 			                    duration * static_cast<double>(count) /
 			                            format.requested;
@@ -868,7 +872,12 @@ void FloppyTrackImage::ApplyTrackFormat(const TrackAddress& address,
 				}
 			}
 		}
-		start = end;
+		std::stable_sort(sectors.begin(),
+		                 sectors.end(),
+		                 [](const auto& left, const auto& right) {
+			                 return left.cycle_fraction <
+			                        right.cycle_fraction;
+		                 });
 	}
 	track.sectors       = std::move(sectors);
 	track.dirty         = true;

@@ -182,6 +182,7 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Linux" AND NOT CMAKE_CROSSCOMPILING)
         # This probe remounts full flux captures for each interruption scenario.
         set_tests_properties(Guest.FloppyScpAttachment PROPERTIES TIMEOUT 600)
         add_floppy_guest_test(FloppyScpFormatSwitch run_scp_attachment_probe.py --format-switch)
+        add_floppy_guest_test(FloppyScpIndexContinuity run_scp_index_continuity_probe.py)
         add_floppy_guest_test(FloppyScpReadRevolutions run_scp_attachment_probe.py --read-revolutions)
         add_floppy_guest_test(FloppyScpBiosFormat run_scp_attachment_probe.py --bios-format)
         add_floppy_guest_test(FloppyRawBootDma run_hxc_mfm_probe.py --boot-dma-raw)
