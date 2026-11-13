@@ -112,7 +112,7 @@ struct FloppyTrackImage::FluxTrack {
 
 std::vector<FloppySector> FloppyTrackImage::DecodeFluxTrack(
         const FluxTrack& flux, const std::span<const double> ends,
-        const uint64_t cycle, const uint16_t rate_kbps)
+        const uint16_t rate_kbps)
 {
 	std::vector<std::shared_ptr<FloppyMfmTrack>> raw = {};
 	for (const auto& turn : flux.turns) {
@@ -123,9 +123,10 @@ std::vector<FloppySector> FloppyTrackImage::DecodeFluxTrack(
 		if (!decoded || !decoded->bit_count) {
 			return {};
 		}
-		decoded->DetectWeakCells();
-		raw.push_back(
-		        decoded->Sample(cycle * flux.turns.size() + raw.size()));
+		// A long transition interval is recorded data, not a weak-bit
+		// mask. Preserve each captured turn; its actual variations
+		// provide the input for subsequent rotational reads.
+		raw.push_back(std::move(decoded));
 	}
 	return DecodeMfmRevolutions(raw, ends);
 }
@@ -193,7 +194,6 @@ std::unique_ptr<FloppyTrackImage> FloppyTrackImage::LoadScp(FILE* file,
 				if (!raw || !raw->bit_count) {
 					break;
 				}
-				raw->DetectWeakCells();
 				revolutions.push_back(std::move(raw));
 			}
 			if (revolutions.size() != turns.size()) {
