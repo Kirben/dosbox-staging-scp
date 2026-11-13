@@ -458,12 +458,13 @@ bios_format_probe:
 %if FORMAT_INTERRUPT < 3
     call send_command
 %if FORMAT_INTERRUPT = 2
-    ; Wait for DMA to consume exactly two CHRN tuples.
+    ; IDs are fetched before their format slot completes. Wait for the
+    ; third tuple: two slots are then complete, and the third is unfinished.
     mov ebp,400000
 .wait_for_two_ids:
     out 0ch,al
     in al,04h
-    cmp al,8
+    cmp al,12
     je .interrupt_now
     ja finish
     dec ebp

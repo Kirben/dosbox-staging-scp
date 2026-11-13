@@ -142,6 +142,8 @@ def check_timing(dosbox, nasm, directory, extension):
     for case in ("original", "format", "reopen"):
         checks = format_checks(2) if case == "format" else RESET
         checks += DMA + """
+    ; Clear a preceding format command's latched DMA terminal count.
+    in al,08h
     mov dx,3f2h
     mov al,0ch
     out dx,al
@@ -162,8 +164,12 @@ def check_timing(dosbox, nasm, directory, extension):
     in al,dx
     cmp al,10h
     jne done
-    cmp byte [buffer],0a5h
+    ; Bytes may arrive progressively, but the full sector is not ready.
+    cmp byte [buffer+511],0a5h
     jne done
+    in al,08h
+    test al,4
+    jnz done
     inc byte [stage]
     call wait_result
     cmp byte [ids+1],0
