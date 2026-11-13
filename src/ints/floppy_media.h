@@ -29,7 +29,12 @@ struct FloppyMfmTrack {
 	std::vector<size_t> revolution_ends_bits = {};
 
 	void DetectWeakCells();
-	std::shared_ptr<FloppyMfmTrack> Sample(const uint64_t cycle) const;
+	std::shared_ptr<FloppyMfmTrack> Sample(const uint64_t cycle,
+	                                       const double duration_ms = 0,
+	                                       const uint16_t rate_kbps = 0) const;
+	static std::shared_ptr<FloppyMfmTrack> RecoverFlux(
+	        const std::span<const uint64_t> transitions_ns,
+	        const uint64_t duration_ns, const double nominal_cell_ns);
 
 	size_t GetRevolutionBitCount(const size_t revolution) const
 	{
@@ -102,7 +107,8 @@ public:
 	// Command-time field decoding is separate from the logical sector view.
 	virtual std::vector<FloppySector> SampleTrack(const uint32_t cylinder,
 	                                              const uint32_t head,
-	                                              const uint64_t) const
+	                                              const uint64_t,
+	                                              const uint16_t) const
 	{
 		const auto sectors = GetTrack(cylinder, head);
 		return {sectors.begin(), sectors.end()};

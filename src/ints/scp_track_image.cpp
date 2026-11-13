@@ -103,51 +103,6 @@ std::vector<FluxTurn> split_at_index(const ScpCapture::Header& header,
 	return turns;
 }
 
-std::shared_ptr<FloppyMfmTrack> recover_bitstream(const FluxTurn& turn,
-                                                  const double nominal_cell_ns)
-{
-	constexpr size_t MaxCells      = 2'100'000;
-	std::vector<uint8_t> bitstream = {};
-	double clock_ns                = nominal_cell_ns;
-	double phase_ns                = 0;
-	uint64_t previous_ns           = 0;
-	size_t cells_written           = 0;
-	for (const auto time_ns : turn.transitions_ns) {
-		phase_ns += static_cast<double>(time_ns - previous_ns);
-		previous_ns      = time_ns;
-		const auto cells = static_cast<size_t>(
-		        std::max(0.0, std::floor(phase_ns / clock_ns + 0.5)));
-		if (cells == 0) {
-			continue;
-		}
-		if (cells > MaxCells - cells_written) {
-			return {};
-		}
-		cells_written += cells;
-		bitstream.resize((cells_written + 7) / 8);
-		const auto bit = cells_written - 1;
-		bitstream[bit / 8] |= static_cast<uint8_t>(0x80u >> (bit % 8));
-		phase_ns -= static_cast<double>(cells) * clock_ns;
-		clock_ns += (cells <= 4 ? phase_ns : nominal_cell_ns - clock_ns) * 0.05;
-		clock_ns = std::clamp(clock_ns,
-		                      nominal_cell_ns * 0.9,
-		                      nominal_cell_ns * 1.1);
-		phase_ns *= 0.4;
-	}
-
-	const auto tail = static_cast<size_t>(std::round(
-	        static_cast<double>(turn.duration_ns - previous_ns) / clock_ns));
-	if (tail > MaxCells - cells_written) {
-		return {};
-	}
-	const auto bit_count = cells_written + tail;
-	bitstream.resize((bit_count + 7) / 8);
-	auto raw       = std::make_shared<FloppyMfmTrack>();
-	raw->cells     = std::move(bitstream);
-	raw->bit_count = bit_count;
-	return raw;
-}
-
 } // namespace
 
 struct FloppyTrackImage::FluxTrack {
@@ -156,11 +111,15 @@ struct FloppyTrackImage::FluxTrack {
 };
 
 std::vector<FloppySector> FloppyTrackImage::DecodeFluxTrack(
-        const FluxTrack& flux, const std::span<const double> ends, const uint64_t cycle)
+        const FluxTrack& flux, const std::span<const double> ends,
+        const uint64_t cycle, const uint16_t rate_kbps)
 {
 	std::vector<std::shared_ptr<FloppyMfmTrack>> raw = {};
 	for (const auto& turn : flux.turns) {
-		auto decoded = recover_bitstream(turn, flux.cell_ns);
+		auto decoded = FloppyMfmTrack::RecoverFlux(turn.transitions_ns,
+		                                           turn.duration_ns,
+		                                           rate_kbps ? 500'000.0 / rate_kbps
+		                                                     : flux.cell_ns);
 		if (!decoded || !decoded->bit_count) {
 			return {};
 		}
@@ -228,7 +187,9 @@ std::unique_ptr<FloppyTrackImage> FloppyTrackImage::LoadScp(FILE* file,
 		for (const auto cell_ns : CellTimesNs) {
 			std::vector<std::shared_ptr<FloppyMfmTrack>> revolutions = {};
 			for (const auto& turn : turns) {
-				auto raw = recover_bitstream(turn, cell_ns);
+				auto raw = FloppyMfmTrack::RecoverFlux(turn.transitions_ns,
+				                                       turn.duration_ns,
+				                                       cell_ns);
 				if (!raw || !raw->bit_count) {
 					break;
 				}

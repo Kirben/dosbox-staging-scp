@@ -95,12 +95,60 @@ std::vector<bool> find_weak_cells(const MfmBitstream track)
 
 } // namespace
 
+std::shared_ptr<FloppyMfmTrack> FloppyMfmTrack::RecoverFlux(
+        const std::span<const uint64_t> transitions_ns,
+        const uint64_t duration_ns, const double nominal_cell_ns)
+{
+	constexpr size_t MaxCells      = 2'100'000;
+	std::vector<uint8_t> bitstream = {};
+	double clock_ns                = nominal_cell_ns;
+	double phase_ns                = 0;
+	uint64_t previous_ns           = 0;
+	size_t cells_written           = 0;
+	for (const auto time_ns : transitions_ns) {
+		phase_ns += static_cast<double>(time_ns - previous_ns);
+		previous_ns      = time_ns;
+		const auto cells = static_cast<size_t>(
+		        std::max(0.0, std::floor(phase_ns / clock_ns + 0.5)));
+		if (cells == 0) {
+			continue;
+		}
+		if (cells > MaxCells - cells_written) {
+			return {};
+		}
+		cells_written += cells;
+		bitstream.resize((cells_written + 7) / 8);
+		const auto bit = cells_written - 1;
+		bitstream[bit / 8] |= static_cast<uint8_t>(0x80u >> (bit % 8));
+		phase_ns -= static_cast<double>(cells) * clock_ns;
+		clock_ns += (cells <= 4 ? phase_ns : nominal_cell_ns - clock_ns) * 0.05;
+		clock_ns = std::clamp(clock_ns,
+		                      nominal_cell_ns * 0.9,
+		                      nominal_cell_ns * 1.1);
+		phase_ns *= 0.4;
+	}
+
+	const auto tail = static_cast<size_t>(std::round(
+	        static_cast<double>(duration_ns - previous_ns) / clock_ns));
+	if (tail > MaxCells - cells_written) {
+		return {};
+	}
+	const auto bit_count = cells_written + tail;
+	bitstream.resize((bit_count + 7) / 8);
+	auto raw       = std::make_shared<FloppyMfmTrack>();
+	raw->cells     = std::move(bitstream);
+	raw->bit_count = bit_count;
+	return raw;
+}
+
 void FloppyMfmTrack::DetectWeakCells()
 {
 	weak_cells = find_weak_cells({cells, bit_count});
 }
 
-std::shared_ptr<FloppyMfmTrack> FloppyMfmTrack::Sample(const uint64_t cycle) const
+std::shared_ptr<FloppyMfmTrack> FloppyMfmTrack::Sample(const uint64_t cycle,
+                                                       const double duration_ms,
+                                                       const uint16_t rate_kbps) const
 {
 	auto sampled = std::make_shared<FloppyMfmTrack>(*this);
 	for (size_t bit = 0; bit < weak_cells.size(); ++bit) {
@@ -122,7 +170,41 @@ std::shared_ptr<FloppyMfmTrack> FloppyMfmTrack::Sample(const uint64_t cycle) con
 	}
 	// This snapshot is already sampled; data reads must not sample it twice.
 	sampled->weak_cells.clear();
-	return sampled;
+	if (!rate_kbps || !bit_count || duration_ms <= 0) {
+		return sampled;
+	}
+	const auto cell_ns = duration_ms * 1'000'000 / static_cast<double>(bit_count);
+	const auto selected_cell_ns = 500'000.0 / rate_kbps;
+	// Bitstream captures already contain recovered cells. Preserve their
+	// exact positions when the selected separator can lock to that clock.
+	if (cell_ns >= selected_cell_ns * 0.9 && cell_ns <= selected_cell_ns * 1.1) {
+		return sampled;
+	}
+	std::vector<uint64_t> transitions = {};
+	for (size_t bit = 0; bit < bit_count; ++bit) {
+		if (bit_at({sampled->cells, bit_count}, bit)) {
+			transitions.push_back(check_cast<uint64_t>(std::llround(
+			        static_cast<double>(bit + 1) * cell_ns)));
+		}
+	}
+	auto decoded = RecoverFlux(transitions,
+	                           check_cast<uint64_t>(
+	                                   std::llround(duration_ms * 1'000'000)),
+	                           selected_cell_ns);
+	if (!decoded || !decoded->bit_count) {
+		return {};
+	}
+	const auto position = [&](const size_t bit) {
+		return check_cast<size_t>(
+		        std::llround(static_cast<double>(bit) *
+		                     static_cast<double>(decoded->bit_count) /
+		                     static_cast<double>(bit_count)));
+	};
+	decoded->index = position(index) % decoded->bit_count;
+	for (const auto end : revolution_ends_bits) {
+		decoded->revolution_ends_bits.push_back(position(end));
+	}
+	return decoded;
 }
 
 bool FloppySector::SampleWeakData(const uint64_t turn,
@@ -743,7 +825,8 @@ std::span<const FloppySector> FloppyTrackImage::GetTrack(const uint32_t cylinder
 
 std::vector<FloppySector> FloppyTrackImage::SampleTrack(const uint32_t cylinder,
                                                         const uint32_t head,
-                                                        const uint64_t cycle) const
+                                                        const uint64_t cycle,
+                                                        const uint16_t rate_kbps) const
 {
 	if (cylinder >= cylinders || head >= heads) {
 		return {};
@@ -752,7 +835,10 @@ std::vector<FloppySector> FloppyTrackImage::SampleTrack(const uint32_t cylinder,
 	const auto logical                = GetTrack(cylinder, head);
 	std::vector<FloppySector> sectors = {};
 	if (track.flux && !track.cells_changed) {
-		sectors = DecodeFluxTrack(*track.flux, track.revolution_ends, cycle);
+		sectors = DecodeFluxTrack(*track.flux,
+		                          track.revolution_ends,
+		                          cycle,
+		                          rate_kbps);
 	} else {
 		auto raws = track.raw_tracks;
 		if (raws.empty()) {
@@ -768,7 +854,10 @@ std::vector<FloppySector> FloppyTrackImage::SampleTrack(const uint32_t cylinder,
 			return {logical.begin(), logical.end()};
 		}
 		for (const auto& raw : raws) {
-			auto sampled = raw->Sample(cycle);
+			auto sampled = raw->Sample(cycle, track.cycle_ms, rate_kbps);
+			if (!sampled || !sampled->bit_count) {
+				continue;
+			}
 			auto fields  = DecodeMfmTrack(sampled->cells,
                                                      sampled->bit_count,
                                                      sampled->index,

@@ -47,7 +47,8 @@ public:
 	                                       const uint32_t head) const override;
 	std::vector<FloppySector> SampleTrack(const uint32_t cylinder,
 	                                      const uint32_t head,
-	                                      const uint64_t cycle) const override;
+	                                      const uint64_t cycle,
+	                                      const uint16_t rate_kbps) const override;
 	bool SupportsTrackWrites() const override;
 	bool IsWriteProtected() const override;
 	bool WriteSector(const uint32_t cylinder, const uint32_t head,
@@ -134,9 +135,9 @@ private:
 	                           const std::span<const FloppySector> sectors);
 	static void PositionSectors(std::vector<FloppySector>& sectors,
 	                            const std::span<const double> ends);
-	static std::vector<FloppySector> DecodeFluxTrack(const FluxTrack& flux,
-	                                                 const std::span<const double> ends,
-	                                                 const uint64_t cycle);
+	static std::vector<FloppySector> DecodeFluxTrack(
+	        const FluxTrack& flux, const std::span<const double> ends,
+	        const uint64_t cycle, const uint16_t rate_kbps);
 	std::vector<Track> tracks = {};
 };
 
