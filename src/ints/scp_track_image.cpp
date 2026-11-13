@@ -112,14 +112,15 @@ struct FloppyTrackImage::FluxTrack {
 
 std::vector<FloppySector> FloppyTrackImage::DecodeFluxTrack(
         const FluxTrack& flux, const std::span<const double> ends,
-        const uint16_t rate_kbps)
+        const uint16_t rate_kbps, const bool fm)
 {
 	std::vector<std::shared_ptr<FloppyMfmTrack>> raw = {};
 	for (const auto& turn : flux.turns) {
-		auto decoded = FloppyMfmTrack::RecoverFlux(turn.transitions_ns,
-		                                           turn.duration_ns,
-		                                           rate_kbps ? 500'000.0 / rate_kbps
-		                                                     : flux.cell_ns);
+		auto decoded = FloppyMfmTrack::RecoverFlux(
+		        turn.transitions_ns,
+		        turn.duration_ns,
+		        rate_kbps ? (fm ? 1'000'000.0 : 500'000.0) / rate_kbps
+		                  : flux.cell_ns);
 		if (!decoded || !decoded->bit_count) {
 			return {};
 		}
@@ -128,7 +129,7 @@ std::vector<FloppySector> FloppyTrackImage::DecodeFluxTrack(
 		// provide the input for subsequent rotational reads.
 		raw.push_back(std::move(decoded));
 	}
-	return DecodeMfmRevolutions(raw, ends);
+	return DecodeRevolutions(raw, ends, fm);
 }
 
 std::unique_ptr<FloppyTrackImage> FloppyTrackImage::LoadScp(FILE* file,
@@ -151,7 +152,8 @@ std::unique_ptr<FloppyTrackImage> FloppyTrackImage::LoadScp(FILE* file,
 	}
 	image->tracks.resize(image->cylinders * image->heads);
 
-	constexpr std::array<double, 4> CellTimesNs = {2000, 1666.667, 1000, 500};
+	constexpr std::array<double, 6> CellTimesNs = {
+	        2000, 1666.667, 1000, 500, 4000, 3333.333};
 	bool found_ids = false;
 	for (size_t index = 0; index < capture.tracks.size(); ++index) {
 		if (!capture.tracks[index]) {
@@ -186,6 +188,10 @@ std::unique_ptr<FloppyTrackImage> FloppyTrackImage::LoadScp(FILE* file,
 		int best_score                    = 0;
 		double best_cell_ns               = CellTimesNs.front();
 		for (const auto cell_ns : CellTimesNs) {
+			// Preserve a valid MFM track as the logical sector view.
+			if (cell_ns > 2000 && best_score > 0) {
+				continue;
+			}
 			std::vector<std::shared_ptr<FloppyMfmTrack>> revolutions = {};
 			for (const auto& turn : turns) {
 				auto raw = FloppyMfmTrack::RecoverFlux(turn.transitions_ns,
@@ -201,21 +207,28 @@ std::unique_ptr<FloppyTrackImage> FloppyTrackImage::LoadScp(FILE* file,
 			}
 			// Index does not restart the data separator. A field
 			// can continue into the following captured turn.
-			auto candidate = DecodeMfmRevolutions(revolutions,
-			                                      track.revolution_ends);
-			int score      = 0;
-			for (const auto& sector : candidate) {
-				if (!sector.id_crc_error) {
-					score += sector.data.empty() || sector.data_crc_error
-					               ? 1
-					               : 4;
+			for (const auto fm : {false, true}) {
+				if (fm && best_score > 0) {
+					continue;
 				}
-			}
-			if (score > best_score ||
-			    (decoded.empty() && !candidate.empty())) {
-				decoded    = std::move(candidate);
-				best_score = score;
-				best_cell_ns = cell_ns;
+				auto candidate = DecodeRevolutions(revolutions,
+				                                   track.revolution_ends,
+				                                   fm);
+				int score      = 0;
+				for (const auto& sector : candidate) {
+					if (!sector.id_crc_error) {
+						score += sector.data.empty() ||
+						                         sector.data_crc_error
+						               ? 1
+						               : 4;
+					}
+				}
+				if (score > best_score ||
+				    (decoded.empty() && !candidate.empty())) {
+					decoded      = std::move(candidate);
+					best_score   = score;
+					best_cell_ns = cell_ns;
+				}
 			}
 		}
 		image->UpdateLogicalGeometry(static_cast<uint32_t>(index / 2),
@@ -227,7 +240,7 @@ std::unique_ptr<FloppyTrackImage> FloppyTrackImage::LoadScp(FILE* file,
 		track.sectors = std::move(decoded);
 	}
 	if (!found_ids) {
-		error = "no IBM MFM sector IDs found";
+		error = "no IBM FM/MFM sector IDs found";
 		return {};
 	}
 	if (!image->OpenOverlay(path, read_only, capture.fingerprint, error)) {
@@ -299,14 +312,14 @@ bool FloppyTrackImage::CanOverlaySector(const OverlayKey& key) const
 		const auto& track = tracks[cylinder * heads + head].sectors;
 		return slot <= track.size() &&
 		       track[slot - 1].size_code == size_code &&
-		       !track[slot - 1].id_crc_error;
+		       !track[slot - 1].id_crc_error && !track[slot - 1].fm;
 	}
 	const auto track                      = GetTrack(cylinder, head);
 	std::optional<size_t> last_revolution = {};
 	for (const auto& sector : track) {
 		if (sector.cylinder != cylinder || sector.head != head ||
 		    sector.id != id || sector.size_code != size_code ||
-		    sector.id_crc_error) {
+		    sector.id_crc_error || sector.fm) {
 			continue;
 		}
 		// A CHS write cannot distinguish duplicate IDs within a
@@ -680,9 +693,9 @@ bool FloppyTrackImage::WriteSector(const uint32_t cylinder, const uint32_t head,
                                    const std::span<const uint8_t> data,
                                    const FloppySector* selected, const bool deleted)
 {
-	if (IsWriteProtected() || cylinder >= cylinders || head >= heads ||
-	    sector > UINT8_MAX || data.size() < 256 || data.size() > 1024 ||
-	    !std::has_single_bit(data.size())) {
+	if ((selected && selected->fm) || IsWriteProtected() || cylinder >= cylinders ||
+	    head >= heads || sector > UINT8_MAX || data.size() < 256 ||
+	    data.size() > 1024 || !std::has_single_bit(data.size())) {
 		return false;
 	}
 	const auto size_code = check_cast<uint32_t>(std::countr_zero(data.size()) - 7);
@@ -838,7 +851,7 @@ void FloppyTrackImage::ApplyTrackFormat(const TrackAddress& address,
 		revolutions.push_back(FormatMfmTrack(
 		        previous, revolution, duration * track.cycle_ms, format));
 	}
-	auto sectors = DecodeMfmRevolutions(revolutions, track.revolution_ends);
+	auto sectors = DecodeRevolutions(revolutions, track.revolution_ends);
 	if (partial) {
 		for (size_t revolution = 0;
 		     revolution < track.revolution_ends.size();

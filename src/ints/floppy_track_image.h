@@ -48,7 +48,8 @@ public:
 	std::vector<FloppySector> SampleTrack(const uint32_t cylinder,
 	                                      const uint32_t head,
 	                                      const uint64_t cycle,
-	                                      const uint16_t rate_kbps) const override;
+	                                      const uint16_t rate_kbps,
+	                                      const bool fm) const override;
 	bool SupportsTrackWrites() const override;
 	bool IsWriteProtected() const override;
 	bool WriteSector(const uint32_t cylinder, const uint32_t head,
@@ -121,13 +122,14 @@ private:
 		double format_cycle_ms                            = 200.0;
 		std::vector<double> revolution_ends               = {1.0};
 	};
-	static std::vector<FloppySector> DecodeMfmTrack(
+	static std::vector<FloppySector> DecodeTrack(
 	        const std::span<const uint8_t> bitstream, const size_t bit_count = 0,
 	        const size_t index = 0, const bool detect_weak = false,
-	        std::shared_ptr<FloppyMfmTrack> captured = {});
-	static std::vector<FloppySector> DecodeMfmRevolutions(
+	        std::shared_ptr<FloppyMfmTrack> captured = {},
+	        const bool fm                            = false);
+	static std::vector<FloppySector> DecodeRevolutions(
 	        const std::span<const std::shared_ptr<FloppyMfmTrack>> revolutions,
-	        const std::span<const double> ends);
+	        const std::span<const double> ends, const bool fm = false);
 	static std::shared_ptr<FloppyMfmTrack> FormatMfmTrack(
 	        const std::span<const FloppySector> previous, const size_t revolution,
 	        const double duration_ms, const TrackFormat& format);
@@ -137,7 +139,7 @@ private:
 	                            const std::span<const double> ends);
 	static std::vector<FloppySector> DecodeFluxTrack(
 	        const FluxTrack& flux, const std::span<const double> ends,
-	        const uint16_t rate_kbps);
+	        const uint16_t rate_kbps, const bool fm);
 	std::vector<Track> tracks = {};
 };
 
