@@ -71,7 +71,7 @@ data_ready:
     jne done
 ''' + SAVE
     body = (checks + '\n    jmp checked\n' + DECLARATIONS +
-            '\nspecify db 3,0dfh,1\ncommand db 42h,0,0,0,1,2,1,54h,0ffh\n' +
+            '\nspecify db 3,0dfh,3\ncommand db 42h,0,0,0,1,2,1,54h,0ffh\n' +
             FAST_ROUTINES + 'checked:\n')
     if machine == 'pcjr':
         for port in ('2', '4', '5'):
@@ -150,7 +150,7 @@ def main():
         mov ah,3eh
         int 21h
     '''
-                commands = DECLARATIONS + ('\nspecify db 3,0dfh,1\n'
+                commands = DECLARATIONS + ('\nspecify db 3,0dfh,3\n'
                                            f'command db {opcode},0,0,0,1,2,1,54h,0ffh\n')
                 run_guest(args.dosbox.resolve(), args.nasm, directory, image,
                           program(checks, commands),
