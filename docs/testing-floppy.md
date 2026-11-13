@@ -116,7 +116,8 @@ IMG, IMA, SCP, MFM, 86F, and TransCopy.
 The FDC uses `FloppyMedia::SampleTrack()` separately from the logical sector
 view. SCP retains its original transition stream and runs the existing data
 separator on the command path; writes switch subsequent reads to the modified
-raw cells. Bitstream captures sample weak cells before recognizing address marks,
+raw cells. Long intervals without transitions are preserved as recorded; they
+do not establish a weak-bit mask. Captured revolutions supply SCP variability. Bitstream captures sample weak cells before recognizing address marks,
 so CHRN bytes, ID CRCs, and ID/data sync visibility can change between turns.
 The FDC searches samples from the current and following capture cycle within
 its physical-index deadline. Read Track also refreshes its sample after a wrap.
@@ -174,3 +175,17 @@ farther than cylinder 79 returns an error. The implementation follows the
 while cylinders 80 and 81 fail with equipment check and leave one or two physical
 steps for the next recalibration. Motion interrupted by reset or motor loss
 still uses the controller's existing completion-time position model.
+
+### Preserving recorded SCP intervals
+
+`Guest.FloppyScpNoFlux` reads a bad-CRC sector containing a long interval without
+transitions 32 times. Single and repeated captures must return their recorded
+payload unchanged; a capture with two different turns must return exactly those
+two payloads. CRC status and source-image integrity are checked as well.
+
+The earlier reader inferred weakness from a long gap and injected random cells.
+That altered the protection data in Lemmings' original capture. The decoder now
+preserves the captured transition stream, including gaps, and cycles through
+actual recorded turns. Annotated 86F weak cells and the TransCopy weak-cell
+model are unchanged. A single-turn SCP remains deterministic in this digital
+model; physical noise cannot be established merely from the duration of a gap.
