@@ -5,6 +5,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <optional>
 #include <span>
 
 class FloppyMedia;
@@ -31,11 +32,13 @@ struct FloppyBiosTransferResult {
 	uint8_t sectors = 0;
 };
 
+// INT 13h supplies the guest's EOT; a pre-boot read uses the image geometry.
 FloppyBiosTransferResult FLOPPY_BiosTransfer(
         const FloppyBiosTransfer operation, const uint8_t unit,
         const uint32_t cylinder, const uint8_t head, const uint8_t sector,
         const uint8_t size_code, const uint8_t count, const uint8_t gap,
-        const uint32_t address, const uint16_t buffer_offset = 0);
+        const uint32_t address, const uint16_t buffer_offset = 0,
+        const std::optional<uint8_t> end_of_track = {});
 
 uint8_t FLOPPY_BiosFormat(const uint8_t unit, const uint32_t cylinder,
                           const uint8_t head, const uint8_t size_code,

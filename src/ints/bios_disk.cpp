@@ -4,6 +4,7 @@
 #include "ints/bios_disk.h"
 
 #include <algorithm>
+#include <array>
 #include <cassert>
 #include <optional>
 #include <utility>
@@ -56,6 +57,31 @@ RealPt imgDTAPtr;
 DOS_DTA* imgDTA;
 bool killRead;
 static bool swapping_requested;
+
+constexpr PhysPt DefaultFloppyParameterAddress = 0x4e0;
+constexpr std::array<uint8_t, 11> DefaultFloppyParameters =
+        {0xdf, 0x02, 0x25, 0x02, 0x12, 0x1b, 0xff, 0x6c, 0xf6, 0x0f, 0x08};
+static auto supplied_floppy_parameters    = DefaultFloppyParameters;
+static bool floppy_parameters_initialized = false;
+
+static void update_default_floppy_parameters(const imageDisk& disk)
+{
+	if (!floppy_parameters_initialized ||
+	    RealToPhysical(RealGetVec(0x1e)) != DefaultFloppyParameterAddress) {
+		return;
+	}
+	std::array<uint8_t, 11> current = {};
+	MEM_BlockRead(DefaultFloppyParameterAddress, current.data(), current.size());
+	// The BIOS supplies drive defaults only while its table is unmodified.
+	// A guest replacement or an in-place edit owns every parameter,
+	// including EOT.
+	if (current != supplied_floppy_parameters) {
+		return;
+	}
+	supplied_floppy_parameters[4] = check_cast<uint8_t>(
+	        std::clamp(disk.sectors, 1u, 255u));
+	mem_writeb(DefaultFloppyParameterAddress + 4, supplied_floppy_parameters[4]);
+}
 
 void BIOS_SetEquipment(uint16_t equipment);
 
@@ -144,6 +170,9 @@ static void set_disk_slot(const size_t slot, std::shared_ptr<imageDisk> disk)
 	exchange_disk_slot(slot, {std::move(disk), std::move(floppy)});
 	if (slot < 2) {
 		update_floppy_equipment();
+		if (const auto selected = BIOS_GetDisk(slot)) {
+			update_default_floppy_parameters(*selected);
+		}
 	} else {
 		if (!disk_slots[slot].sector) {
 			const auto table = CALLBACK_PhysPointer(
@@ -768,7 +797,8 @@ static DiskServiceResult bios_floppy_transfer(const DiskServiceRequest& request,
                                                request.count,
                                                mem_readb(parameters + 5),
                                                RealToPhysical(request.buffer),
-                                               RealOffset(request.buffer));
+                                               RealOffset(request.buffer),
+                                               mem_readb(parameters + 4));
 	}
 	if (operation == FloppyBiosTransfer::Read) {
 		killRead = false;
@@ -778,6 +808,11 @@ static DiskServiceResult bios_floppy_transfer(const DiskServiceRequest& request,
 
 static DiskServiceResult run_disk_service(const DiskServiceRequest& request)
 {
+	if (request.drive < 2) {
+		if (const auto selected = BIOS_GetDisk(request.drive)) {
+			update_default_floppy_parameters(*selected);
+		}
+	}
 	DiskServiceResult result = {};
 	last_drive               = request.drive;
 	const auto unit          = GetDosDriveNumber(request.drive);
@@ -1123,12 +1158,12 @@ void BIOS_SetupDisks(void)
 	// INT 1Eh points to the guest-writable floppy parameter table.
 	const auto floppy_params = RealMake(0x40, 0xe0);
 	RealSetVec(0x1e, floppy_params);
-	constexpr std::array<uint8_t, 11> defaults = {
-	        0xdf, 0x02, 0x25, 0x02, 0x12, 0x1b, 0xff, 0x6c, 0xf6, 0x0f, 0x08};
-	for (size_t i = 0; i < defaults.size(); ++i) {
+	supplied_floppy_parameters = DefaultFloppyParameters;
+	for (size_t i = 0; i < supplied_floppy_parameters.size(); ++i) {
 		phys_writeb(RealToPhysical(floppy_params) + static_cast<PhysPt>(i),
-		            defaults[i]);
+		            supplied_floppy_parameters[i]);
 	}
+	floppy_parameters_initialized = true;
 
 	// Booters can restore INT 1Eh to the IBM PC ROM address after using
 	// their own parameter table, without saving the original vector.

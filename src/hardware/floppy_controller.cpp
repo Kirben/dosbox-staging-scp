@@ -2144,7 +2144,8 @@ FloppyBiosTransferResult FLOPPY_BiosTransfer(
         const FloppyBiosTransfer operation, const uint8_t unit,
         const uint32_t cylinder, const uint8_t head, const uint8_t sector,
         const uint8_t size_code, const uint8_t count, const uint8_t gap,
-        const uint32_t address, const uint16_t buffer_offset)
+        const uint32_t address, const uint16_t buffer_offset,
+        const std::optional<uint8_t> requested_end_of_track)
 {
 	const auto disk = BIOS_GetDisk(unit);
 	if (!disk || !count || size_code > 7 || head >= disk->heads) {
@@ -2152,15 +2153,17 @@ FloppyBiosTransferResult FLOPPY_BiosTransfer(
 	}
 
 	const auto sector_size = 128u << size_code;
+	const auto end_of_track = requested_end_of_track.value_or(
+	        check_cast<uint8_t>(std::min(disk->sectors, 255u)));
 	const auto has_data    = operation != FloppyBiosTransfer::Verify;
 	const auto dma         = has_data && !is_machine_pcjr();
 	if (dma && count * sector_size > 0x10000u - (address & 0xffff)) {
 		return {0x09, 0};
 	}
 
-	// IDs outside the logical geometry, including zero, can belong to a
-	// protection track. Even a missing ID must seek before failing.
-	if (!sector || sector > disk->sectors) {
+	// Special IDs and EOT zero can belong to protection tracks. Send one
+	// command rather than inventing a logical track crossing.
+	if (!end_of_track || !sector || sector > end_of_track) {
 		return bios_transfer_track(operation,
 		                           unit,
 		                           cylinder,
@@ -2172,7 +2175,6 @@ FloppyBiosTransferResult FLOPPY_BiosTransfer(
 		                           address,
 		                           buffer_offset);
 	}
-	const auto end_of_track = std::min(disk->sectors, 255u);
 	auto current_cylinder   = cylinder;
 	auto current_head       = static_cast<uint32_t>(head);
 	auto current_sector     = static_cast<uint32_t>(sector);
