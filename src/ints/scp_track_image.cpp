@@ -88,11 +88,13 @@ std::vector<FluxTurn> split_at_index(const ScpCapture::Header& header,
 			}
 			const auto ticks = overflow + entry;
 			overflow         = 0;
-			if (ticks >= (cycle_ns - elapsed_ns + unit_ns - 1) / unit_ns) {
+			if (ticks > (cycle_ns - elapsed_ns) / unit_ns) {
 				return turns;
 			}
 			elapsed_ns += ticks * unit_ns;
-			while (elapsed_ns >= start_ns + turns[turn].duration_ns) {
+			// A transition at index closes the preceding cell. Keep it
+			// at that turn's end rather than dropping a zero-time pulse.
+			while (elapsed_ns > start_ns + turns[turn].duration_ns) {
 				start_ns += turns[turn++].duration_ns;
 			}
 			turns[turn].transitions_ns.push_back(elapsed_ns - start_ns);
