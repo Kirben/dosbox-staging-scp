@@ -62,16 +62,20 @@ enum class Command {
 };
 
 struct Drive {
+	// Physical head position can differ from the controller's PCN counter.
 	uint8_t cylinder            = 0;
+	uint8_t pcn                 = 0;
 	double motor_started_ms     = 0;
 	double head_loaded_until_ms = 0;
 };
 
 struct Seek {
-	uint8_t cylinder = 0;
-	uint8_t status   = 0;
-	bool active      = false;
-	bool pending     = false;
+	uint8_t cylinder     = 0;
+	uint8_t pcn          = 0;
+	uint8_t status       = 0;
+	bool equipment_check = false;
+	bool active          = false;
+	bool pending         = false;
 };
 
 struct Controller {
@@ -1303,11 +1307,13 @@ void complete_seek(const uint32_t unit)
 			FLOPPY_SetDiskChanged(unit, false);
 		}
 		drive.cylinder = seek.cylinder;
-		seek.status    = check_cast<uint8_t>(0x20u | drive_bits);
+		drive.pcn      = seek.pcn;
+		seek.status    = check_cast<uint8_t>(
+                        (seek.equipment_check ? 0x70u : 0x20u) | drive_bits);
 	} else {
 		seek.status = check_cast<uint8_t>(0x68u | drive_bits);
 	}
-	seek.cylinder = unit < fdc.drives.size() ? fdc.drives[unit].cylinder : 0;
+	seek.pcn = unit < fdc.drives.size() ? fdc.drives[unit].pcn : 0;
 	seek.active          = false;
 	seek.pending         = true;
 	fdc.seek_irq_pending = true;
@@ -1334,7 +1340,7 @@ void execute_command(const Command command)
 			begin_result(2, false);
 		} else if (pending != fdc.seeks.end()) {
 			pending->pending = false;
-			fdc.result       = {pending->status, pending->cylinder};
+			fdc.result       = {pending->status, pending->pcn};
 			begin_result(2, false);
 		} else {
 			fdc.result[0] = 0x80;
@@ -1354,15 +1360,32 @@ void execute_command(const Command command)
 		const auto cylinder = unit < fdc.drives.size()
 		                            ? fdc.drives[unit].cylinder
 		                            : 0;
-		seek.cylinder = command == Command::Seek ? fdc.command[2] : 0;
-		seek.active   = true;
-		// SEEK to the present cylinder needs no step pulses.
-		// Recalibrate still probes track zero, even when the cylinder
-		// counter is zero.
-		const auto distance = std::abs(cylinder - seek.cylinder);
-		const auto steps    = command == Command::Seek
-		                            ? distance
-		                            : std::max(1, distance);
+		const auto pcn = unit < fdc.drives.size() ? fdc.drives[unit].pcn : 0;
+		seek.active          = true;
+		seek.equipment_check = false;
+		auto steps           = 0;
+		if (command == Command::Recalibrate) {
+			// Intel 82077AA section 5.2.2 terminates after 79 pulses
+			// if TRACK0 remains inactive (the summary calls this an
+			// 80-step limit). PCN is cleared even on failure, while
+			// the physical head can remain away from track zero.
+			constexpr auto MaxRecalibratePulses = 79;
+			steps = std::min<int>(cylinder, MaxRecalibratePulses);
+			seek.cylinder = check_cast<uint8_t>(cylinder - steps);
+			seek.pcn      = 0;
+			seek.equipment_check = seek.cylinder != 0;
+			if (unit < fdc.drives.size()) {
+				fdc.drives[unit].pcn = 0;
+			}
+			// Retain the existing track-zero probe interval.
+			steps = std::max(1, steps);
+		} else {
+			const auto distance = int{fdc.command[2]} - pcn;
+			steps               = std::abs(distance);
+			seek.cylinder       = check_cast<uint8_t>(
+                                std::clamp(cylinder + distance, 0, 255));
+			seek.pcn = fdc.command[2];
+		}
 		// Seek has no result phase of its own. Keep accepting commands,
 		// and latch the drive independently until Sense Interrupt.
 		const auto step_ms = fdc.timing_specified
@@ -1983,6 +2006,7 @@ void FLOPPY_BiosPosition(const uint8_t unit, const uint8_t cylinder)
 	assert(unit < fdc.drives.size());
 	auto& drive    = fdc.drives[unit];
 	drive.cylinder = cylinder;
+	drive.pcn      = cylinder;
 	if (!motor_on(unit)) {
 		drive.motor_started_ms = PIC_FullIndex();
 	}
