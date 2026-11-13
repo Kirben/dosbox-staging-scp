@@ -32,15 +32,15 @@ struct FluxTurn {
 };
 
 constexpr std::array<uint8_t, 8> OverlayMagic = {'S', 'C', 'P', 'O', 'V', 'L', 1, 0};
-constexpr uint8_t TrackFormatMarker   = 0xff;
-constexpr uint8_t PartialFormatMarker = 0xfe;
-constexpr uint8_t PhysicalWriteMarker = 0xfd;
-constexpr uint8_t LegacyOverlayVersion        = 4;
-constexpr uint8_t SizedOverlayVersion         = 5;
-constexpr uint8_t OrderedOverlayVersion       = 6;
-constexpr uint8_t FormatSizeOverlayVersion    = 7;
-constexpr uint32_t LegacySizeCode             = 2;
-constexpr size_t ChrnSize                     = 4;
+constexpr uint8_t TrackFormatMarker        = 0xff;
+constexpr uint8_t PartialFormatMarker      = 0xfe;
+constexpr uint8_t PhysicalWriteMarker      = 0xfd;
+constexpr uint8_t LegacyOverlayVersion     = 4;
+constexpr uint8_t SizedOverlayVersion      = 5;
+constexpr uint8_t OrderedOverlayVersion    = 6;
+constexpr uint8_t FormatSizeOverlayVersion = 7;
+constexpr uint32_t LegacySizeCode          = 2;
+constexpr size_t ChrnSize                  = 4;
 
 auto overlay_header(const uint64_t fingerprint, const uint8_t version)
 {
@@ -335,14 +335,14 @@ void FloppyTrackImage::ApplyOverlaySector(const OverlayKey& key,
 	auto& sectors = tracks[cylinder * heads + head].sectors;
 	tracks[cylinder * heads + head].dirty = true;
 	const auto apply                      = [&](FloppySector& sector) {
-		const auto create_data_mark = sector.data.empty();
-		tracks[cylinder * heads + head].cells_changed |= bool(sector.mfm_track);
-		sector.data.assign(data.begin(), data.end());
-		sector.data_crc_error = false;
-		sector.deleted        = false;
-		sector.weak_mask.clear();
-		sector.extended_data.clear();
-		sector.UpdateTrackData(create_data_mark);
+                const auto create_data_mark = sector.data.empty();
+                tracks[cylinder * heads + head].cells_changed |= bool(sector.mfm_track);
+                sector.data.assign(data.begin(), data.end());
+                sector.data_crc_error = false;
+                sector.deleted        = false;
+                sector.weak_mask.clear();
+                sector.extended_data.clear();
+                sector.UpdateTrackData(create_data_mark);
 	};
 	if (slot) {
 		apply(sectors[slot - 1]);
@@ -404,7 +404,7 @@ bool FloppyTrackImage::LoadOverlay()
 			                              ChrnSize),
 			                      check_cast<uint8_t>(fill),
 			                      check_cast<uint8_t>(requested)};
-			format.size_code = check_cast<uint8_t>(size_code);
+			format.size_code   = check_cast<uint8_t>(size_code);
 			if (fread(format.ids.data(), 1, format.ids.size(), input.get()) !=
 			            format.ids.size() ||
 			    !IsValidTrackFormat(address, format.ids)) {
@@ -486,7 +486,7 @@ bool FloppyTrackImage::SaveOverlay(const Overlay& entries,
 			return false;
 		}
 	}
-	auto* file           = fopen(temporary.c_str(), "wbx");
+	auto* file = fopen(temporary.c_str(), "wbx");
 	if (!file) {
 		return false;
 	}
@@ -535,7 +535,7 @@ bool FloppyTrackImage::SaveOverlay(const Overlay& entries,
 	                                    : LegacyOverlayVersion;
 	const auto header  = overlay_header(capture_fingerprint, version);
 	auto success       = fwrite(header.data(), 1, header.size(), file) ==
-	                     header.size();
+	               header.size();
 	const auto write_sectors = [&](const Overlay& writes) {
 		for (const auto& [key, data] : writes) {
 			const auto [cylinder, head, id, slot, size_code] = key;
@@ -578,7 +578,7 @@ bool FloppyTrackImage::SaveOverlay(const Overlay& entries,
 			                           address[1],
 			                           count,
 			                           format.fill};
-			success = success &&
+			success                 = success &&
 			          fwrite(record.data(), 1, record.size(), file) ==
 			                  record.size() &&
 			          (!partial || fputc(format.requested, file) != EOF) &&
@@ -683,9 +683,9 @@ bool FloppyTrackImage::WriteSector(const uint32_t cylinder, const uint32_t head,
 		};
 		const auto selected_phase = phase(*selected);
 		const auto distance       = [&](const FloppySector* field) {
-			const auto difference = std::abs(phase(*field) -
-			                                 selected_phase);
-			return std::min(difference, 1.0 - difference);
+                        const auto difference = std::abs(phase(*field) -
+                                                         selected_phase);
+                        return std::min(difference, 1.0 - difference);
 		};
 		// A missing ID makes the occurrence ambiguous on the other turns.
 		if (std::all_of(copies.begin(), copies.end(), [&](const auto& other) {
@@ -792,9 +792,9 @@ void FloppyTrackImage::ApplyTrackFormat(const TrackAddress& address,
 		const auto end      = track.revolution_ends[revolution];
 		const auto duration = end - start;
 		auto decoded        = FormatMfmTrack(previous,
-		                                     revolution,
-		                                     duration * track.cycle_ms,
-		                                     format);
+                                              revolution,
+                                              duration * track.cycle_ms,
+                                              format);
 		for (auto& sector : decoded) {
 			sector.revolution = revolution;
 			sector.cycle_fraction = start + duration * sector.cycle_fraction;

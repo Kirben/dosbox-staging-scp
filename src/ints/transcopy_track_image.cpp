@@ -81,7 +81,8 @@ std::unique_ptr<FloppyTrackImage> FloppyTrackImage::LoadTransCopy(
 		const auto captured = cylinder >= first &&
 		                      (cylinder - first) % step == 0;
 		for (size_t head = 0; head < heads; ++head) {
-			// On-disk tables reserve both heads even for single-sided disks.
+			// On-disk tables reserve both heads even for
+			// single-sided disks.
 			const auto entry  = cylinder * 2 + head;
 			const auto offset = read_track_offset(bytes, entry);
 			if (!captured) {

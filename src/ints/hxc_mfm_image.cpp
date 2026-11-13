@@ -192,7 +192,7 @@ void FloppySector::UpdateTrackData(const bool create_data_mark)
 		const auto mask = check_cast<uint8_t>(0x80u >> (position % 8));
 		auto& byte      = track.cells[position / 8];
 		byte            = check_cast<uint8_t>(
-		        value ? byte | mask : byte & static_cast<uint8_t>(~mask));
+                        value ? byte | mask : byte & static_cast<uint8_t>(~mask));
 		if (!track.weak_cells.empty()) {
 			track.weak_cells[position] = false;
 		}
@@ -409,8 +409,8 @@ std::vector<FloppySector> FloppyTrackImage::FormatMfmTrack(
 		return sector.revolution == revolution && sector.mfm_track;
 	});
 	const auto source = found != previous.end() ? found->mfm_track : nullptr;
-	const auto bits = source ? source->bit_count
-	                         : check_cast<size_t>(std::lround(duration_ms * 500));
+	const auto bits     = source ? source->bit_count
+	                             : check_cast<size_t>(std::lround(duration_ms * 500));
 	auto captured       = std::make_shared<FloppyMfmTrack>();
 	captured->bit_count = bits;
 	captured->cells.resize((bits + 7) / 8);
@@ -440,8 +440,8 @@ std::vector<FloppySector> FloppyTrackImage::FormatMfmTrack(
 			                                      (position % 8));
 			auto& byte      = captured->cells[position / 8];
 			byte            = check_cast<uint8_t>(
-			        value ? byte | mask
-			              : byte & static_cast<uint8_t>(~mask));
+                                value ? byte | mask
+                                      : byte & static_cast<uint8_t>(~mask));
 			if (!captured->weak_cells.empty()) {
 				captured->weak_cells[position] = false;
 			}
@@ -505,10 +505,10 @@ std::vector<FloppySector> FloppyTrackImage::FormatMfmTrack(
 std::unique_ptr<FloppyTrackImage> FloppyTrackImage::LoadHxcMfm(
         FILE* file, const std::string& path, const bool read_only, std::string& error)
 {
-	constexpr size_t HeaderSize                = 19;
-	constexpr size_t EntrySize                 = 11;
-	constexpr long MaxImageSize                = 16 * 1024 * 1024;
-	constexpr size_t MaxTrackSize              = 64 * 1024;
+	constexpr size_t HeaderSize   = 19;
+	constexpr size_t EntrySize    = 11;
+	constexpr long MaxImageSize   = 16 * 1024 * 1024;
+	constexpr size_t MaxTrackSize = 64 * 1024;
 	constexpr std::array<uint8_t, 7> Signature = {'H', 'X', 'C', 'M', 'F', 'M', 0};
 
 	if (fseek(file, 0, SEEK_END) != 0) {

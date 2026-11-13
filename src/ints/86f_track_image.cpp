@@ -60,19 +60,19 @@ std::unique_ptr<FloppyTrackImage> FloppyTrackImage::Load86f(FILE* file,
 	if (flags & ~0x1eff) {
 		return fail("unsupported 86F disk flags");
 	}
-	const bool has_surface    = flags & 1;
+	const bool has_surface            = flags & 1;
 	constexpr auto write_protect_flag = 0x10;
 	auto capture_read_only            = bool(flags & write_protect_flag);
-	const size_t capacity     = (flags >> 1) & 3;
-	const size_t num_heads    = (flags & 8) ? 2 : 1;
-	const size_t shift        = (flags >> 5) & 3;
-	const bool has_count      = flags & 0x80;
-	const bool little_endian  = flags & 0x800;
-	const bool speedup        = flags & 0x1000;
-	const bool total_count    = speedup && !shift && has_count;
-	const size_t track_header = has_count ? 10 : 6;
-	const size_t entries      = entries_per_head * num_heads;
-	const size_t data_start   = header_size + entries * 4;
+	const size_t capacity             = (flags >> 1) & 3;
+	const size_t num_heads            = (flags & 8) ? 2 : 1;
+	const size_t shift                = (flags >> 5) & 3;
+	const bool has_count              = flags & 0x80;
+	const bool little_endian          = flags & 0x800;
+	const bool speedup                = flags & 0x1000;
+	const bool total_count            = speedup && !shift && has_count;
+	const size_t track_header         = has_count ? 10 : 6;
+	const size_t entries              = entries_per_head * num_heads;
+	const size_t data_start           = header_size + entries * 4;
 	if (bytes.size() < data_start) {
 		return fail("truncated 86F track table");
 	}
@@ -128,9 +128,9 @@ std::unique_ptr<FloppyTrackImage> FloppyTrackImage::Load86f(FILE* file,
 		const int64_t cells = total_count
 		                            ? int64_t{encoded_count}
 		                            : static_cast<int64_t>(base_cells) + extra;
-		const auto storage       = total_count ? cells
-		                                       : int64_t{stored_bits} + extra;
-		const size_t index = le32(pos + track_header - 4);
+		const auto storage  = total_count ? cells
+		                                  : int64_t{stored_bits} + extra;
+		const size_t index  = le32(pos + track_header - 4);
 		if (cells <= 0 || cells > storage || storage > 850'000 ||
 		    index >= static_cast<size_t>(cells)) {
 			return fail("invalid 86F track length or index");

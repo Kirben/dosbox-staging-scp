@@ -23,7 +23,7 @@
 
 #define MAX_SWAPPABLE_DISKS 20
 struct DiskGeometry {
-	uint32_t ksize;  /* Size in kilobytes */
+	uint32_t ksize;     /* Size in kilobytes */
 	uint16_t secttrack; /* Sectors per track */
 	uint16_t headscyl;  /* Heads per cylinder */
 	uint16_t cylcount;  /* Cylinders per side */
@@ -68,18 +68,19 @@ public:
 	          const uint32_t head_count, const uint32_t cylinder_count,
 	          const uint32_t sectors_per_track);
 	std::shared_ptr<FloppyMedia> GetFloppyMedia() const;
-	imageDisk(const imageDisk&) = delete; // prevent copy
+	imageDisk(const imageDisk&)            = delete; // prevent copy
 	imageDisk& operator=(const imageDisk&) = delete; // prevent assignment
 
 	~imageDisk() override
 	{
-		if (diskimg != nullptr)
+		if (diskimg != nullptr) {
 			fclose(diskimg);
+		}
 	}
 
 	bool hardDrive;
 	bool active;
-	FILE *diskimg;
+	FILE* diskimg;
 	char diskname[512];
 	uint8_t floppytype;
 
@@ -94,7 +95,7 @@ private:
 	enum class RawReadMode { Normal, Controller, Verify };
 	uint8_t read_absolute_sector(uint32_t sector, void* data, RawReadMode mode);
 	cross_off_t current_fpos;
-	enum { NONE,READ,WRITE } last_action;
+	enum { NONE, READ, WRITE } last_action;
 };
 
 uint8_t BIOS_GetFloppyCmosType(size_t slot);
@@ -111,9 +112,11 @@ void BIOS_SetDisk(const size_t slot, std::shared_ptr<imageDisk> disk);
 void BIOS_SetBootDisks(BiosBootDisks disks);
 bool BIOS_ReadFloppyBootSector(const std::shared_ptr<imageDisk>& disk, PhysPt address);
 
-extern uint16_t imgDTASeg; /* Real memory location of temporary DTA pointer for fat image disk access */
-extern RealPt imgDTAPtr; /* Real memory location of temporary DTA pointer for fat image disk access */
-extern DOS_DTA *imgDTA;
+extern uint16_t imgDTASeg; /* Real memory location of temporary DTA pointer for
+                              fat image disk access */
+extern RealPt imgDTAPtr;   /* Real memory location of temporary DTA pointer for
+                              fat image disk access */
+extern DOS_DTA* imgDTA;
 
 bool getSwapRequest(void);
 
