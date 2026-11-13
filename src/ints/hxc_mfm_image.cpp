@@ -222,7 +222,7 @@ bool FloppySector::SampleWeakData(const uint64_t turn,
 		        (state * 0x2545f4914f6cdd1dull) >> 56);
 		return static_cast<uint8_t>((byte & ~mask) | (noise & mask));
 	};
-	auto crc = update_crc(SyncCrc, deleted ? 0xf8 : 0xfb);
+	auto crc = update_crc(fm ? uint16_t{0xffff} : SyncCrc, deleted ? 0xf8 : 0xfb);
 	for (size_t i = 0; i < data.size(); ++i) {
 		sampled[i] = sample_byte(data[i], weak_mask[i]);
 		crc        = update_crc(crc, sampled[i]);
@@ -244,11 +244,12 @@ bool FloppySector::ReadTrackData(const size_t size, const uint64_t turn,
 	FloppySector field       = {};
 	field.data.resize(size);
 	field.deleted   = deleted;
+	field.fm        = fm;
 	field.weak_seed = weak_seed;
 	if (!mfm_track->weak_cells.empty()) {
 		field.weak_mask.resize(size + 2);
 	}
-	auto crc    = update_crc(SyncCrc, deleted ? 0xf8 : 0xfb);
+	auto crc = update_crc(fm ? uint16_t{0xffff} : SyncCrc, deleted ? 0xf8 : 0xfb);
 	auto offset = data_bit;
 	for (size_t i = 0; i < size + 2; ++i) {
 		// The data field keeps its byte cadence until the commanded
@@ -335,16 +336,17 @@ void FloppySector::UpdateTrackData(const bool create_data_mark)
 	write_bit(!(previous || bit_at(cells, position + 1)));
 }
 
-std::vector<FloppySector> FloppyTrackImage::DecodeMfmTrack(
+std::vector<FloppySector> FloppyTrackImage::DecodeTrack(
         const std::span<const uint8_t> bytes, const size_t bit_count,
         const size_t index, const bool detect_weak,
-        std::shared_ptr<FloppyMfmTrack> captured)
+        std::shared_ptr<FloppyMfmTrack> captured, const bool fm)
 {
 	constexpr auto SyncWord    = 0x4489;
 	constexpr auto IdMark      = 0xfe;
 	constexpr auto DataMark    = 0xfb;
 	constexpr auto DeletedMark = 0xf8;
-	constexpr auto MarkBits    = 64u;
+	const auto mark_bits       = fm ? 16u : 64u;
+	const auto crc_seed        = fm ? uint16_t{0xffff} : SyncCrc;
 	constexpr auto ByteBits    = 16u;
 
 	const auto track_bits = bit_count ? bit_count : bytes.size() * 8;
@@ -364,8 +366,11 @@ std::vector<FloppySector> FloppyTrackImage::DecodeMfmTrack(
 	std::vector<AddressMark> marks = {};
 	auto word                      = read_word(track, 0);
 	for (size_t bit = 0; bit < track_bits; ++bit) {
-		if (word == SyncWord && read_word(track, bit + 16) == SyncWord &&
-		    read_word(track, bit + 32) == SyncWord) {
+		if (fm && (word == 0xf57e || word == 0xf56f || word == 0xf56a)) {
+			marks.push_back({bit, read_byte(track, bit)});
+		} else if (!fm && word == SyncWord &&
+		           read_word(track, bit + 16) == SyncWord &&
+		           read_word(track, bit + 32) == SyncWord) {
 			const auto mark = read_byte(track, bit + 48);
 			if (mark == IdMark || mark == DataMark || mark == DeletedMark) {
 				marks.push_back({bit, mark});
@@ -380,9 +385,9 @@ std::vector<FloppySector> FloppyTrackImage::DecodeMfmTrack(
 		if (id.type != IdMark) {
 			continue;
 		}
-		const auto id_field         = id.bit + MarkBits;
+		const auto id_field         = id.bit + mark_bits;
 		std::array<uint8_t, 4> chrn = {};
-		auto crc                    = update_crc(SyncCrc, IdMark);
+		auto crc                    = update_crc(crc_seed, IdMark);
 		for (size_t j = 0; j < chrn.size(); ++j) {
 			chrn[j] = read_byte(track, id_field + j * ByteBits);
 			crc     = update_crc(crc, chrn[j]);
@@ -390,6 +395,7 @@ std::vector<FloppySector> FloppyTrackImage::DecodeMfmTrack(
 		const auto id_crc = (read_byte(track, id_field + 4 * ByteBits) << 8) |
 		                    read_byte(track, id_field + 5 * ByteBits);
 		FloppySector sector   = {};
+		sector.fm             = fm;
 		sector.id_bit         = id.bit;
 		sector.cylinder       = chrn[0];
 		sector.head           = chrn[1];
@@ -403,7 +409,7 @@ std::vector<FloppySector> FloppyTrackImage::DecodeMfmTrack(
 		sector.mfm_track    = captured;
 		// A write to an ID-only sector creates the standard Gap 2
 		// sync and data field following its ID and CRC.
-		sector.data_delay_bits = 48 * ByteBits;
+		sector.data_delay_bits = (fm ? 25 : 48) * ByteBits;
 		sector.data_bit = (id.bit + sector.data_delay_bits) % track_bits;
 
 		const auto data = marks[(i + 1) % marks.size()];
@@ -412,7 +418,7 @@ std::vector<FloppySector> FloppyTrackImage::DecodeMfmTrack(
 			// Once a data mark is found, the controller consumes
 			// the entire field, including embedded address marks
 			// and index crossings.
-			const auto field       = data.bit + MarkBits;
+			const auto field       = data.bit + mark_bits;
 			sector.mfm_track       = captured;
 			sector.data_bit        = field % track_bits;
 			sector.data_delay_bits = (field + track_bits - id.bit) %
@@ -420,7 +426,7 @@ std::vector<FloppySector> FloppyTrackImage::DecodeMfmTrack(
 			sector.weak_seed = data.bit;
 			sector.deleted   = data.type == DeletedMark;
 			sector.data.resize(size);
-			crc = update_crc(SyncCrc, data.type);
+			crc = update_crc(crc_seed, data.type);
 			for (size_t j = 0; j < size; ++j) {
 				sector.data[j] = read_byte(track,
 				                           field + j * ByteBits);
@@ -460,10 +466,10 @@ std::vector<FloppySector> FloppyTrackImage::DecodeMfmTrack(
 			const auto following = marks[(i + 2) % marks.size()].bit;
 			const auto gap = (following + track_bits - data.bit) %
 			                 track_bits;
-			const auto field = data.bit + MarkBits;
-			auto field_crc   = update_crc(SyncCrc, data.type);
+			const auto field = data.bit + mark_bits;
+			auto field_crc   = update_crc(crc_seed, data.type);
 			for (auto size = size_t{128};
-			     size <= 16384 && gap >= MarkBits + (size + 2) * ByteBits;
+			     size <= 16384 && gap >= mark_bits + (size + 2) * ByteBits;
 			     size *= 2) {
 				const auto start = size == 128 ? size_t{0}
 				                               : size / 2;
@@ -500,14 +506,14 @@ std::vector<FloppySector> FloppyTrackImage::DecodeMfmTrack(
 	return sectors;
 }
 
-std::vector<FloppySector> FloppyTrackImage::DecodeMfmRevolutions(
+std::vector<FloppySector> FloppyTrackImage::DecodeRevolutions(
         const std::span<const std::shared_ptr<FloppyMfmTrack>> revolutions,
-        const std::span<const double> ends)
+        const std::span<const double> ends, const bool fm)
 {
 	assert(!revolutions.empty() && revolutions.size() == ends.size());
 	if (revolutions.size() == 1) {
 		const auto& raw = revolutions.front();
-		return DecodeMfmTrack(raw->cells, raw->bit_count, raw->index, false, raw);
+		return DecodeTrack(raw->cells, raw->bit_count, raw->index, false, raw, fm);
 	}
 	auto raw = std::make_shared<FloppyMfmTrack>();
 	for (const auto& turn : revolutions) {
@@ -533,7 +539,7 @@ std::vector<FloppySector> FloppyTrackImage::DecodeMfmRevolutions(
 			}
 		}
 	}
-	auto sectors = DecodeMfmTrack(raw->cells, raw->bit_count, 0, false, raw);
+	auto sectors = DecodeTrack(raw->cells, raw->bit_count, 0, false, raw, fm);
 	PositionSectors(sectors, ends);
 	return sectors;
 }
@@ -718,15 +724,46 @@ std::unique_ptr<FloppyTrackImage> FloppyTrackImage::FromBitstreamCapture(
 		                        ? find_weak_cells({raw->cells, raw->bit_count})
 		                        : captured.weak_cells;
 		track.raw_tracks.push_back(raw);
-		track.sectors = DecodeMfmTrack(
+		track.sectors = DecodeTrack(
 		        raw->cells, raw->bit_count, raw->index, false, raw);
+		if (track.sectors.empty()) {
+			track.sectors = DecodeTrack(raw->cells,
+			                            raw->bit_count,
+			                            raw->index,
+			                            false,
+			                            raw,
+			                            true);
+		}
+		if (track.sectors.empty()) {
+			// Some containers sample FM pulses at the MFM clock.
+			const auto native_rate = static_cast<double>(raw->bit_count) /
+			                         (2 * track.cycle_ms);
+			for (const auto rate : {250, 300, 500, 1000}) {
+				if (std::abs(native_rate - rate) > rate * 0.1) {
+					continue;
+				}
+				auto fm_raw = raw->Sample(0,
+				                          track.cycle_ms,
+				                          check_cast<uint16_t>(
+				                                  rate / 2));
+				if (fm_raw) {
+					track.sectors = DecodeTrack(fm_raw->cells,
+					                            fm_raw->bit_count,
+					                            fm_raw->index,
+					                            false,
+					                            fm_raw,
+					                            true);
+				}
+				break;
+			}
+		}
 		image->UpdateLogicalGeometry(check_cast<uint32_t>(i / image->heads),
 		                             check_cast<uint32_t>(i % image->heads),
 		                             track.sectors);
 		found_ids |= !track.sectors.empty();
 	}
 	if (!found_ids) {
-		error = "no IBM MFM sector IDs found";
+		error = "no IBM FM/MFM sector IDs found";
 		return {};
 	}
 	if (!image->OpenOverlay(path, read_only || capture.read_only, fingerprint, error)) {
@@ -793,11 +830,11 @@ std::span<const FloppySector> FloppyTrackImage::GetTrack(const uint32_t cylinder
 				auto [entry,
 				      inserted] = decoded.try_emplace(raw.get());
 				if (inserted) {
-					entry->second = DecodeMfmTrack(raw->cells,
-					                               raw->bit_count,
-					                               raw->index,
-					                               false,
-					                               raw);
+					entry->second = DecodeTrack(raw->cells,
+					                            raw->bit_count,
+					                            raw->index,
+					                            false,
+					                            raw);
 				}
 				const auto found =
 				        std::ranges::find(entry->second,
@@ -821,7 +858,8 @@ std::span<const FloppySector> FloppyTrackImage::GetTrack(const uint32_t cylinder
 std::vector<FloppySector> FloppyTrackImage::SampleTrack(const uint32_t cylinder,
                                                         const uint32_t head,
                                                         const uint64_t cycle,
-                                                        const uint16_t rate_kbps) const
+                                                        const uint16_t rate_kbps,
+                                                        const bool fm) const
 {
 	if (cylinder >= cylinders || head >= heads) {
 		return {};
@@ -832,7 +870,8 @@ std::vector<FloppySector> FloppyTrackImage::SampleTrack(const uint32_t cylinder,
 	if (track.flux && !track.cells_changed) {
 		sectors = DecodeFluxTrack(*track.flux,
 		                          track.revolution_ends,
-		                          rate_kbps);
+		                          rate_kbps,
+		                          fm);
 	} else {
 		auto raws = track.raw_tracks;
 		if (raws.empty()) {
@@ -848,15 +887,18 @@ std::vector<FloppySector> FloppyTrackImage::SampleTrack(const uint32_t cylinder,
 			return {logical.begin(), logical.end()};
 		}
 		for (const auto& raw : raws) {
-			auto sampled = raw->Sample(cycle, track.cycle_ms, rate_kbps);
+			auto sampled = raw->Sample(cycle,
+			                           track.cycle_ms,
+			                           fm ? rate_kbps / 2 : rate_kbps);
 			if (!sampled || !sampled->bit_count) {
 				continue;
 			}
-			auto fields  = DecodeMfmTrack(sampled->cells,
-                                                     sampled->bit_count,
-                                                     sampled->index,
-                                                     false,
-                                                     sampled);
+			auto fields = DecodeTrack(sampled->cells,
+			                          sampled->bit_count,
+			                          sampled->index,
+			                          false,
+			                          sampled,
+			                          fm);
 			if (!sampled->revolution_ends_bits.empty()) {
 				PositionSectors(fields, track.revolution_ends);
 			}
@@ -865,7 +907,8 @@ std::vector<FloppySector> FloppyTrackImage::SampleTrack(const uint32_t cylinder,
 	}
 	for (auto& sector : sectors) {
 		const auto original = std::ranges::find_if(logical, [&](const auto& other) {
-			return other.id_bit == sector.id_bit &&
+			return other.fm == sector.fm &&
+			       other.id_bit == sector.id_bit &&
 			       other.revolution == sector.revolution;
 		});
 		if (original != logical.end()) {

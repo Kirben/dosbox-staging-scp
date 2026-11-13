@@ -164,7 +164,7 @@ std::optional<BitstreamCapture> ParseHxcMfmCapture(const std::span<const uint8_t
 	const auto table = static_cast<size_t>(capture_read_le(input.subspan(15, 4)));
 	const auto count = static_cast<size_t>(cylinders) * heads;
 	if (cylinders == 0 || cylinders > 128 || heads == 0 || heads > 2 ||
-	    (rpm && (rpm < 200 || rpm > 600)) || rate_kbps < 245 ||
+	    (rpm && (rpm < 200 || rpm > 600)) || rate_kbps < 125 ||
 	    rate_kbps > 1020 || table < HeaderSize || table > input.size() ||
 	    count > (input.size() - table) / EntrySize) {
 		return fail("invalid HxC MFM track geometry or extent");
@@ -296,10 +296,11 @@ std::optional<BitstreamCapture> Parse86fCapture(const std::span<const uint8_t> b
 		const auto track_flags = read_le16(bytes, pos);
 		const auto rate_code   = track_flags & 7;
 		const auto rpm_code    = (track_flags >> 5) & 7;
-		if ((track_flags & 0x18) != 8 || rpm_code > 1 || rate_code > 3) {
+		if ((track_flags & 0x18) > 8 || rpm_code > 1 || rate_code > 3) {
 			return fail("unsupported 86F track encoding, speed, or data rate");
 		}
-		const auto rate       = RatesKbps[rate_code];
+		const auto rate = RatesKbps[rate_code] /
+		                  ((track_flags & 0x18) == 0 ? 2u : 1u);
 		const auto rpm        = rpm_code ? 360 : 300;
 		const auto base_cells = (120'000ull * rate * speed_num /
 		                         (rpm * speed_den)) &
