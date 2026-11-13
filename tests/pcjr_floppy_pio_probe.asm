@@ -169,7 +169,7 @@ org 100h
     in al,DATA
     cmp al,80h
     je .wait_seek
-    cmp al,24h
+    cmp al,20h
     jne report
     in al,DATA
     cmp al,2

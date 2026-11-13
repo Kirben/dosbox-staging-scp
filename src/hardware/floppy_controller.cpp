@@ -69,7 +69,6 @@ struct Drive {
 
 struct Seek {
 	uint8_t cylinder = 0;
-	uint8_t head     = 0;
 	uint8_t status   = 0;
 	bool active      = false;
 	bool pending     = false;
@@ -1296,7 +1295,8 @@ void start_loaded_data(uint32_t)
 void complete_seek(const uint32_t unit)
 {
 	auto& seek            = fdc.seeks[unit];
-	const auto drive_bits = (seek.head << 2) | unit;
+	// Sense Interrupt Status always reports H = 0, including head-1 seeks.
+	const auto drive_bits = unit;
 	if (motor_on(unit) && unit == (fdc.dor & 3u)) {
 		auto& drive = fdc.drives[unit];
 		if (drive.cylinder != seek.cylinder && BIOS_GetDisk(unit)) {
@@ -1355,7 +1355,6 @@ void execute_command(const Command command)
 		                            ? fdc.drives[unit].cylinder
 		                            : 0;
 		seek.cylinder = command == Command::Seek ? fdc.command[2] : 0;
-		seek.head     = (fdc.command[1] >> 2) & 1;
 		seek.active   = true;
 		// SEEK to the present cylinder needs no step pulses.
 		// Recalibrate still probes track zero, even when the cylinder

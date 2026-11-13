@@ -835,11 +835,8 @@ sense_seek:
     mov al,8
     call send
     call receive
+    ; Sense Interrupt Status always reports H=0, including head-1 seeks.
     mov ah,20h + UNIT
-    test bl,bl
-    jz .status
-    or ah,4
-.status:
     cmp al,ah
     jne finish
     call receive

@@ -91,7 +91,7 @@ def main():
         mov al,{0x1c if unit == 0 else 0x2d}
         out dx,al
     '''
-                commands = f'seek db 0fh,{unit},2\nrecalibrate db 7,{unit}\n'
+                commands = f'seek db 0fh,{unit | 4},2\nrecalibrate db 7,{unit | 4}\n'
                 commands += 'specify db 3,0dfh,0\n'
                 for name, length, cylinder in (('seek', 3, 2), ('recalibrate', 2, 0)):
                     checks += f'''
@@ -148,7 +148,7 @@ def main():
                 print(f'.{extension} drive {"AB"[unit]} Seek and Recalibrate: '
                       'drive busy retained through completion until Sense Interrupt; '
                       f'bit {1 << unit:02x} clears after acknowledgement; '
-                      'IRQ6, seek-end and final cylinders verified', flush=True)
+                      'head-1 command returns H=0; IRQ6 and final cylinders verified', flush=True)
 
 
 if __name__ == "__main__":
