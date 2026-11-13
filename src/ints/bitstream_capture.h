@@ -12,11 +12,12 @@
 
 // Container data, independent of sector decoding, BIOS/FDC state, and overlays.
 struct BitstreamCaptureTrack {
-	std::vector<uint8_t> cells = {};
-	size_t bit_count           = 0;
-	size_t index               = 0;
-	double cycle_ms            = 200.0;
-	bool detect_weak           = false;
+	std::vector<uint8_t> cells   = {};
+	size_t bit_count             = 0;
+	size_t index                 = 0;
+	double cycle_ms              = 200.0;
+	bool detect_weak             = false;
+	std::vector<bool> weak_cells = {};
 };
 
 struct BitstreamCapture {

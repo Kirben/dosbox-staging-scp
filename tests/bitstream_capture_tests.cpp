@@ -170,6 +170,32 @@ TEST(BitstreamCapture, F86PreservesBitCountIndexAndSurfaceWriteProtection)
 	EXPECT_TRUE(capture->read_only);
 }
 
+TEST(BitstreamCapture, F86PreservesExplicitWeakAndHoleCells)
+{
+	auto bytes = f86_capture();
+	write_le16(bytes, 6, 0x1081);
+	bytes.resize(bytes.size() + 16, 0x55);
+	std::string error = {};
+	for (const auto protect : {false, true}) {
+		write_le16(bytes, 6, protect ? 0x1091 : 0x1081);
+		const auto capture = Parse86fCapture(bytes, error);
+		ASSERT_TRUE(capture) << error;
+		EXPECT_EQ(capture->read_only, protect);
+		const auto& weak = capture->tracks[0].weak_cells;
+		ASSERT_EQ(weak.size(), 128u);
+		for (size_t bit = 0; bit < weak.size(); ++bit) {
+			EXPECT_EQ(weak[bit], (bit & 1) != 0);
+		}
+	}
+	// A marked zero is also noisy, but cannot be overwritten.
+	bytes[0x422] |= 0x80;
+	write_le16(bytes, 6, 0x1081);
+	const auto capture = Parse86fCapture(bytes, error);
+	ASSERT_TRUE(capture) << error;
+	EXPECT_TRUE(capture->read_only);
+	EXPECT_TRUE(capture->tracks[0].weak_cells[0]);
+}
+
 TEST(BitstreamCapture, F86RejectsTruncatedInvalidOffsetsAndIndex)
 {
 	const auto original = f86_capture();

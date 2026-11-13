@@ -529,10 +529,19 @@ std::unique_ptr<FloppyTrackImage> FloppyTrackImage::FromBitstreamCapture(
 		if (captured.cells.empty()) {
 			continue;
 		}
+		std::shared_ptr<FloppyMfmTrack> raw = {};
+		if (!captured.weak_cells.empty()) {
+			raw             = std::make_shared<FloppyMfmTrack>();
+			raw->cells      = captured.cells;
+			raw->bit_count  = captured.bit_count;
+			raw->index      = captured.index;
+			raw->weak_cells = captured.weak_cells;
+		}
 		track.sectors = DecodeMfmTrack(captured.cells,
 		                               captured.bit_count,
 		                               captured.index,
-		                               captured.detect_weak);
+		                               captured.detect_weak,
+		                               std::move(raw));
 		image->UpdateLogicalGeometry(check_cast<uint32_t>(i / image->heads),
 		                             check_cast<uint32_t>(i % image->heads),
 		                             track.sectors);
