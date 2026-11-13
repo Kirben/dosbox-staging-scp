@@ -8,6 +8,7 @@ from pathlib import Path
 from struct import unpack
 from tempfile import TemporaryDirectory
 
+from run_floppy_read_rate_probe import command_checks
 from run_floppy_read_track_size_probe import ROUTINES
 from run_floppy_transfer_edges_probe import DMA, RESET, one_sector
 from run_floppy_zero_sector_probe import encode_tracks
@@ -136,6 +137,10 @@ def check_rate(dosbox, nasm, directory, extension, rate, selector, bios=False):
 """
         else:
             checks += format_checks(2) if writing else RESET
+        if not writing:
+            wrong = 0 if rate == 250 else 2
+            checks += command_checks(wrong, 0x4a, "wrong", rate)
+            checks += command_checks(selected, 0x4a, "restored", rate)
         checks += DMA.replace("mov cx,512", "mov cx,528") + TIMING
         run_guest(dosbox, nasm, directory, image,
                   checks + ROUTINES + "checked:\n",

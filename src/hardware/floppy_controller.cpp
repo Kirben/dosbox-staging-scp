@@ -105,7 +105,7 @@ struct Controller {
 	bool sector_transfer_ready                = false;
 	double sector_end_ms                      = 0;
 	uint64_t sector_sample_turn               = 0;
-	std::map<std::tuple<uint8_t, uint8_t, uint64_t>, std::vector<FloppySector>>
+	std::map<std::tuple<uint8_t, uint8_t, uint64_t, uint16_t>, std::vector<FloppySector>>
 	        track_samples                     = {};
 	uint64_t track_cycle                      = 0;
 	FloppySector selected_field               = {};
@@ -337,9 +337,12 @@ const std::vector<FloppySector>& sampled_track(const uint64_t cycle)
 		return sampled_cycle < cycle && cycle - sampled_cycle > 1;
 	});
 	auto [entry, inserted] = fdc.track_samples.try_emplace(
-	        std::tuple{fdc.cylinder, fdc.head, cycle});
+	        std::tuple{fdc.cylinder, fdc.head, cycle, data_rate_kbps});
 	if (inserted) {
-		entry->second = fdc.media->SampleTrack(fdc.cylinder, fdc.head, cycle);
+		entry->second = fdc.media->SampleTrack(fdc.cylinder,
+		                                       fdc.head,
+		                                       cycle,
+		                                       data_rate_kbps);
 	}
 	return entry->second;
 }

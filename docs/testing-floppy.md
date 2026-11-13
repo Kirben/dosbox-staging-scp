@@ -133,3 +133,22 @@ This is command-time digital decoding, not an analogue drive simulation. The
 separator/noise model remains simplified, and programmed-rate mismatch behavior
 and cycle-accurate DMA/FIFO service remain separate work. The stable logical
 sector view used by DOS FAT does not acquire per-turn weak-field randomness.
+
+### Programmed read data rate
+
+`Guest.FloppyReadRate` checks Read ID, Read Data, Read Track and Verify with
+250-kbps SCP, HxC MFM, 86F and TransCopy tracks. It switches between 250, 300,
+500 and 1,000 kbps without resetting the controller, checking missing-address-mark
+status, IRQ6, DMA terminal count, untouched buffers on failure and recovery at
+the correct rate. Mixed-rate tracks contain separate 250- and 500-kbps IDs;
+changing the selected rate must reveal the matching ID and payload on the same
+track. `Guest.FloppyFormatRate` also checks reads after formatting
+and restarting at every supported rate.
+
+The controller passes its selected rate to command-time decoding. SCP flux
+uses that rate as the separator's nominal clock, rather than the clock chosen
+when mounting the logical sector view. Bitstream captures retain their recovered
+cells within the separator's existing 10% clock range; outside that range their
+transitions are decoded again at the selected rate. This remains a digital
+separator approximation, rather than an analogue PLL simulation. DOS FAT's
+logical sector view is unchanged.
