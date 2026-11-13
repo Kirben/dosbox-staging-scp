@@ -82,7 +82,8 @@ static void update_disk_parameter_tables()
 		phys_writew(dp0physaddr + 0x5, (uint16_t)-1);
 		phys_writeb(dp0physaddr + 0x7, 0);
 		phys_writeb(dp0physaddr + 0x8,
-		            (0xc0 | (((disk_slots[2].sector->heads) > 8) << 3)));
+		            check_cast<uint8_t>(
+		                    0xc0 | ((disk_slots[2].sector->heads > 8) << 3)));
 		phys_writeb(dp0physaddr + 0x9, 0);
 		phys_writeb(dp0physaddr + 0xa, 0);
 		phys_writeb(dp0physaddr + 0xb, 0);
