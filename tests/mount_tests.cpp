@@ -2208,7 +2208,7 @@ protected:
 		ExpectHddGeometry(*disk);
 
 		std::array<uint8_t, SectorSize> first_sector = {};
-		EXPECT_EQ(disk->Read_Sector(0, 0, 1, first_sector.data()), 0);
+		EXPECT_EQ(disk->Read_Sector(0, 0, 1, first_sector), MediaResult::Ok);
 		EXPECT_EQ(first_sector[510], 0x55);
 		EXPECT_EQ(first_sector[511], 0xaa);
 	}
@@ -2277,7 +2277,7 @@ TEST_F(MountDiskImageTest, BootableHddImageOnDriveNumberCanBeBootedAsDriveC)
 		ASSERT_TRUE(disk);
 
 		std::array<uint8_t, SectorSize> zeroes = {};
-		EXPECT_NE(disk->Write_AbsoluteSector(0, zeroes.data()), 0);
+		EXPECT_NE(disk->Write_AbsoluteSector(0, zeroes), MediaResult::Ok);
 
 		const auto mbr_signature = read_bytes(P("hd20.img"), 510, 2);
 		EXPECT_EQ(mbr_signature, (Bytes{0x55, 0xaa}));
