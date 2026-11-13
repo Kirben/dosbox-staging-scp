@@ -251,3 +251,38 @@ FM is a 765-compatible feature of this combined controller model, rather than
 an assertion of exact 82077AA behavior. NEC's uPD765A/B documentation describes
 FM and MFM; Intel's final 82077AA datasheet explicitly removes FM support.
 The branch also offers selected later-controller features such as the FIFO.
+
+### PC-compatible TransCopy types
+
+The parser accepts disk types 02h (MFM high density), 03h (MFM DD captured in a
+360-RPM drive), 05h (FM single density), 07h (MFM DD), 0Ch (Atari FM), and FFh
+(unknown). This covers PC-compatible IBM FM/MFM fields; it does not add Apple II
+GCR, Commodore GCR or Amiga sector decoding. Those types remain rejected.
+
+Track type bits in the flags table at 0705h override the disk type. The separate
+bit-15 capture flag is masked off. Missing/unknown track types and the unused
+4444h table sentinel fall back to the disk type. FM records shorter than 8,000
+bytes use the single-density sampling clock; longer records retain the
+higher sampling clock. Unknown records retain the existing DD/HD length
+heuristic. These are sampling clocks, not instructions to force the guest FDC
+to use one data rate. Mount probing also recognizes fields recorded at another
+supported data rate, including 300-kbps data sampled at a higher clock.
+
+`Guest.FloppyTransCopyTypes` checks Read ID, Read Data, Read Track and Verify,
+DMA terminal count, IRQ6 and buffer guards for all six PC-compatible disk types.
+Its 03h fixture samples 300-kbps MFM at a 1-MHz cell clock. Mixed disk/track
+headers are checked through BOOT and DOS FAT. Parser tests check per-track
+overrides, capture flags, sentinels and rejection of non-PC/undefined types.
+
+The type list and flags layout follow NewRisingSun's 2017-05-31 description:
+https://www.robcraig.com/download/transcopy-5-x-file-format/
+PCE's independent PRI reader also distinguishes short single-density records
+from longer double-density records. No source code was copied from it.
+
+The supplementary address-mark timing table at 0905h is still not applied.
+Read ID timing comes from bit positions, sampling clock and index skew. TC's
+weak-cell model is inferred from the bitstream, since the container has no
+explicit weak-bit mask. Capture flags that control TC.EXE's physical write-back
+and the alignment padding outside each declared track extent are not modeled
+as separate read-time behavior. These are limits of conformance, not claims of
+complete implementation of every TC.EXE write-back option.

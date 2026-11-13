@@ -735,26 +735,33 @@ std::unique_ptr<FloppyTrackImage> FloppyTrackImage::FromBitstreamCapture(
 			                            true);
 		}
 		if (track.sectors.empty()) {
-			// Some containers sample FM pulses at the MFM clock.
-			const auto native_rate = static_cast<double>(raw->bit_count) /
-			                         (2 * track.cycle_ms);
-			for (const auto rate : {250, 300, 500, 1000}) {
-				if (std::abs(native_rate - rate) > rate * 0.1) {
-					continue;
-				}
-				auto fm_raw = raw->Sample(0,
-				                          track.cycle_ms,
-				                          check_cast<uint16_t>(
-				                                  rate / 2));
-				if (fm_raw) {
-					track.sectors = DecodeTrack(fm_raw->cells,
-					                            fm_raw->bit_count,
-					                            fm_raw->index,
+			// A container's sampling clock can differ from the
+			// field's encoding clock, including 300-kbps DD media
+			// captured in a 360-RPM drive. Probe the same rates the
+			// FDC can select.
+			for (const auto fm : {false, true}) {
+				for (const auto rate : {250, 300, 500, 1000}) {
+					auto sampled = raw->Sample(
+					        0,
+					        track.cycle_ms,
+					        check_cast<uint16_t>(fm ? rate / 2
+					                                : rate));
+					if (!sampled) {
+						continue;
+					}
+					track.sectors = DecodeTrack(sampled->cells,
+					                            sampled->bit_count,
+					                            sampled->index,
 					                            false,
-					                            fm_raw,
-					                            true);
+					                            sampled,
+					                            fm);
+					if (!track.sectors.empty()) {
+						break;
+					}
 				}
-				break;
+				if (!track.sectors.empty()) {
+					break;
+				}
 			}
 		}
 		image->UpdateLogicalGeometry(check_cast<uint32_t>(i / image->heads),
