@@ -366,12 +366,12 @@ std::optional<BitstreamCapture> Parse86fCapture(const std::span<const uint8_t> b
 			const auto payload = track.record.subspan(track_header);
 			const auto used_bytes = ((track.cells + 15) / 16) * 2;
 			std::vector<uint8_t> data(used_bytes);
+			std::vector<bool> weak_cells(has_surface ? track.cells : 0);
 			for (size_t i = 0; i < used_bytes; ++i) {
 				const auto source = little_endian ? i ^ 1u : i;
 				data[i]           = payload[source];
 				const auto first_bit = i * 8;
-				if (has_surface && !capture_read_only &&
-				    first_bit < track.cells) {
+				if (has_surface && first_bit < track.cells) {
 					// A marked zero is a physical hole that
 					// a sector overlay cannot reproduce
 					// through a write or format.
@@ -381,17 +381,23 @@ std::optional<BitstreamCapture> Parse86fCapture(const std::span<const uint8_t> b
 					        0xffu << (8 - bits));
 					const auto surface =
 					        payload[track.array_bytes + source];
-					capture_read_only = (surface & ~data[i] &
-					                     mask) != 0;
+					capture_read_only |= (surface & ~data[i] &
+					                      mask) != 0;
+					for (size_t bit = 0; bit < bits; ++bit) {
+						weak_cells[first_bit + bit] =
+						        (surface &
+						         (0x80u >> bit)) != 0;
+					}
 				}
 			}
 			const auto logical_cylinder = cylinder / step;
 			auto& decoded = capture.tracks[logical_cylinder * num_heads + head];
 			decoded.cycle_ms = static_cast<double>(track.cells) /
 			                   (2 * track.rate);
-			decoded.cells     = std::move(data);
-			decoded.bit_count = track.cells;
-			decoded.index     = track.index;
+			decoded.cells      = std::move(data);
+			decoded.weak_cells = std::move(weak_cells);
+			decoded.bit_count  = track.cells;
+			decoded.index      = track.index;
 		}
 	}
 	capture.read_only = capture_read_only;
