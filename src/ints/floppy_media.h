@@ -60,6 +60,12 @@ constexpr bool IsFloppyOverlaySizeCode(const int size_code)
 	return size_code >= 1 && size_code <= 3;
 }
 
+constexpr bool IsFloppyDataRate(const uint16_t rate_kbps)
+{
+	return rate_kbps == 250 || rate_kbps == 300 || rate_kbps == 500 ||
+	       rate_kbps == 1000;
+}
+
 // Physical track access. Logical sector callers use SectorMedia.
 class FloppyMedia {
 public:
@@ -84,7 +90,8 @@ public:
 	virtual FormatResult FormatTrack(const uint8_t cylinder, const uint8_t head,
 	                                 const std::span<const uint8_t> ids,
 	                                 const uint8_t fill, const uint8_t requested,
-	                                 const uint8_t size_code)        = 0;
+	                                 const uint8_t size_code,
+	                                 const uint16_t rate_kbps)       = 0;
 };
 
 #endif

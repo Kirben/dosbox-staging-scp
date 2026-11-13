@@ -51,7 +51,8 @@ public:
 	FormatResult FormatTrack(const uint8_t cylinder, const uint8_t head,
 	                         const std::span<const uint8_t> ids,
 	                         const uint8_t fill, const uint8_t requested,
-	                         const uint8_t size_code) override;
+	                         const uint8_t size_code,
+	                         const uint16_t rate_kbps) override;
 
 	uint32_t cylinders       = 0;
 	uint32_t heads           = 0;
@@ -70,7 +71,9 @@ private:
 		uint8_t requested        = 0;
 		Overlay prior_writes     = {};
 		// Older overlays sized data fields using each ID's N byte.
-		uint8_t size_code = 0xff;
+		uint8_t size_code  = 0xff;
+		uint16_t rate_kbps = 0; // Zero preserves a legacy format's
+		                        // capture clock.
 	};
 	using TrackFormats = std::map<TrackAddress, std::vector<TrackFormat>>;
 	bool OpenOverlay(const std::string& path, const bool read_only,

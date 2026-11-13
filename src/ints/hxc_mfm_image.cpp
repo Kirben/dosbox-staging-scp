@@ -409,8 +409,11 @@ std::vector<FloppySector> FloppyTrackImage::FormatMfmTrack(
 		return sector.revolution == revolution && sector.mfm_track;
 	});
 	const auto source = found != previous.end() ? found->mfm_track : nullptr;
-	const auto bits     = source ? source->bit_count
-	                             : check_cast<size_t>(std::lround(duration_ms * 500));
+	const auto rate = format.rate_kbps ? format.rate_kbps : uint16_t{250};
+	auto bits = check_cast<size_t>(std::lround(duration_ms * 2 * rate));
+	if (!format.rate_kbps && source) {
+		bits = source->bit_count;
+	}
 	auto captured       = std::make_shared<FloppyMfmTrack>();
 	captured->bit_count = bits;
 	captured->cells.resize((bits + 7) / 8);
@@ -422,15 +425,30 @@ std::vector<FloppySector> FloppyTrackImage::FormatMfmTrack(
 	}
 	// Keep the original suffix on an interrupted format, normalized to index.
 	for (size_t bit = 0; bit < bits; ++bit) {
-		const auto old      = source ? (bit + source->index) % bits : 0;
 		const auto preserve = partial && source && bit >= cutoff;
-		const auto value = preserve ? bit_at({source->cells, bits}, old)
-		                            : (0x9254u >> (15 - bit % 16)) & 1u;
+		auto value          = (0x9254u >> (15 - bit % 16)) & 1u;
+		if (preserve) {
+			value = 0;
+			// Keep suffix transition times when changing the cell
+			// clock.
+			const auto begin = check_cast<size_t>(
+			        uint64_t{bit} * source->bit_count / bits);
+			const auto end = check_cast<size_t>(
+			        (uint64_t{bit} + 1) * source->bit_count / bits);
+			for (auto old = begin; old < end; ++old) {
+				const auto index = (old + source->index) %
+				                   source->bit_count;
+				value |= bit_at({source->cells, source->bit_count},
+				                index);
+				if (!captured->weak_cells.empty()) {
+					captured->weak_cells[bit] =
+					        captured->weak_cells[bit] ||
+					        source->weak_cells[index];
+				}
+			}
+		}
 		captured->cells[bit / 8] |= check_cast<uint8_t>(value
 		                                                << (7 - bit % 8));
-		if (preserve && !captured->weak_cells.empty()) {
-			captured->weak_cells[bit] = source->weak_cells[old];
-		}
 	}
 	size_t position      = 0;
 	bool last_data       = false;
