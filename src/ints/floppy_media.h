@@ -25,6 +25,9 @@ struct FloppyMfmTrack {
 	size_t bit_count             = 0;
 	size_t index                 = 0;
 	std::vector<bool> weak_cells = {};
+	// Resampling at another separator clock can produce a nonuniform grid.
+	// Preserve each cell's angular endpoint for writes back to the raw track.
+	std::vector<double> cell_ends = {};
 	// Cumulative cell boundaries when several captured turns share one stream.
 	std::vector<size_t> revolution_ends_bits = {};
 
@@ -33,7 +36,8 @@ struct FloppyMfmTrack {
 	                                       const uint16_t rate_kbps = 0) const;
 	static std::shared_ptr<FloppyMfmTrack> RecoverFlux(
 	        const std::span<const uint64_t> transitions_ns,
-	        const uint64_t duration_ns, const double nominal_cell_ns);
+	        const uint64_t duration_ns, const double nominal_cell_ns,
+	        const bool preserve_timing = false);
 
 	size_t GetRevolutionBitCount(const size_t revolution) const
 	{
@@ -124,7 +128,8 @@ public:
 	                                 const std::span<const uint8_t> ids,
 	                                 const uint8_t fill, const uint8_t requested,
 	                                 const uint8_t size_code,
-	                                 const uint16_t rate_kbps) = 0;
+	                                 const uint16_t rate_kbps,
+	                                 const bool fm = false) = 0;
 };
 
 #endif

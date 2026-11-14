@@ -93,6 +93,32 @@ TEST(FloppyTrackData, SampleWeakCellsBeforeFieldDecoding)
 	EXPECT_TRUE(raw.weak_cells[0]);
 }
 
+TEST(FloppyTrackData, PreserveResampledCellTimes)
+{
+	// Changing clocks on a mixed-density track must not linearly stretch
+	// the earlier fields to match the separator's final cell count.
+	constexpr std::array<uint64_t, 4> transitions = {4000, 10000, 14000, 20000};
+	const auto raw = FloppyMfmTrack::RecoverFlux(transitions, 24000, 4000);
+	const auto timed = FloppyMfmTrack::RecoverFlux(transitions, 24000, 4000, true);
+	ASSERT_TRUE(raw);
+	ASSERT_TRUE(timed);
+	EXPECT_EQ(raw->cells, timed->cells);
+	EXPECT_TRUE(raw->cell_ends.empty());
+	ASSERT_EQ(timed->cell_ends.size(), timed->bit_count);
+	EXPECT_TRUE(std::ranges::is_sorted(timed->cell_ends));
+	size_t next = 0;
+	for (size_t cell = 0; cell < timed->bit_count; ++cell) {
+		if (timed->cells[cell / 8] & (0x80u >> (cell % 8))) {
+			ASSERT_LT(next, transitions.size());
+			EXPECT_DOUBLE_EQ(timed->cell_ends[cell],
+			                 static_cast<double>(transitions[next++]) /
+			                         24000);
+		}
+	}
+	EXPECT_EQ(next, transitions.size());
+	EXPECT_DOUBLE_EQ(timed->cell_ends.back(), 1.0);
+}
+
 TEST(FloppyTrackData, RecoverTransitionsAtSelectedRate)
 {
 	// Pulses every four microseconds form alternating raw cells at 250 kbps.

@@ -114,8 +114,8 @@ std::vector<bool> find_weak_cells(const MfmBitstream track)
 } // namespace
 
 std::shared_ptr<FloppyMfmTrack> FloppyMfmTrack::RecoverFlux(
-        const std::span<const uint64_t> transitions_ns,
-        const uint64_t duration_ns, const double nominal_cell_ns)
+        const std::span<const uint64_t> transitions_ns, const uint64_t duration_ns,
+        const double nominal_cell_ns, const bool preserve_timing)
 {
 	constexpr size_t MaxCells      = 2'100'000;
 	std::vector<uint8_t> bitstream = {};
@@ -123,6 +123,21 @@ std::shared_ptr<FloppyMfmTrack> FloppyMfmTrack::RecoverFlux(
 	double phase_ns                = 0;
 	uint64_t previous_ns           = 0;
 	size_t cells_written           = 0;
+	std::vector<double> cell_ends  = {};
+	uint64_t emitted_ns            = 0;
+	const auto append_times = [&](const size_t count, const uint64_t end_ns) {
+		if (preserve_timing) {
+			for (size_t cell = 1; cell <= count; ++cell) {
+				cell_ends.push_back(
+				        (static_cast<double>(emitted_ns) +
+				         static_cast<double>(end_ns - emitted_ns) *
+				                 static_cast<double>(cell) /
+				                 static_cast<double>(count)) /
+				        static_cast<double>(duration_ns));
+			}
+		}
+		emitted_ns = end_ns;
+	};
 	for (const auto time_ns : transitions_ns) {
 		phase_ns += static_cast<double>(time_ns - previous_ns);
 		previous_ns      = time_ns;
@@ -135,6 +150,7 @@ std::shared_ptr<FloppyMfmTrack> FloppyMfmTrack::RecoverFlux(
 			return {};
 		}
 		cells_written += cells;
+		append_times(cells, time_ns);
 		bitstream.resize((cells_written + 7) / 8);
 		const auto bit = cells_written - 1;
 		bitstream[bit / 8] |= static_cast<uint8_t>(0x80u >> (bit % 8));
@@ -152,10 +168,12 @@ std::shared_ptr<FloppyMfmTrack> FloppyMfmTrack::RecoverFlux(
 		return {};
 	}
 	const auto bit_count = cells_written + tail;
+	append_times(tail, duration_ns);
 	bitstream.resize((bit_count + 7) / 8);
 	auto raw       = std::make_shared<FloppyMfmTrack>();
 	raw->cells     = std::move(bitstream);
 	raw->bit_count = bit_count;
+	raw->cell_ends = std::move(cell_ends);
 	return raw;
 }
 
@@ -201,14 +219,17 @@ std::shared_ptr<FloppyMfmTrack> FloppyMfmTrack::Sample(const uint64_t cycle,
 	for (size_t bit = 0; bit < bit_count; ++bit) {
 		if (bit_at({sampled->cells, bit_count}, bit)) {
 			const auto time_ns = round_nonnegative(
-			        static_cast<double>(bit + 1) * cell_ns);
+			        cell_ends.empty()
+			                ? static_cast<double>(bit + 1) * cell_ns
+			                : cell_ends[bit] * static_cast<double>(
+			                                           *duration_ns));
 			if (!time_ns) {
 				return {};
 			}
 			transitions.push_back(*time_ns);
 		}
 	}
-	auto decoded = RecoverFlux(transitions, *duration_ns, selected_cell_ns);
+	auto decoded = RecoverFlux(transitions, *duration_ns, selected_cell_ns, true);
 	if (!decoded || !decoded->bit_count) {
 		return {};
 	}
@@ -337,7 +358,7 @@ void FloppySector::UpdateTrackData(const bool create_data_mark)
 	const auto append = [&](const uint8_t byte) {
 		for (int bit = 7; bit >= 0; --bit) {
 			const auto value = ((byte >> bit) & 1) != 0;
-			write_bit(!(previous || value));
+			write_bit(fm || !(previous || value));
 			write_bit(value);
 			previous = value;
 		}
@@ -345,13 +366,13 @@ void FloppySector::UpdateTrackData(const bool create_data_mark)
 	if (create_data_mark) {
 		// Write Data creates the sync field and DAM even if the old
 		// track contained only an ID field.
-		position = (data_bit + track.bit_count - (256 % track.bit_count)) %
-		           track.bit_count;
+		const auto sync_bits = (fm ? 112u : 256u) % track.bit_count;
+		position = (data_bit + track.bit_count - sync_bits) % track.bit_count;
 		previous = false;
-		for (auto byte = 0; byte < 12; ++byte) {
+		for (auto byte = 0; byte < (fm ? 6 : 12); ++byte) {
 			append(0);
 		}
-		for (auto byte = 0; byte < 3; ++byte) {
+		for (auto byte = 0; byte < (fm ? 0 : 3); ++byte) {
 			for (auto bit = 15; bit >= 0; --bit) {
 				write_bit(((0x4489u >> bit) & 1u) != 0);
 			}
@@ -359,8 +380,16 @@ void FloppySector::UpdateTrackData(const bool create_data_mark)
 		previous = true;
 	}
 	const auto mark = deleted ? uint8_t{0xf8} : uint8_t{0xfb};
-	auto crc        = update_crc(SyncCrc, mark);
-	append(mark);
+	auto crc        = update_crc(fm ? uint16_t{0xffff} : SyncCrc, mark);
+	if (fm) {
+		// FM address marks carry the missing-clock C7 pattern.
+		for (auto bit = 7; bit >= 0; --bit) {
+			write_bit(((0xc7u >> bit) & 1u) != 0);
+			write_bit(((mark >> bit) & 1u) != 0);
+		}
+	} else {
+		append(mark);
+	}
 	for (const auto byte : data) {
 		append(byte);
 		crc = update_crc(crc, byte);
@@ -368,7 +397,9 @@ void FloppySector::UpdateTrackData(const bool create_data_mark)
 	append(check_cast<uint8_t>(crc >> 8));
 	append(static_cast<uint8_t>(crc));
 	const MfmBitstream cells = {track.cells, track.bit_count};
-	write_bit(!(previous || bit_at(cells, position + 1)));
+	if (!fm) {
+		write_bit(!(previous || bit_at(cells, position + 1)));
+	}
 }
 
 std::vector<FloppySector> FloppyTrackImage::DecodeTrack(
@@ -546,9 +577,20 @@ std::vector<FloppySector> FloppyTrackImage::DecodeRevolutions(
         const std::span<const double> ends, const bool fm)
 {
 	assert(!revolutions.empty() && revolutions.size() == ends.size());
+	const auto raw = join_revolutions(revolutions);
+	auto sectors = DecodeTrack(raw->cells, raw->bit_count, raw->index, false, raw, fm);
+	if (revolutions.size() > 1) {
+		PositionSectors(sectors, ends);
+	}
+	return sectors;
+}
+
+std::shared_ptr<FloppyMfmTrack> FloppyTrackImage::join_revolutions(
+        const std::span<const std::shared_ptr<FloppyMfmTrack>> revolutions)
+{
+	assert(!revolutions.empty());
 	if (revolutions.size() == 1) {
-		const auto& raw = revolutions.front();
-		return DecodeTrack(raw->cells, raw->bit_count, raw->index, false, raw, fm);
+		return revolutions.front();
 	}
 	auto raw = std::make_shared<FloppyMfmTrack>();
 	for (const auto& turn : revolutions) {
@@ -574,9 +616,7 @@ std::vector<FloppySector> FloppyTrackImage::DecodeRevolutions(
 			}
 		}
 	}
-	auto sectors = DecodeTrack(raw->cells, raw->bit_count, 0, false, raw, fm);
-	PositionSectors(sectors, ends);
-	return sectors;
+	return raw;
 }
 
 void FloppyTrackImage::PositionSectors(std::vector<FloppySector>& sectors,
@@ -607,16 +647,20 @@ void FloppyTrackImage::PositionSectors(std::vector<FloppySector>& sectors,
 	}
 }
 
-std::shared_ptr<FloppyMfmTrack> FloppyTrackImage::FormatMfmTrack(
+std::shared_ptr<FloppyMfmTrack> FloppyTrackImage::format_track_cells(
         const std::span<const FloppySector> previous, const size_t revolution,
-        const double duration_ms, const TrackFormat& format)
+        const double duration_ms, const TrackFormat& format,
+        std::shared_ptr<FloppyMfmTrack> source)
 {
-	const auto found = std::ranges::find_if(previous, [&](const auto& sector) {
-		return sector.mfm_track &&
-		       (sector.revolution == revolution ||
-		        sector.mfm_track->revolution_ends_bits.size() > revolution);
-	});
-	const auto source = found != previous.end() ? found->mfm_track : nullptr;
+	if (!source) {
+		const auto found = std::ranges::find_if(previous, [&](const auto& sector) {
+			return sector.mfm_track &&
+			       (sector.revolution == revolution ||
+			        sector.mfm_track->revolution_ends_bits.size() >
+			                revolution);
+		});
+		source = found != previous.end() ? found->mfm_track : nullptr;
+	}
 	const auto source_bits = source ? source->GetRevolutionBitCount(revolution)
 	                                : 0;
 	const auto source_start = source && !source->revolution_ends_bits.empty() &&
@@ -624,7 +668,8 @@ std::shared_ptr<FloppyMfmTrack> FloppyTrackImage::FormatMfmTrack(
 	                                ? source->revolution_ends_bits[revolution - 1]
 	                                : 0;
 	const auto rate = format.rate_kbps ? format.rate_kbps : uint16_t{250};
-	const auto rounded_bits = round_nonnegative(duration_ms * 2 * rate);
+	const auto rounded_bits = round_nonnegative(duration_ms *
+	                                            (format.fm ? 1 : 2) * rate);
 	if (!rounded_bits || !std::in_range<size_t>(*rounded_bits)) {
 		return {};
 	}
@@ -632,14 +677,20 @@ std::shared_ptr<FloppyMfmTrack> FloppyTrackImage::FormatMfmTrack(
 	if (!format.rate_kbps && source) {
 		bits = source_bits;
 	}
-	if (!bits) {
+	const auto encoding_bits = bits;
+	const auto count         = format.ids.size() / 4;
+	const auto partial       = count < format.requested;
+	if (partial) {
+		// Retain enough resolution for faster fields in the surviving
+		// suffix.
+		bits = std::max(bits, source_bits);
+	}
+	if (!bits || !encoding_bits) {
 		return {};
 	}
 	auto captured       = std::make_shared<FloppyMfmTrack>();
 	captured->bit_count = bits;
 	captured->cells.resize((bits + 7) / 8);
-	const auto count   = format.ids.size() / 4;
-	const auto partial = count < format.requested;
 	const auto cutoff  = bits * count / format.requested;
 	if (partial && source && !source->weak_cells.empty()) {
 		captured->weak_cells.resize(bits);
@@ -647,7 +698,7 @@ std::shared_ptr<FloppyMfmTrack> FloppyTrackImage::FormatMfmTrack(
 	// Keep the original suffix on an interrupted format, normalized to index.
 	for (size_t bit = 0; bit < bits; ++bit) {
 		const auto preserve = partial && source && bit >= cutoff;
-		auto value          = (0x9254u >> (15 - bit % 16)) & 1u;
+		auto value = ((format.fm ? 0xffffu : 0x9254u) >> (15 - bit % 16)) & 1u;
 		if (preserve) {
 			value = 0;
 			// Keep suffix transition times when changing the cell
@@ -679,25 +730,30 @@ std::shared_ptr<FloppyMfmTrack> FloppyTrackImage::FormatMfmTrack(
 	size_t position      = 0;
 	bool last_data       = false;
 	const auto write_bit = [&](const bool value) {
-		if (!partial || position < cutoff) {
-			const auto mask = check_cast<uint8_t>(0x80u >>
-			                                      (position % 8));
-			auto& byte      = captured->cells[position / 8];
-			byte            = check_cast<uint8_t>(
-                                value ? byte | mask
-                                      : byte & static_cast<uint8_t>(~mask));
+		const auto begin = check_cast<size_t>(uint64_t{position} *
+		                                      bits / encoding_bits);
+		const auto end   = check_cast<size_t>((uint64_t{position} + 1) *
+		                                      bits / encoding_bits);
+		for (auto cell = begin; cell < end && (!partial || cell < cutoff);
+		     ++cell) {
+			const auto mask = check_cast<uint8_t>(0x80u >> (cell % 8));
+			auto& byte = captured->cells[cell / 8];
+			byte       = check_cast<uint8_t>(
+			        (value && cell + 1 == end)
+			                ? byte | mask
+			                : byte & static_cast<uint8_t>(~mask));
 			if (!captured->weak_cells.empty()) {
-				captured->weak_cells[position] = false;
+				captured->weak_cells[cell] = false;
 			}
 		}
 		// A partial field must not overwrite the surviving suffix or
 		// wrap back into the committed prefix.
-		position = partial ? position + 1 : (position + 1) % bits;
+		position = partial ? position + 1 : (position + 1) % encoding_bits;
 	};
 	const auto append = [&](const uint8_t byte) {
 		for (int bit = 7; bit >= 0; --bit) {
 			const auto data = ((byte >> bit) & 1) != 0;
-			write_bit(!(last_data || data));
+			write_bit(format.fm || !(last_data || data));
 			write_bit(data);
 			last_data = data;
 		}
@@ -714,26 +770,39 @@ std::shared_ptr<FloppyMfmTrack> FloppyTrackImage::FormatMfmTrack(
 		append(check_cast<uint8_t>(crc >> 8));
 		append(static_cast<uint8_t>(crc));
 	};
+	const auto mark = [&](const uint8_t value) {
+		if (format.fm) {
+			for (auto byte = 0; byte < 6; ++byte) {
+				append(0);
+			}
+			for (auto bit = 7; bit >= 0; --bit) {
+				write_bit(((0xc7u >> bit) & 1u) != 0);
+				write_bit(((value >> bit) & 1u) != 0);
+			}
+		} else {
+			sync();
+			append(value);
+		}
+	};
 	for (size_t i = 0; i < count; ++i) {
-		position = i * bits / format.requested;
-		sync();
-		append(0xfe);
-		auto crc      = update_crc(SyncCrc, 0xfe);
+		position = i * encoding_bits / format.requested;
+		mark(0xfe);
+		const auto seed = format.fm ? uint16_t{0xffff} : SyncCrc;
+		auto crc        = update_crc(seed, 0xfe);
 		const auto id = std::span(format.ids).subspan(i * 4, 4);
 		for (const auto byte : id) {
 			append(byte);
 			crc = update_crc(crc, byte);
 		}
 		append_crc(crc);
-		for (auto gap = 0; gap < 22; ++gap) {
-			append(0x4e);
+		for (auto gap = 0; gap < (format.fm ? 11 : 22); ++gap) {
+			append(format.fm ? 0xff : 0x4e);
 		}
-		for (auto gap = 0; gap < 12; ++gap) {
+		for (auto gap = 0; gap < (format.fm ? 0 : 12); ++gap) {
 			append(0);
 		}
-		sync();
-		append(0xfb);
-		crc = update_crc(SyncCrc, 0xfb);
+		mark(0xfb);
+		crc = update_crc(seed, 0xfb);
 		// Command N controls the data field; ID N is just an ID byte.
 		const auto size_code = format.size_code == 0xff ? id[3]
 		                                                : format.size_code;
@@ -864,7 +933,8 @@ std::span<const FloppySector> FloppyTrackImage::GetTrack(const uint32_t cylinder
 		// Keep the original slots stable for overlay addresses, but
 		// rebuild the visible IDs and data from the cells changed by a
 		// write.
-		std::map<const FloppyMfmTrack*, std::vector<FloppySector>> decoded = {};
+		std::map<std::pair<const FloppyMfmTrack*, bool>, std::vector<FloppySector>>
+		        decoded = {};
 		track.visible_sectors.clear();
 		for (size_t i = 0; i < track.sectors.size(); ++i) {
 			const auto& original = track.sectors[i];
@@ -882,14 +952,15 @@ std::span<const FloppySector> FloppyTrackImage::GetTrack(const uint32_t cylinder
 				}
 			}
 			if (raw && track.cells_changed) {
-				auto [entry,
-				      inserted] = decoded.try_emplace(raw.get());
+				auto [entry, inserted] = decoded.try_emplace(
+				        std::pair{raw.get(), original.fm});
 				if (inserted) {
 					entry->second = DecodeTrack(raw->cells,
 					                            raw->bit_count,
 					                            raw->index,
 					                            false,
-					                            raw);
+					                            raw,
+					                            original.fm);
 				}
 				const auto found =
 				        std::ranges::find(entry->second,
