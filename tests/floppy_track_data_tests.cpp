@@ -8,6 +8,11 @@
 
 #include <gtest/gtest.h>
 
+#include "misc/support.h"
+#include "utils/checks.h"
+
+CHECK_NARROWING();
+
 TEST(FloppyTrackData, PreserveGapPhaseChangesAcrossIndex)
 {
 	FloppySector sector = {};
@@ -117,6 +122,65 @@ TEST(FloppyTrackData, PreserveResampledCellTimes)
 	}
 	EXPECT_EQ(next, transitions.size());
 	EXPECT_DOUBLE_EQ(timed->cell_ends.back(), 1.0);
+}
+
+TEST(FloppyTrackData, HoldSeparatorFrequencyAcrossLongGaps)
+{
+	for (const auto nominal_ns : {500, 1000, 2000, 4000}) {
+		for (const auto speed_percent : {91, 94, 106, 109}) {
+			SCOPED_TRACE(nominal_ns);
+			SCOPED_TRACE(speed_percent);
+			std::vector<uint64_t> transitions = {};
+			std::vector<uint64_t> normalized  = {};
+			std::vector<uint8_t> expected     = {};
+			auto elapsed_ns                   = uint64_t{0};
+			auto normalized_ns                = uint64_t{0};
+			auto cells                        = size_t{0};
+			for (int pulse = 0; pulse < 288; ++pulse) {
+				const auto spacing = pulse >= 128 && pulse < 160
+				                           ? 12
+				                           : 2;
+				elapsed_ns += check_cast<uint64_t>(
+				        nominal_ns * speed_percent * spacing / 100);
+				normalized_ns += check_cast<uint64_t>(
+				        nominal_ns * spacing);
+				// Alternating edge displacement must not become
+				// speed drift.
+				const auto jitter_ns = pulse % 2 ? nominal_ns / 25
+				                                 : 0;
+				transitions.push_back(
+				        elapsed_ns + check_cast<uint64_t>(jitter_ns));
+				normalized.push_back(normalized_ns);
+				cells += check_cast<size_t>(spacing);
+				expected.resize((cells + 7) / 8);
+				expected[(cells - 1) / 8] |= check_cast<uint8_t>(
+				        0x80u >> ((cells - 1) % 8));
+			}
+			constexpr auto TailCells = 32;
+			const auto duration_ns = elapsed_ns +
+			                         check_cast<uint64_t>(
+			                                 nominal_ns * speed_percent *
+			                                 TailCells / 100);
+			const auto control_duration_ns =
+			        normalized_ns +
+			        check_cast<uint64_t>(nominal_ns * TailCells);
+			expected.resize((cells + TailCells + 7) / 8);
+			const auto raw = FloppyMfmTrack::RecoverFlux(transitions,
+			                                             duration_ns,
+			                                             nominal_ns,
+			                                             true);
+			const auto control = FloppyMfmTrack::RecoverFlux(
+			        normalized, control_duration_ns, nominal_ns);
+			ASSERT_TRUE(raw);
+			ASSERT_TRUE(control);
+			EXPECT_EQ(raw->bit_count, cells + TailCells);
+			EXPECT_EQ(raw->cells, expected);
+			EXPECT_EQ(raw->cells, control->cells);
+			ASSERT_EQ(raw->cell_ends.size(), raw->bit_count);
+			EXPECT_TRUE(std::ranges::is_sorted(raw->cell_ends));
+			EXPECT_DOUBLE_EQ(raw->cell_ends.back(), 1.0);
+		}
+	}
 }
 
 TEST(FloppyTrackData, RecoverTransitionsAtSelectedRate)

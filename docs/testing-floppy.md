@@ -131,8 +131,8 @@ unmarked cells. Existing multi-revolution, duplicate-write, weak-write, overlap,
 and persistence tests cover interaction with other media operations.
 
 This is command-time digital decoding, not an analogue drive simulation. The
-separator/noise model remains simplified, and programmed-rate mismatch behavior
-and cycle-accurate DMA/FIFO service remain separate work. The stable logical
+separator/noise model remains simplified, and cycle-accurate DMA bus arbitration
+remains separate work. The stable logical
 sector view used by DOS FAT does not acquire per-turn weak-field randomness.
 
 ### Programmed read data rate
@@ -153,6 +153,34 @@ cells within the separator's existing 10% clock range; outside that range their
 transitions are decoded again at the selected rate. This remains a digital
 separator approximation, rather than an analogue PLL simulation. DOS FAT's
 logical sector view is unchanged.
+
+### Separator frequency holdover
+
+The digital separator continues at its acquired frequency when an interval
+contains more than four channel cells. Such an interval supplies no reliable
+short-spacing frequency measurement. It no longer pulls the oscillator back
+to nominal merely because transitions are sparse. Short intervals retain the
+existing phase and frequency correction, and the clock remains bounded to
+90–110% of nominal. No missing transitions, weak masks or corrected CRCs are
+invented. Recorded index periods and transition positions remain unchanged.
+
+`FloppyTrackData.HoldSeparatorFrequencyAcrossLongGaps` checks four nominal
+channel clocks, fast/slow streams, alternating edge displacement, repeated
+twelve-cell intervals, a transition-free tail and timing metadata. Its
+normalized control has the same channel cells at the nominal clock.
+`Guest.FloppySeparator` embeds sparse transitions in a valid-CRC data field
+and tests 1,825-, 2,000- and 2,175-ns captures through Read ID, Read Data,
+Read Track and Verify, including DMA terminal count, IRQ6 and buffer guards.
+Both regressions fail with the earlier nominal-pullback behavior.
+
+This is a bounded digital holdover model, not a reconstruction of Intel's
+analog loop filter or a measured match to its acquisition/jitter curves.
+Sections 3.2–3.2.3 of the
+[Intel 82077AA datasheet](https://www.ardent-tool.com/datasheets/Intel_82077AA.pdf)
+describe frequency tracking, phase-jitter response and sync-field acquisition.
+The model's gains and 10% clock bounds are approximations, not datasheet
+guarantees. Noise during an erased area, pulse qualification and command-time
+analog acquisition remain unmodeled.
 
 ### Seek completion and bounded recalibration
 
