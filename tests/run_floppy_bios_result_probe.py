@@ -46,7 +46,14 @@ def encoded_track():
 
 def guest_checks():
     """Check all seven result bytes after BIOS Read and Verify."""
-    checks = ""
+    checks = """
+    xor ax,ax
+    mov es,ax
+    les di,[es:78h]
+    mov byte [es:di+4],4
+    push ds
+    pop es
+"""
     stage = 0
     for operation in (2, 4):
         for sector in range(1, 5):
@@ -57,9 +64,21 @@ def guest_checks():
             st0 = 0x40 if status else 0
             st1 = 0x20 if bad_crc else 0
             st2 = (0x40 if deleted else 0) | (0x20 if bad_crc else 0)
-            # Normal DMA TC at EOT advances the reported cylinder;
-            # Verify and abnormal completion retain the current ID.
-            result_cylinder = 1 if operation == 2 and not status else 0
+            result_sector = sector
+            marker = sector
+            if operation == 2:
+                if sector == 1:
+                    # TC occurs before the guest EOT, so R advances.
+                    result_sector = 2
+                elif sector == 2:
+                    # SK skips the deleted field and reads the next,
+                    # whose CRC is bad. CM records the skipped mark.
+                    status, st0, st1, st2 = 0x10, 0x40, 0x20, 0x60
+                    result_sector = marker = 3
+                elif sector == 4:
+                    # A skipped field at EOT transfers nothing.
+                    status, st0, st1, st2 = 4, 0x40, 0x80, 0x40
+                    marker = 0xa5
             checks += f"""
     mov byte [stage],{stage}
     push es
@@ -70,6 +89,10 @@ def guest_checks():
     mov cx,7
     rep stosb
     pop es
+    mov di,buffer
+    mov cx,512
+    mov al,0a5h
+    rep stosb
     mov ax,{operation * 256 + 1}
     mov bx,buffer
     mov cx,{sector}
@@ -94,13 +117,13 @@ def guest_checks():
     mov cx,512
 data_{stage}:
     lodsb
-    cmp al,{sector}
+    cmp al,{marker}
     jne done
     loop data_{stage}
 """
             checks += f"""
     jmp next_{stage}
-result_{stage} db {st0},{st1},{st2},{result_cylinder},0,{sector},2
+result_{stage} db {st0},{st1},{st2},0,0,{result_sector},2
 next_{stage}:
 """
     return checks
