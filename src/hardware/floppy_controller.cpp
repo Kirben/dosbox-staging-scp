@@ -2139,6 +2139,9 @@ static FloppyBiosTransferResult bios_transfer_track(
 	if (st1 & 0x20) {
 		return {writing ? uint8_t{0x20} : uint8_t{0x10}, completed};
 	}
+	if (st1 & 0x01) {
+		return {0x02, completed};
+	}
 	if (failed) {
 		return {0x04, completed};
 	}
