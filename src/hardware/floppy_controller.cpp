@@ -70,6 +70,7 @@ enum class Phase { Command, Execution, Result };
 enum class Command {
 	ReadTrack        = 0x02,
 	Specify          = 0x03,
+	SenseDriveStatus = 0x04,
 	Configure        = 0x13,
 	WriteData        = 0x05,
 	ReadData         = 0x06,
@@ -1553,6 +1554,26 @@ void execute_command(const Command command)
 		fdc.head_load        = fdc.command[2] >> 1;
 		fdc.timing_specified = true;
 		break;
+	case Command::SenseDriveStatus: {
+		const auto unit = selected_unit();
+		// 82077AA section 6.4 fixes bits 5 and 3 at one. They are
+		// not live READY/two-sided inputs on this controller.
+		auto status = 0x28u | (fdc.command[1] & 0x07u);
+		if (unit < fdc.drives.size()) {
+			if (fdc.drives[unit].cylinder == 0) {
+				status |= 0x10u;
+			}
+			const auto disk = BIOS_GetDisk(unit);
+			if (disk && disk->active && !disk->hardDrive &&
+			    disk->IsWriteProtected()) {
+				status |= 0x40u;
+			}
+		}
+		fdc.result[0] = check_cast<uint8_t>(status);
+		// This command neither completes nor acknowledges a Seek.
+		begin_result(1, false);
+		break;
+	}
 	case Command::SenseInterrupt: {
 		fdc.seek_irq_pending = false;
 		const auto pending   = std::ranges::find_if(
@@ -1654,6 +1675,7 @@ size_t command_length(const Command command)
 	case Command::Seek:
 	case Command::Specify: return 3;
 	case Command::Recalibrate:
+	case Command::SenseDriveStatus:
 	case Command::ReadId: return 2;
 	default: return 1;
 	}
