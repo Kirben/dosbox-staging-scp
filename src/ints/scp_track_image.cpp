@@ -43,6 +43,7 @@ constexpr uint8_t FormatRateOverlayVersion  = 8;
 constexpr uint8_t DeletedMarkOverlayVersion = 9;
 constexpr uint8_t EncodingOverlayVersion      = 10;
 constexpr uint8_t GapOverlayVersion           = 11;
+constexpr uint8_t PartialWriteOverlayVersion  = 12;
 constexpr uint32_t LegacySizeCode           = 2;
 constexpr size_t ChrnSize                   = 4;
 
@@ -371,7 +372,8 @@ void FloppyTrackImage::ensure_fm_fields(const uint32_t cylinder, const uint32_t 
 
 void FloppyTrackImage::copy_track_write(const uint32_t cylinder, const uint32_t head,
                                         const FloppySector& sector,
-                                        const bool create_data_mark)
+                                        const bool create_data_mark,
+                                        const std::optional<uint32_t> write_bits)
 {
 	const auto source = sector.mfm_track;
 	if (!source || !source->bit_count) {
@@ -390,8 +392,10 @@ void FloppyTrackImage::copy_track_write(const uint32_t cylinder, const uint32_t 
 	const auto start = (sector.data_bit + bits -
 	                    ((sync_bytes + 1) * 16 % bits) + bits - source->index) %
 	                   bits;
-	const auto length   = (sector.data.size() + sync_bytes + 3) * 16 +
-	                      (sector.fm ? 0 : 1);
+	const auto length = write_bits
+	                          ? size_t{*write_bits} + sync_bytes * 16
+	                          : (sector.data.size() + sync_bytes + 3) * 16 +
+	                                    (sector.fm ? 0 : 1);
 	const auto boundary = [](const FloppyMfmTrack& raw, const size_t cell) {
 		return !cell ? 0.0
 		     : raw.cell_ends.empty()
@@ -506,9 +510,21 @@ void FloppyTrackImage::ApplyOverlaySector(const OverlayKey& key,
 	const auto apply                      = [&](FloppySector& sector) {
                 const auto create_data_mark = sector.data.empty();
                 tracks[cylinder * heads + head].cells_changed |= bool(sector.mfm_track);
-                sector.data           = data.bytes;
-                sector.data_crc_error = false;
-                sector.deleted        = data.deleted;
+		if (data.write_bits) {
+			auto written    = sector;
+			written.data    = data.bytes;
+			written.deleted = data.deleted;
+			written.UpdateTrackData(create_data_mark, data.write_bits);
+			copy_track_write(cylinder,
+			                 head,
+			                 written,
+			                 create_data_mark,
+			                 data.write_bits);
+			return;
+		}
+		sector.data           = data.bytes;
+		sector.data_crc_error = false;
+		sector.deleted        = data.deleted;
                 sector.weak_mask.clear();
                 sector.extended_data.clear();
                 sector.UpdateTrackData(create_data_mark);
@@ -549,7 +565,9 @@ bool FloppyTrackImage::LoadOverlay()
 	     header != overlay_header(capture_fingerprint, FormatRateOverlayVersion) &&
 	     header != overlay_header(capture_fingerprint, DeletedMarkOverlayVersion) &&
 	     header != overlay_header(capture_fingerprint, EncodingOverlayVersion) &&
-	     header != overlay_header(capture_fingerprint, GapOverlayVersion))) {
+	     header != overlay_header(capture_fingerprint, GapOverlayVersion) &&
+	     header != overlay_header(capture_fingerprint,
+	                              PartialWriteOverlayVersion))) {
 		return false;
 	}
 	const auto version         = header[6];
@@ -660,7 +678,9 @@ bool FloppyTrackImage::LoadOverlay()
 			                        ? fgetc(input.get())
 			                        : 0;
 			if (mark < 0 ||
-			    mark > (version >= EncodingOverlayVersion ? 3 : 1)) {
+			    mark > (version >= PartialWriteOverlayVersion ? 7
+			            : version >= EncodingOverlayVersion ? 3
+			                                                : 1)) {
 				return false;
 			}
 			const auto fm = (mark & 2) != 0;
@@ -674,6 +694,21 @@ bool FloppyTrackImage::LoadOverlay()
 			OverlaySector data  = {std::vector<uint8_t>(size),
 			                       (mark & 1) != 0,
 			                       fm};
+			if (mark & 4) {
+				std::array<uint8_t, 4> cells = {};
+				if (fread(cells.data(), 1, cells.size(), input.get()) !=
+				    cells.size()) {
+					return false;
+				}
+				uint32_t count = 0;
+				for (size_t i = 0; i < cells.size(); ++i) {
+					count |= uint32_t{cells[i]} << (i * 8);
+				}
+				if (!count || count > (size + 3) * 16) {
+					return false;
+				}
+				data.write_bits = count;
+			}
 			const auto repeated = std::ranges::any_of(
 			        overlay, [&](const auto& entry) {
 				        return entry.first == address;
@@ -784,7 +819,20 @@ bool FloppyTrackImage::SaveOverlay(const Overlay& entries,
 			return format.gap.has_value();
 		});
 	});
-	const auto version = gapped         ? GapOverlayVersion
+	const auto has_partial = [](const Overlay& writes) {
+		return std::ranges::any_of(writes, [](const auto& entry) {
+			return entry.second.write_bits.has_value();
+		});
+	};
+	const auto partial =
+	        has_partial(entries) ||
+	        std::ranges::any_of(formats, [&](const auto& track) {
+		        return std::ranges::any_of(track.second, [&](const auto& format) {
+			        return has_partial(format.prior_writes);
+		        });
+	        });
+	const auto version = partial        ? PartialWriteOverlayVersion
+	                   : gapped         ? GapOverlayVersion
 	                   : fm             ? EncodingOverlayVersion
 	                   : deleted        ? DeletedMarkOverlayVersion
 	                   : formatted_rate ? FormatRateOverlayVersion
@@ -822,10 +870,23 @@ bool FloppyTrackImage::SaveOverlay(const Overlay& entries,
 			          (version < SizedOverlayVersion ||
 			           fputc(check_cast<int>(size_code), file) != EOF) &&
 			          (version < DeletedMarkOverlayVersion ||
-			           fputc((data.deleted ? 1 : 0) | (data.fm ? 2 : 0),
-			                 file) != EOF) &&
-			          fwrite(data.bytes.data(), 1, data.bytes.size(), file) ==
-			                  data.bytes.size();
+			           fputc((data.deleted ? 1 : 0) | (data.fm ? 2 : 0) |
+			                         (data.write_bits ? 4 : 0),
+			                 file) != EOF);
+			if (data.write_bits) {
+				std::array<uint8_t, 4> cells = {};
+				for (size_t i = 0; i < cells.size(); ++i) {
+					cells[i] = static_cast<uint8_t>(
+					        *data.write_bits >> (i * 8));
+				}
+				success = success &&
+				          fwrite(cells.data(), 1, cells.size(), file) ==
+				                  cells.size();
+			}
+			success = success && fwrite(data.bytes.data(),
+			                            1,
+			                            data.bytes.size(),
+			                            file) == data.bytes.size();
 		}
 	};
 	for (const auto& [address, history] : formats) {
@@ -918,12 +979,14 @@ bool FloppyTrackImage::HasOverlappingFields(const uint32_t cylinder,
 bool FloppyTrackImage::WriteSector(const uint32_t cylinder, const uint32_t head,
                                    const uint32_t sector,
                                    const std::span<const uint8_t> data,
-                                   const FloppySector* selected, const bool deleted)
+                                   const FloppySector* selected, const bool deleted,
+                                   const std::optional<uint32_t> write_bits)
 {
 	if (IsWriteProtected() || cylinder >= cylinders || head >= heads ||
 	    sector > UINT8_MAX || data.size() < 128 ||
 	    (data.size() == 128 && (!selected || !selected->fm)) ||
-	    data.size() > 1024 || !std::has_single_bit(data.size())) {
+	    data.size() > 1024 || !std::has_single_bit(data.size()) ||
+	    (write_bits && (!*write_bits || *write_bits > (data.size() + 3) * 16))) {
 		return false;
 	}
 	std::optional<FloppySector> fm_selected = {};
@@ -1019,10 +1082,18 @@ bool FloppyTrackImage::WriteSector(const uint32_t cylinder, const uint32_t head,
 	} else {
 		return false;
 	}
-	const OverlaySector updated = {
-	        std::vector<uint8_t>(data.begin(), data.end()), deleted, fm};
+	const OverlaySector updated = {std::vector<uint8_t>(data.begin(), data.end()),
+	                               deleted,
+	                               fm,
+	                               write_bits};
 	auto entries       = overlay;
-	const auto ordered = HasOverlappingFields(cylinder, head);
+	const auto ordered = write_bits.has_value() ||
+	                     HasOverlappingFields(cylinder, head) ||
+	                     std::ranges::any_of(entries, [&](const auto& entry) {
+		                     return entry.first[0] == cylinder &&
+		                            entry.first[1] == head &&
+		                            entry.second.write_bits.has_value();
+	                     });
 	for (const auto& key : targets) {
 		if (!ordered) {
 			// Independent fields only need their latest contents.

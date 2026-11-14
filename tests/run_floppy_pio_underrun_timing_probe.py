@@ -32,7 +32,7 @@ SAVE = '''
     int 21h
 '''
 def check_abort(args, directory, extension, reset):
-    """Cancel a pending underrun before the physical commit and recover."""
+    """Preserve an underrun's written prefix on reset; motor loss still cancels."""
     image = directory / f'abort{reset}.{extension}'
     original = encode_tracks(extension, [one_sector(2)])
     image.write_bytes(original)
@@ -63,29 +63,48 @@ def check_abort(args, directory, extension, reset):
     cmp byte [ids+1],4
     jne done
 '''
-    checks += wait_microseconds(25000) + '''
-    mov si,specify_dma
-    mov cx,3
-    call send_command
-''' + DMA + '''
+    readback = DMA + '''
     mov si,read_command
     mov cx,9
     call send_command
     call wait_result
-    cmp byte [ids+1],0
+''' + f'''
+    cmp byte [ids+1],{0x20 if reset else 0}
     jne done
+    cmp byte [ids+2],{0x20 if reset else 0}
+    jne done
+'''
+    readback += ('''
+    cmp byte [buffer],0
+    jne done
+    cmp byte [buffer+511],77h
+    jne done
+''' if reset else '''
     mov di,buffer
     mov cx,512
     mov al,77h
     repe scasb
     jne done
-'''
+''')
+    checks += wait_microseconds(25000) + '''
+    mov si,specify_dma
+    mov cx,3
+    call send_command
+''' + readback
     commands = ('specify_pio db 3,0dfh,3\nspecify_dma db 3,0dfh,2\n'
                 'write_command db 45h,0,0,0,1,2,1,54h,0ffh\n'
                 'read_command db 46h,0,0,0,1,2,1,54h,0ffh\n')
     run_guest(args.dosbox.resolve(), args.nasm, directory, image,
               program(checks, commands), read_only=False)
-    assert not Path(str(image) + '.overlay').exists()
+    overlay = Path(str(image) + '.overlay')
+    if reset:
+        saved = overlay.read_bytes()
+        assert saved[6] == 12
+        run_guest(args.dosbox.resolve(), args.nasm, directory, image,
+                  program(RESET + readback, commands))
+        assert overlay.read_bytes() == saved
+    else:
+        assert not overlay.exists()
     assert image.read_bytes() == original
 
 

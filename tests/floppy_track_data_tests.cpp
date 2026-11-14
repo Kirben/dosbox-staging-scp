@@ -190,3 +190,47 @@ TEST(FloppyTrackData, RejectUnrepresentableResamplingValues)
 	raw.revolution_ends_bits = {std::numeric_limits<size_t>::max()};
 	EXPECT_FALSE(raw.Sample(0, 0.016, 500));
 }
+
+TEST(FloppyTrackData, StopWriteAtResetCell)
+{
+	for (const auto fm : {false, true}) {
+		FloppySector original = {};
+		original.fm           = fm;
+		original.data.assign(128, 0x11);
+		original.data_bit  = 64;
+		original.mfm_track = std::make_shared<FloppyMfmTrack>();
+		original.mfm_track->bit_count = 8192;
+		original.mfm_track->cells.assign(1024, 0x55);
+		original.UpdateTrackData();
+		original.mfm_track->weak_cells.assign(8192, true);
+		auto complete      = original;
+		complete.mfm_track = std::make_shared<FloppyMfmTrack>(
+		        *original.mfm_track);
+		complete.data.assign(128, 0x55);
+		complete.UpdateTrackData();
+		// Include resets inside the DAM, payload, and CRC, not just at
+		// byte boundaries. No trailing clock cell may be repaired.
+		for (const auto limit : {1u, 15u, 16u, 17u, 1031u, 2069u, 2095u}) {
+			auto interrupted = original;
+			interrupted.mfm_track = std::make_shared<FloppyMfmTrack>(
+			        *original.mfm_track);
+			interrupted.data.assign(128, 0x55);
+			interrupted.UpdateTrackData(false, limit);
+			auto expected = original.mfm_track->cells;
+			auto weak     = original.mfm_track->weak_cells;
+			for (size_t offset = 0; offset < limit; ++offset) {
+				const auto cell = (original.data_bit - 16 + offset) %
+				                  8192;
+				const auto mask = static_cast<uint8_t>(
+				        0x80u >> (cell % 8));
+				expected[cell / 8] = static_cast<uint8_t>(
+				        (expected[cell / 8] &
+				         static_cast<uint8_t>(~mask)) |
+				        (complete.mfm_track->cells[cell / 8] & mask));
+				weak[cell] = false;
+			}
+			EXPECT_EQ(interrupted.mfm_track->cells, expected);
+			EXPECT_EQ(interrupted.mfm_track->weak_cells, weak);
+		}
+	}
+}

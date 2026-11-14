@@ -102,7 +102,8 @@ struct FloppySector {
 	bool SampleWeakData(const uint64_t turn, std::vector<uint8_t>& sampled) const;
 	bool ReadTrackData(const size_t size, const uint64_t turn,
 	                   std::vector<uint8_t>& sampled, bool& bad_crc) const;
-	void UpdateTrackData(const bool create_data_mark = false);
+	void UpdateTrackData(const bool create_data_mark              = false,
+	                     const std::optional<uint32_t> write_bits = {});
 };
 
 constexpr bool IsFloppyOverlaySizeCode(const int size_code)
@@ -146,7 +147,8 @@ public:
 	                         const uint32_t sector,
 	                         const std::span<const uint8_t> data,
 	                         const FloppySector* selected = nullptr,
-	                         const bool deleted           = false)       = 0;
+	                         const bool deleted           = false,
+	                         const std::optional<uint32_t> write_bits = {}) = 0;
 	virtual FormatResult FormatTrack(const uint8_t cylinder, const uint8_t head,
 	                                 const std::span<const uint8_t> ids,
 	                                 const uint8_t fill, const uint8_t requested,

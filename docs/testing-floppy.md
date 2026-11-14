@@ -197,7 +197,8 @@ A masked DMA channel can recover while the FIFO still has space or data.
 Overruns stop reads. Write underruns stop requests but clock a zero-filled
 remainder and valid CRC before committing the sector. Early terminal count
 retains its distinct completion status. Reset and motor loss cancel pending
-byte/service/completion events and prevent an unfinished sector from committing.
+byte/service/completion events. DOR reset preserves the written portion of an
+active sector; motor loss still cancels an unfinished sector in this model.
 Format Track consumes its ID bytes progressively and persists completed slots.
 
 This is an event-driven digital timing model. Its fixed 1.5-microsecond DMA
@@ -294,7 +295,7 @@ seven-byte FE/CHRN/CRC field; MFM also includes its three A1 sync bytes.
 The layout follows Figure 5 of the
 [NEC uPD765A datasheet](https://hxc2001.com/download/datasheet/floppy/thirdparty/FDC/NEC/upd765A.pdf).
 This remains a digital controller model; it does not add analog write
-precompensation or arbitrary partial-sector write damage.
+precompensation or analog write-splice noise.
 
 Overlay version 11 stores GPL after the format encoding byte. Encoding bit
 0 still selects FM; bit 1 indicates that GPL is present. A format without
@@ -303,6 +304,41 @@ GPL writes zero in that byte and retains its historical layout. Versions
 FM/MFM formats retain their old evenly spaced positions. Sector write
 records are unchanged. IMG and IMA remain logical sector files: formatting
 updates their sectors, but these containers cannot preserve physical gaps.
+
+### Partial writes interrupted by DOR reset
+
+`Guest.FloppyResetWrite` resets Write Data before transfer, during payload,
+during CRC emission and after completion. It checks FM/MFM, DMA and native
+PCjr non-DMA transfers, FIFO-prefetched bytes, duplicate IDs and replay after
+restart across SCP, HxC MFM, 86F and TransCopy. The selected occurrence changes;
+the other duplicate retains its data and valid CRC. Long Read Track exposes
+the old CRC or its partly rewritten prefix, rather than merely checking an
+error flag. A successful earlier write must remain the source of the untouched
+suffix. The probe also rejects malformed partial-write overlays and checks
+IMG/IMA payload persistence. `FloppyTrackData.StopWriteAtResetCell` verifies
+exact cell boundaries and that only written weak cells become stable.
+
+The controller tracks media progress separately from host DMA/FIFO progress.
+On DOR reset it records the emitted cells, including a partially emitted byte
+or CRC, and cancels the remaining events. The old suffix and unrecorded CRC
+cells remain unchanged. CRC status comes from decoding the resulting cells;
+reset does not append a fresh valid CRC or force an artificial CRC error.
+Reset before the data transfer leaves the field unchanged, and reset after
+normal completion retains the completed write. The DAM is treated as emitted
+at payload start; sub-byte write-gate timing in the preceding sync field and
+analog splice effects are not modeled. Reset IRQ/status handling is retained.
+The behavior follows the reset/write-corruption warning in section 2.2 of the
+[Intel 82077AA datasheet](https://www.osdever.net/documents/82077AA_FloppyControllerDatasheet.pdf).
+
+Overlay version 12 adds sector-flag bit 2 for a partial write. Such records
+store a four-byte little-endian cell count after the flags and before the
+payload. The count starts at the DAM and includes clock and data cells.
+It must be positive and cannot exceed DAM, payload and CRC. Earlier versions
+1 through 11 remain readable, and ordinary writes keep their existing layout
+unless partial-write history requires version 12. Partial records retain write
+order because their suffix depends on earlier writes. Source captures remain
+unchanged. IMG/IMA preserve the changed payload bits directly but cannot store
+damaged CRCs or physical clock cells.
 
 ### PC-compatible TransCopy types
 

@@ -337,14 +337,23 @@ bool FloppySector::ReadTrackData(const size_t size, const uint64_t turn,
 	return true;
 }
 
-void FloppySector::UpdateTrackData(const bool create_data_mark)
+void FloppySector::UpdateTrackData(const bool create_data_mark,
+                                   const std::optional<uint32_t> write_bits)
 {
 	if (!mfm_track) {
 		return;
 	}
 	auto& track   = *mfm_track;
 	auto position = (data_bit + track.bit_count - 16) % track.bit_count;
+	auto remaining = write_bits
+	                       ? size_t{*write_bits} +
+	                                 (create_data_mark ? (fm ? 6u : 15u) * 16 : 0)
+	                       : std::numeric_limits<size_t>::max();
 	const auto write_bit = [&](const bool value) {
+		if (!remaining) {
+			return;
+		}
+		--remaining;
 		const auto mask = check_cast<uint8_t>(0x80u >> (position % 8));
 		auto& byte      = track.cells[position / 8];
 		byte            = check_cast<uint8_t>(
@@ -397,7 +406,7 @@ void FloppySector::UpdateTrackData(const bool create_data_mark)
 	append(check_cast<uint8_t>(crc >> 8));
 	append(static_cast<uint8_t>(crc));
 	const MfmBitstream cells = {track.cells, track.bit_count};
-	if (!fm) {
+	if (!fm && !write_bits) {
 		write_bit(!(previous || bit_at(cells, position + 1)));
 	}
 }
