@@ -745,7 +745,7 @@ bool commit_sector_write(const std::span<const uint8_t> data)
 
 void advance_data_sector()
 {
-	if (fdc.sector < fdc.command[6]) {
+	if (fdc.sector != fdc.command[6]) {
 		++fdc.sector;
 		schedule_next_sector();
 	} else if ((fdc.command[0] & 0x80) && fdc.head == 0 && fdc.disk->heads > 1) {
@@ -788,7 +788,7 @@ void finish_sector_transfer(const std::span<const uint8_t> write_data,
 		auto cylinder = fdc.command[2];
 		auto head     = fdc.command[3];
 		auto sector   = fdc.sector;
-		if (sector < fdc.command[6]) {
+		if (sector != fdc.command[6]) {
 			++sector;
 		} else {
 			sector                 = 1;
@@ -1481,10 +1481,8 @@ void start_loaded_data(uint32_t)
 		return;
 	}
 	if (const auto& track = fdc.media) {
-		if (command != Command::ReadId &&
-		    (fdc.sector > fdc.command[6] ||
-		     (is_write_command(command) &&
-		      !IsFloppyOverlaySizeCode(fdc.command[5])))) {
+		if (is_write_command(command) &&
+		    !IsFloppyOverlaySizeCode(fdc.command[5])) {
 			finish_data(0x04);
 			return;
 		}
@@ -2072,7 +2070,8 @@ static FloppyBiosTransferResult bios_transfer_track(
         const FloppyBiosTransfer operation, const uint8_t unit,
         const uint32_t cylinder, const uint8_t head, const uint8_t sector,
         const uint8_t size_code, const uint8_t count, const uint8_t gap,
-        const uint32_t address, const uint16_t buffer_offset)
+        const uint8_t end_of_track, const uint32_t address,
+        const uint16_t buffer_offset)
 {
 	const auto last_sector = sector + count - 1;
 	if (!count || last_sector > UINT8_MAX || size_code > 7 || unit > 1 ||
@@ -2082,18 +2081,22 @@ static FloppyBiosTransferResult bios_transfer_track(
 
 	const auto writing   = operation == FloppyBiosTransfer::Write;
 	const auto verifying = operation == FloppyBiosTransfer::Verify;
-	const auto opcode    = verifying ? uint8_t{0x56}
-	                                 : (writing ? uint8_t{0x45} : uint8_t{0x46});
-	const std::array<uint8_t, 9> command = {opcode,
-	                                        check_cast<uint8_t>(unit |
-	                                                            (head << 2)),
-	                                        check_cast<uint8_t>(cylinder),
-	                                        head,
-	                                        sector,
-	                                        size_code,
-	                                        check_cast<uint8_t>(last_sector),
-	                                        gap,
-	                                        0xff};
+	const auto dma       = !is_machine_pcjr() && !verifying;
+	// IBM's DMA read command skips deleted sectors. DMA terminal count,
+	// rather than a shortened EOT, limits the requested byte count.
+	const auto read_opcode = dma ? uint8_t{0x66} : uint8_t{0x46};
+	const auto opcode      = verifying ? uint8_t{0x56}
+	                                   : (writing ? uint8_t{0x45} : read_opcode);
+	const std::array<uint8_t, 9> command = {
+	        opcode,
+	        check_cast<uint8_t>(unit | (head << 2)),
+	        check_cast<uint8_t>(cylinder),
+	        head,
+	        sector,
+	        size_code,
+	        dma ? end_of_track : check_cast<uint8_t>(last_sector),
+	        gap,
+	        0xff};
 	const auto sector_size               = 128u << size_code;
 	const auto size   = verifying ? 0u : count * sector_size;
 	const auto result = bios_command(
@@ -2109,7 +2112,9 @@ static FloppyBiosTransferResult bios_transfer_track(
 	const auto pio_end = is_machine_pcjr() && !verifying && st1 == 0x80 &&
 	                     !st2 && result.transferred == size &&
 	                     result.status[5] == last_sector;
-	const auto failed       = ((st0 & 0xc0) || st1 || st2) && !pio_end;
+	// SK can leave CM set after a normal DMA completion. The IBM BIOS
+	// accepts that result; it does not treat a skipped mark as an error.
+	const auto failed = ((st0 & 0xc0) || st1 || (st2 & ~0x40)) && !pio_end;
 	const auto before_error = std::clamp(result.status[5] - sector,
 	                                     0,
 	                                     static_cast<int>(count));
@@ -2120,7 +2125,7 @@ static FloppyBiosTransferResult bios_transfer_track(
 		// DMA can finish before the overlay commits the current sector.
 		completed = check_cast<uint8_t>(
 		        std::min<int>(completed, before_error));
-	} else if ((st2 & 0x60) && completed) {
+	} else if (failed && (st2 & 0x60) && completed) {
 		// Read Data reports CRC and deleted marks after transferring
 		// the sector.
 		--completed;
@@ -2172,6 +2177,7 @@ FloppyBiosTransferResult FLOPPY_BiosTransfer(
 		                           size_code,
 		                           count,
 		                           gap,
+		                           end_of_track,
 		                           address,
 		                           buffer_offset);
 	}
@@ -2199,6 +2205,7 @@ FloppyBiosTransferResult FLOPPY_BiosTransfer(
 		                            size_code,
 		                            check_cast<uint8_t>(run),
 		                            gap,
+		                            end_of_track,
 		                            has_data ? next_address : 0u,
 		                            has_data ? offset : uint16_t{0});
 		completed += result.sectors;

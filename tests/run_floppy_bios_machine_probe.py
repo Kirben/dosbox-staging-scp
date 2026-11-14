@@ -192,7 +192,9 @@ def check_machine(args, directory, extension, machine):
              markers=(0x22, 0x33), st1=0x20, st2=0x20),
         Case(4, sector=2, count=2, status=0x10, completed=1,
              markers=(), st1=0x20, st2=0x20),
-        Case(2, sector=4, status=4, completed=0, markers=(0x44,), st2=0x40),
+        (Case(2, sector=4, status=4, completed=0, markers=(0x44,), st2=0x40)
+         if pcjr else
+         Case(2, sector=4, status=4, completed=0, markers=(), st1=4, st2=0x40)),
         Case(2, sector=8, status=4, completed=0, markers=(), st1=4),
         Case(3, count=2, completed=2, markers=(0x66, 0x66)),
     )
