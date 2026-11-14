@@ -67,7 +67,9 @@ def main():
             for replay in (False, True):
                 run_probe(args.dosbox.resolve(), args.nasm, folder, image, replay)
             if extension == "img":
-                assert image.read_bytes() == b"\xa7" * 512 + b"\xb8" * 512 + disk[1024:]
+                # Motor loss follows the first clocked data bit of sector 3.
+                expected = b"\xa7" * 512 + b"\xb8" * 512 + b"\x80" + disk[1025:]
+                assert image.read_bytes() == expected
             else:
                 assert image.read_bytes() == capture
                 assert image.with_suffix(".mfm.overlay").is_file()

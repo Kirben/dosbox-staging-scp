@@ -32,7 +32,7 @@ SAVE = '''
     int 21h
 '''
 def check_abort(args, directory, extension, reset):
-    """Preserve an underrun's written prefix on reset; motor loss still cancels."""
+    """Both reset and motor loss retain an underrun's already-written prefix."""
     image = directory / f'abort{reset}.{extension}'
     original = encode_tracks(extension, [one_sector(2)])
     image.write_bytes(original)
@@ -68,24 +68,18 @@ def check_abort(args, directory, extension, reset):
     mov cx,9
     call send_command
     call wait_result
-''' + f'''
-    cmp byte [ids+1],{0x20 if reset else 0}
+''' + '''
+    cmp byte [ids+1],20h
     jne done
-    cmp byte [ids+2],{0x20 if reset else 0}
+    cmp byte [ids+2],20h
     jne done
 '''
-    readback += ('''
+    readback += '''
     cmp byte [buffer],0
     jne done
     cmp byte [buffer+511],77h
     jne done
-''' if reset else '''
-    mov di,buffer
-    mov cx,512
-    mov al,77h
-    repe scasb
-    jne done
-''')
+'''
     checks += wait_microseconds(25000) + '''
     mov si,specify_dma
     mov cx,3
@@ -97,14 +91,11 @@ def check_abort(args, directory, extension, reset):
     run_guest(args.dosbox.resolve(), args.nasm, directory, image,
               program(checks, commands), read_only=False)
     overlay = Path(str(image) + '.overlay')
-    if reset:
-        saved = overlay.read_bytes()
-        assert saved[6] == 12
-        run_guest(args.dosbox.resolve(), args.nasm, directory, image,
-                  program(RESET + readback, commands))
-        assert overlay.read_bytes() == saved
-    else:
-        assert not overlay.exists()
+    saved = overlay.read_bytes()
+    assert saved[6] == 12
+    run_guest(args.dosbox.resolve(), args.nasm, directory, image,
+              program(RESET + readback, commands))
+    assert overlay.read_bytes() == saved
     assert image.read_bytes() == original
 
 
