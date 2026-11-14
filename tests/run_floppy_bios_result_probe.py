@@ -10,12 +10,12 @@ from struct import pack
 from tempfile import TemporaryDirectory
 
 from run_hxc_mfm_probe import MFM
-from run_long_read_track_probe import make_image
+from run_floppy_zero_sector_probe import encode_tracks
 from run_transcopy_layout_probe import run_guest
 
 
 def encoded_track():
-    """Build normal and deleted fields, each with a good and bad CRC."""
+    """Build CRC, deleted-mark and missing-data-mark fixtures."""
     cells = bytearray()
     previous = 0
 
@@ -40,6 +40,9 @@ def encoded_track():
         mark = 0xf8 if sector % 2 == 0 else 0xfb
         field(bytes([mark]) + bytes([sector]) * 512, sector >= 3)
         append(b"\x4e" * 40)
+    # A valid ID without a data mark must differ from an absent ID.
+    field(bytes((0xfe, 0, 0, 5, 2)))
+    append(b"\x4e" * 40)
     append(b"\x4e" * ((12500 - len(cells)) // 2))
     return cells
 
@@ -129,23 +132,71 @@ next_{stage}:
     return checks
 
 
+def missing_mark_checks():
+    """Distinguish missing data marks from missing IDs in Read and Verify."""
+    checks = ""
+    for operation in (2, 4):
+        for sector, status, st1, st2 in ((5, 2, 1, 1), (63, 4, 4, 0)):
+            checks += f"""
+    inc byte [stage]
+    mov di,buffer
+    mov cx,512
+    mov al,0a5h
+    cld
+    rep stosb
+    mov ax,{operation * 256 + 1}
+    mov bx,buffer
+    mov cx,{sector}
+    xor dx,dx
+    int 13h
+    jnc done
+    cmp ax,{status * 256}
+    jne done
+    xor ax,ax
+    mov es,ax
+    cmp byte [es:441h],{status}
+    jne done
+    cmp byte [es:442h],40h
+    jne done
+    cmp byte [es:443h],{st1}
+    jne done
+    cmp byte [es:444h],{st2}
+    jne done
+    push ds
+    pop es
+    mov si,buffer
+    mov cx,512
+check_unchanged_{operation}_{sector}:
+    lodsb
+    cmp al,0a5h
+    jne done
+    loop check_unchanged_{operation}_{sector}
+"""
+    return checks
+
+
 def main():
-    """Exercise two track containers and standard-PC BIOS configurations."""
+    """Exercise four track containers and standard-PC, PCjr and Tandy BIOSes."""
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--dosbox", required=True, type=Path)
     parser.add_argument("--nasm", default="nasm")
     args = parser.parse_args()
     with TemporaryDirectory() as temp:
         directory = Path(temp)
-        for extension in ("tc", "mfm"):
+        for extension in ("tc", "mfm", "scp", "86f"):
             image = directory / f"results.{extension}"
-            original = make_image(encoded_track(), extension)
+            original = encode_tracks(extension, [encoded_track()])
             image.write_bytes(original)
             for machine in ("cga", "svga_s3"):
                 run_guest(args.dosbox.resolve(), args.nasm, directory, image,
                           guest_checks(), machine=machine)
                 assert image.read_bytes() == original
                 print(f"{machine} .{extension}: BIOS FDC results and deleted CRC passed")
+            for machine in ("cga", "svga_s3", "pcjr", "tandy"):
+                run_guest(args.dosbox.resolve(), args.nasm, directory, image,
+                          missing_mark_checks(), machine=machine)
+                assert image.read_bytes() == original
+                print(f"{machine} .{extension}: missing data mark and ID status passed")
 
 
 if __name__ == "__main__":

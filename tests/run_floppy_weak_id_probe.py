@@ -100,8 +100,9 @@ def capture(kind):
     return image
 
 
-def check_data(dosbox, nasm, directory, image, marker=0x11):
+def check_data(dosbox, nasm, image, marker=0x11, error_status=4):
     """Match sampled IDs and DAMs, never delivering another sector's payload."""
+    directory = image.parent
     code = "mov di,buffer\nmov cx,8192\nmov al,0a5h\nrep stosb\n"
     for index in range(16):
         code += f"""
@@ -140,7 +141,7 @@ saved:
     statuses = raw[8192:]
     assert 0 in statuses
     for index, status in enumerate(statuses):
-        assert status in (0, 4), statuses.hex()
+        assert status in (0, error_status), statuses.hex()
         payload = raw[index * 512:(index + 1) * 512]
         assert payload == bytes([0xa5 if status else marker]) * 512
     return statuses
@@ -169,7 +170,7 @@ written:
     run_guest(dosbox, nasm, directory, image, code, read_only=False)
     assert Path(str(image) + ".overlay").is_file()
     # Both checks run in new emulator processes and read the persistent overlay.
-    check_data(dosbox, nasm, directory, image, marker=0x66)
+    check_data(dosbox, nasm, image, marker=0x66)
     run_guest(dosbox, nasm, directory, image, CHECKS)
     raw = (directory / "IDS.BIN").read_bytes()
     assert {raw[i + 5] for i in range(0, len(raw), 7)} == {0, 1, 2}
@@ -203,9 +204,12 @@ def main():
                 assert repeated_second == (kind in ("sync", "hidden-sync"))
             assert image.read_bytes() == original
             if kind in ("id", "data-sync"):
-                statuses = check_data(args.dosbox.resolve(), args.nasm, directory, image)
+                # A weak DAM reports a missing address mark, not a missing ID.
+                error_status = 2 if kind == "data-sync" else 4
+                statuses = check_data(args.dosbox.resolve(), args.nasm, image,
+                                      error_status=error_status)
                 if kind == "data-sync":
-                    assert 4 in statuses, statuses.hex()
+                    assert error_status in statuses, statuses.hex()
             print(f"{kind}: rotational IDs {sorted(ids)}, ID CRC and sync visibility passed",
                   flush=True)
 
