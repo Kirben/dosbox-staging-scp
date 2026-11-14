@@ -1614,8 +1614,14 @@ void execute_command(const Command command)
 		const auto step_ms = fdc.timing_specified
 		                           ? timer_ms(16.0 - fdc.step_rate)
 		                           : DefaultStepMs;
+		// Model finite command processing separately from mechanical
+		// steps. Intel's iSBX 218A reference documents a 12 us
+		// command/parameter processing interval at 500 kbit/s (24 us at
+		// 250 kbit/s). This is a compatibility approximation, not
+		// measured 82077AA microcode timing. A zero-step seek must not
+		// interrupt the host in the final OUT.
 		PIC_AddEvent(complete_seek,
-		             steps * step_ms,
+		             timer_ms(0.012) + steps * step_ms,
 		             check_cast<uint32_t>(unit));
 		break;
 	}

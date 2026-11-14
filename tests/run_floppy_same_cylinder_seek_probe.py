@@ -48,7 +48,19 @@ def checks(pcjr):
     mov si,{command}
     mov cx,{2 if command == 'recalibrate' else 3}
     call send_command
-""" + wait_microseconds(1000) + sense(early, cylinder)
+"""
+        if early == 0x20 and not pcjr:
+            # Completion must not preempt the return from the final OUT.
+            # An immediate interrupt can be lost by a subsequent wait-flag store.
+            code += """
+    xor ax,ax
+    mov es,ax
+    test byte [es:43eh],80h
+    jnz done
+    push cs
+    pop es
+"""
+        code += wait_microseconds(1000) + sense(early, cylinder)
         if delay:
             code += wait_microseconds(delay) + sense(0x20, cylinder)
         code += f"""
