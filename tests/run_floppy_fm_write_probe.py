@@ -179,7 +179,7 @@ def check_format(args, directory, extension, pio, rate, selector):
     run(args, directory, image, pio, format_command(pio), True, selector)
     overlay = Path(str(image) + '.overlay')
     saved = overlay.read_bytes()
-    assert saved[6] == 10 and saved[24] == 1
+    assert saved[6] == 11 and saved[24] == 3
     checks = fm_transfer(0x46, 0xe5, pio, size_code=0)
     checks += fm_transfer(0x42, 0xe5, pio, size_code=0)
     checks += 'mov byte [command+4],2\nmov byte [command+6],2\n'
@@ -198,7 +198,7 @@ def check_format(args, directory, extension, pio, rate, selector):
     assert overlay.read_bytes() == saved and image.read_bytes() == original
     if not pio and rate == 250:
         damaged_encoding = bytearray(saved)
-        damaged_encoding[24] = 2
+        damaged_encoding[24] = 4
         damaged_mark = bytearray(saved)
         damaged_mark[-129] = 4
         missing_fm = bytearray(saved)

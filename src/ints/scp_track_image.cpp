@@ -42,6 +42,7 @@ constexpr uint8_t FormatSizeOverlayVersion  = 7;
 constexpr uint8_t FormatRateOverlayVersion  = 8;
 constexpr uint8_t DeletedMarkOverlayVersion = 9;
 constexpr uint8_t EncodingOverlayVersion      = 10;
+constexpr uint8_t GapOverlayVersion           = 11;
 constexpr uint32_t LegacySizeCode           = 2;
 constexpr size_t ChrnSize                   = 4;
 
@@ -547,7 +548,8 @@ bool FloppyTrackImage::LoadOverlay()
 	     header != overlay_header(capture_fingerprint, FormatSizeOverlayVersion) &&
 	     header != overlay_header(capture_fingerprint, FormatRateOverlayVersion) &&
 	     header != overlay_header(capture_fingerprint, DeletedMarkOverlayVersion) &&
-	     header != overlay_header(capture_fingerprint, EncodingOverlayVersion))) {
+	     header != overlay_header(capture_fingerprint, EncodingOverlayVersion) &&
+	     header != overlay_header(capture_fingerprint, GapOverlayVersion))) {
 		return false;
 	}
 	const auto version         = header[6];
@@ -577,8 +579,16 @@ bool FloppyTrackImage::LoadOverlay()
 			const auto encoding = version >= EncodingOverlayVersion
 			                            ? fgetc(input.get())
 			                            : 0;
+			const auto gap      = version >= GapOverlayVersion
+			                            ? fgetc(input.get())
+			                            : 0;
+			const auto has_gap  = version >= GapOverlayVersion &&
+			                      (encoding & 2);
 			if (count <= 0 || fill == EOF || requested < count ||
-			    (encoding != 0 && encoding != 1) ||
+			    encoding < 0 ||
+			    encoding > (version >= GapOverlayVersion ? 3 : 1) ||
+			    gap == EOF || (!has_gap && gap != 0) ||
+			    (has_gap && (size_code == 0xff || !rate_kbps)) ||
 			    (encoding && !rate_kbps) ||
 			    (rate_kbps && !IsFloppyDataRate(rate_kbps)) ||
 			    (size_code != 0xff && (size_code < 0 || size_code > 7)) ||
@@ -595,7 +605,10 @@ bool FloppyTrackImage::LoadOverlay()
 			                      check_cast<uint8_t>(requested)};
 			format.size_code   = check_cast<uint8_t>(size_code);
 			format.rate_kbps   = rate_kbps;
-			format.fm          = encoding == 1;
+			format.fm          = (encoding & 1) != 0;
+			if (has_gap) {
+				format.gap = check_cast<uint8_t>(gap);
+			}
 			if (fread(format.ids.data(), 1, format.ids.size(), input.get()) !=
 			            format.ids.size() ||
 			    !IsValidTrackFormat(address, format.ids)) {
@@ -766,7 +779,13 @@ bool FloppyTrackImage::SaveOverlay(const Overlay& entries,
 			        return format.fm || has_fm(format.prior_writes);
 		        });
 	        });
-	const auto version = fm             ? EncodingOverlayVersion
+	const auto gapped = std::ranges::any_of(formats, [](const auto& track) {
+		return std::ranges::any_of(track.second, [](const auto& format) {
+			return format.gap.has_value();
+		});
+	});
+	const auto version = gapped         ? GapOverlayVersion
+	                   : fm             ? EncodingOverlayVersion
 	                   : deleted        ? DeletedMarkOverlayVersion
 	                   : formatted_rate ? FormatRateOverlayVersion
 	                   : formatted_size ? FormatSizeOverlayVersion
@@ -831,7 +850,13 @@ bool FloppyTrackImage::SaveOverlay(const Overlay& entries,
 			           (fputc(format.rate_kbps & 0xff, file) != EOF &&
 			            fputc(format.rate_kbps >> 8, file) != EOF)) &&
 			          (version < EncodingOverlayVersion ||
-			           fputc(format.fm ? 1 : 0, file) != EOF) &&
+			           fputc((format.fm ? 1 : 0) |
+			                         (version >= GapOverlayVersion && format.gap
+			                                  ? 2
+			                                  : 0),
+			                 file) != EOF) &&
+			          (version < GapOverlayVersion ||
+			           fputc(format.gap.value_or(0), file) != EOF) &&
 			          fwrite(format.ids.data(), 1, format.ids.size(), file) ==
 			                  format.ids.size();
 		}
@@ -1141,7 +1166,7 @@ FloppyTrackImage::FormatResult FloppyTrackImage::FormatTrack(
         const uint8_t cylinder, const uint8_t head,
         const std::span<const uint8_t> ids, const uint8_t fill,
         const uint8_t requested, const uint8_t size_code,
-        const uint16_t rate_kbps, const bool fm)
+        const uint16_t rate_kbps, const bool fm, const std::optional<uint8_t> gap)
 {
 	if (IsWriteProtected()) {
 		return FormatResult::WriteError;
@@ -1168,7 +1193,8 @@ FloppyTrackImage::FormatResult FloppyTrackImage::FormatTrack(
 	        std::move(prior),
 	        size_code,
 	        rate_kbps,
-	        fm
+	        fm,
+	        gap
         });
 	if (!SaveOverlay(entries, formats)) {
 		return FormatResult::WriteError;

@@ -225,7 +225,7 @@ def check_formatted(args, directory, extension):
     run(args, directory, image, False, transfer(0x49, 0x66, False), True)
     overlay = Path(str(image) + ".overlay")
     saved = overlay.read_bytes()
-    assert saved[6] == 9 and saved[-513] == 1
+    assert saved[6] == 11 and saved[-513] == 1
     run(args, directory, image, False,
         transfer(0x4c, 0x66, False) + transfer(0x42, 0x66, False, 0x40))
     assert overlay.read_bytes() == saved

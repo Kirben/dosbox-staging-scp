@@ -7,6 +7,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <memory>
+#include <optional>
 #include <span>
 #include <vector>
 
@@ -19,6 +20,28 @@ inline uint64_t FloppyImageFingerprint(const std::span<const uint8_t> bytes)
 	}
 	return fingerprint;
 }
+
+namespace floppy_format {
+
+// IBM 3740/System 34: index gap, IAM sync/mark and post-index gap.
+constexpr size_t lead_bytes(const bool fm)
+{
+	return fm ? 73 : 146;
+}
+
+// ID sync/mark/CHRN/CRC, Gap 2, data sync/mark/payload/CRC and Gap 3.
+constexpr size_t sector_bytes(const uint8_t size_code, const uint8_t gap,
+                              const bool fm)
+{
+	return (fm ? 33u : 62u) + (size_t{128} << size_code) + gap;
+}
+
+constexpr size_t id_prefix_bytes(const bool fm)
+{
+	return fm ? 7 : 16;
+}
+
+} // namespace floppy_format
 
 struct FloppyMfmTrack {
 	std::vector<uint8_t> cells   = {};
@@ -129,7 +152,8 @@ public:
 	                                 const uint8_t fill, const uint8_t requested,
 	                                 const uint8_t size_code,
 	                                 const uint16_t rate_kbps,
-	                                 const bool fm = false) = 0;
+	                                 const bool fm = false,
+	                                 const std::optional<uint8_t> gap = {}) = 0;
 };
 
 #endif
