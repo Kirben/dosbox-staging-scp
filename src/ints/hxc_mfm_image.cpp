@@ -155,10 +155,14 @@ std::shared_ptr<FloppyMfmTrack> FloppyMfmTrack::RecoverFlux(
 		const auto bit = cells_written - 1;
 		bitstream[bit / 8] |= static_cast<uint8_t>(0x80u >> (bit % 8));
 		phase_ns -= static_cast<double>(cells) * clock_ns;
-		clock_ns += (cells <= 4 ? phase_ns : nominal_cell_ns - clock_ns) * 0.05;
-		clock_ns = std::clamp(clock_ns,
-		                      nominal_cell_ns * 0.9,
-		                      nominal_cell_ns * 1.1);
+		// Normal FM/MFM spacings can train the oscillator. A longer
+		// interval provides no reliable frequency measurement: coast at
+		// the acquired clock instead of pulling it towards nominal.
+		if (cells <= 4) {
+			clock_ns = std::clamp(clock_ns + phase_ns * 0.05,
+			                      nominal_cell_ns * 0.9,
+			                      nominal_cell_ns * 1.1);
+		}
 		phase_ns *= 0.4;
 	}
 
