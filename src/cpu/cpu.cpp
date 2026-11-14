@@ -349,6 +349,12 @@ void CPU_SetFlags(const uint32_t word, uint32_t mask)
 	mask |= cpu_extflags_toggle;
 
 	reg_flags     = (reg_flags & ~mask) | (word & mask) | 2;
+	if (CPU_ArchitectureType == ArchitectureType::Intel86) {
+		// The 8088 has no IOPL or NT flags; bits 12-15 read as ones.
+		reg_flags = (reg_flags & 0x0fd5) | 0xf002;
+	} else {
+		reg_flags &= ~0x8000u;
+	}
 	cpu.direction = 1 - ((reg_flags & FLAG_DF) >> 9);
 }
 
@@ -3591,6 +3597,18 @@ public:
 		if (cpu_type == "auto") {
 			CPU_ArchitectureType = ArchitectureType::Mixed;
 
+		} else if (cpu_type == "8088") {
+			CPU_ArchitectureType = ArchitectureType::Intel86;
+			cpudecoder           = &CPU_Core_Normal_Run;
+			auto_determine_mode.auto_core = false;
+
+			if (cpu_core != "normal" && cpu_core != "auto") {
+				LOG_WARNING(
+				        "CPU: 'cputype = 8088' requires the normal core, "
+				        "using 'core = normal'");
+				set_section_property_value("cpu", "core", "normal");
+			}
+
 		} else if (cpu_type == "386_fast") {
 			CPU_ArchitectureType = ArchitectureType::Intel386Fast;
 
@@ -3669,6 +3687,7 @@ public:
 		} else {
 			cpu_extflags_toggle = 0;
 		}
+		CPU_SetFlags(reg_flags, 0);
 	}
 
 	bool Configure(Section* sec)
@@ -3858,7 +3877,7 @@ void init_cpu_config_settings(SectionProp& secprop)
 
 	pstring = secprop.AddString("cputype", Always, "auto");
 	pstring->SetValues(
-	        {"auto", "386", "386_fast", "386_prefetch", "486", "pentium", "pentium_mmx"});
+	        {"auto", "8088", "386", "386_fast", "386_prefetch", "486", "pentium", "pentium_mmx"});
 
 	pstring->SetHelp(
 	        "CPU type to emulate ('auto' by default). You should only change this if the\n"
@@ -3867,6 +3886,10 @@ void init_cpu_config_settings(SectionProp& secprop)
 	        "  auto:          The fastest and most compatible setting (default).\n"
 	        "                 Technically, this is '386_fast' plus 486 CPUID, 486 CR\n"
 	        "                 register behaviour, and extra 486 instructions.\n"
+	        "\n"
+	        "  8088:          Instruction compatibility for early PC booters, including\n"
+	        "                 POP CS. Uses the normal core. This does not emulate\n"
+	        "                 cycle-accurate 8088 bus or prefetch timing.\n"
 	        "\n"
 	        "  386:           386 CPUID and 386 specific page access level calculation.\n"
 	        "\n"

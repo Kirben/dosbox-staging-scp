@@ -789,76 +789,167 @@
 		SETFLAGBIT(OF, had_overflow); \
 	}
 
-#define GRP2B(blah)											\
-{															\
-	GetRM;Bitu which=(rm>>3)&7;								\
-	if (rm >= 0xc0) {										\
-		GetEArb;											\
-		uint8_t val=blah & 0x1f;								\
-		if (!val) break;									\
-		switch (which)	{									\
-		case 0x00:ROLB(*earb,val,LoadRb,SaveRb);break;		\
-		case 0x01:RORB(*earb,val,LoadRb,SaveRb);break;		\
-		case 0x02:RCLB(*earb,val,LoadRb,SaveRb);break;		\
-		case 0x03:RCRB(*earb,val,LoadRb,SaveRb);break;		\
-		case 0x04:/* SHL and SAL are the same */			\
-		case 0x06:SHLB(*earb,val,LoadRb,SaveRb);break;		\
-		case 0x05:SHRB(*earb,val,LoadRb,SaveRb);break;		\
-		case 0x07:SARB(*earb,val,LoadRb,SaveRb);break;		\
-		}													\
-	} else {												\
-		GetEAa;												\
-		uint8_t val=blah & 0x1f;								\
-		if (!val) break;									\
-		switch (which) {									\
-		case 0x00:ROLB(eaa,val,LoadMb,SaveMb);break;		\
-		case 0x01:RORB(eaa,val,LoadMb,SaveMb);break;		\
-		case 0x02:RCLB(eaa,val,LoadMb,SaveMb);break;		\
-		case 0x03:RCRB(eaa,val,LoadMb,SaveMb);break;		\
-		case 0x04:/* SHL and SAL are the same */			\
-		case 0x06:SHLB(eaa,val,LoadMb,SaveMb);break;		\
-		case 0x05:SHRB(eaa,val,LoadMb,SaveMb);break;		\
-		case 0x07:SARB(eaa,val,LoadMb,SaveMb);break;		\
-		}													\
-	}														\
-}
+#define GRP2B(blah) \
+	{ \
+		GetRM; \
+		Bitu which = (rm >> 3) & 7; \
+		if (rm >= 0xc0) { \
+			GetEArb; \
+			const auto count   = static_cast<uint8_t>(blah); \
+			const auto is_8088 = CPU_ArchitectureType == \
+			                     ArchitectureType::Intel86; \
+			auto repetitions   = is_8088 ? count : uint8_t{1}; \
+			const auto val = is_8088 ? uint8_t{1} \
+			                         : static_cast<uint8_t>(count & 0x1f); \
+			if (!val || !repetitions) { \
+				break; \
+			} \
+			do { \
+				switch (which) { \
+				case 0x00: \
+					ROLB(*earb, val, LoadRb, SaveRb); \
+					break; \
+				case 0x01: \
+					RORB(*earb, val, LoadRb, SaveRb); \
+					break; \
+				case 0x02: \
+					RCLB(*earb, val, LoadRb, SaveRb); \
+					break; \
+				case 0x03: \
+					RCRB(*earb, val, LoadRb, SaveRb); \
+					break; \
+				case 0x04: /* SHL and SAL are the same */ \
+				case 0x06: \
+					SHLB(*earb, val, LoadRb, SaveRb); \
+					break; \
+				case 0x05: \
+					SHRB(*earb, val, LoadRb, SaveRb); \
+					break; \
+				case 0x07: \
+					SARB(*earb, val, LoadRb, SaveRb); \
+					break; \
+				} \
+			} while (--repetitions); \
+		} else { \
+			GetEAa; \
+			const auto count   = static_cast<uint8_t>(blah); \
+			const auto is_8088 = CPU_ArchitectureType == \
+			                     ArchitectureType::Intel86; \
+			auto repetitions   = is_8088 ? count : uint8_t{1}; \
+			const auto val = is_8088 ? uint8_t{1} \
+			                         : static_cast<uint8_t>(count & 0x1f); \
+			if (!val || !repetitions) { \
+				break; \
+			} \
+			do { \
+				switch (which) { \
+				case 0x00: \
+					ROLB(eaa, val, LoadMb, SaveMb); \
+					break; \
+				case 0x01: \
+					RORB(eaa, val, LoadMb, SaveMb); \
+					break; \
+				case 0x02: \
+					RCLB(eaa, val, LoadMb, SaveMb); \
+					break; \
+				case 0x03: \
+					RCRB(eaa, val, LoadMb, SaveMb); \
+					break; \
+				case 0x04: /* SHL and SAL are the same */ \
+				case 0x06: \
+					SHLB(eaa, val, LoadMb, SaveMb); \
+					break; \
+				case 0x05: \
+					SHRB(eaa, val, LoadMb, SaveMb); \
+					break; \
+				case 0x07: \
+					SARB(eaa, val, LoadMb, SaveMb); \
+					break; \
+				} \
+			} while (--repetitions); \
+		} \
+	}
 
-
-
-#define GRP2W(blah)											\
-{															\
-	GetRM;Bitu which=(rm>>3)&7;								\
-	if (rm >= 0xc0) {										\
-		GetEArw;											\
-		uint8_t val=blah & 0x1f;								\
-		if (!val) break;									\
-		switch (which)	{									\
-		case 0x00:ROLW(*earw,val,LoadRw,SaveRw);break;		\
-		case 0x01:RORW(*earw,val,LoadRw,SaveRw);break;		\
-		case 0x02:RCLW(*earw,val,LoadRw,SaveRw);break;		\
-		case 0x03:RCRW(*earw,val,LoadRw,SaveRw);break;		\
-		case 0x04:/* SHL and SAL are the same */			\
-		case 0x06:SHLW(*earw,val,LoadRw,SaveRw);break;		\
-		case 0x05:SHRW(*earw,val,LoadRw,SaveRw);break;		\
-		case 0x07:SARW(*earw,val,LoadRw,SaveRw);break;		\
-		}													\
-	} else {												\
-		GetEAa;												\
-		uint8_t val=blah & 0x1f;								\
-		if (!val) break;									\
-		switch (which) {									\
-		case 0x00:ROLW(eaa,val,LoadMw,SaveMw);break;		\
-		case 0x01:RORW(eaa,val,LoadMw,SaveMw);break;		\
-		case 0x02:RCLW(eaa,val,LoadMw,SaveMw);break;		\
-		case 0x03:RCRW(eaa,val,LoadMw,SaveMw);break;		\
-		case 0x04:/* SHL and SAL are the same */			\
-		case 0x06:SHLW(eaa,val,LoadMw,SaveMw);break;		\
-		case 0x05:SHRW(eaa,val,LoadMw,SaveMw);break;		\
-		case 0x07:SARW(eaa,val,LoadMw,SaveMw);break;		\
-		}													\
-	}														\
-}
-
+#define GRP2W(blah) \
+	{ \
+		GetRM; \
+		Bitu which = (rm >> 3) & 7; \
+		if (rm >= 0xc0) { \
+			GetEArw; \
+			const auto count   = static_cast<uint8_t>(blah); \
+			const auto is_8088 = CPU_ArchitectureType == \
+			                     ArchitectureType::Intel86; \
+			auto repetitions   = is_8088 ? count : uint8_t{1}; \
+			const auto val = is_8088 ? uint8_t{1} \
+			                         : static_cast<uint8_t>(count & 0x1f); \
+			if (!val || !repetitions) { \
+				break; \
+			} \
+			do { \
+				switch (which) { \
+				case 0x00: \
+					ROLW(*earw, val, LoadRw, SaveRw); \
+					break; \
+				case 0x01: \
+					RORW(*earw, val, LoadRw, SaveRw); \
+					break; \
+				case 0x02: \
+					RCLW(*earw, val, LoadRw, SaveRw); \
+					break; \
+				case 0x03: \
+					RCRW(*earw, val, LoadRw, SaveRw); \
+					break; \
+				case 0x04: /* SHL and SAL are the same */ \
+				case 0x06: \
+					SHLW(*earw, val, LoadRw, SaveRw); \
+					break; \
+				case 0x05: \
+					SHRW(*earw, val, LoadRw, SaveRw); \
+					break; \
+				case 0x07: \
+					SARW(*earw, val, LoadRw, SaveRw); \
+					break; \
+				} \
+			} while (--repetitions); \
+		} else { \
+			GetEAa; \
+			const auto count   = static_cast<uint8_t>(blah); \
+			const auto is_8088 = CPU_ArchitectureType == \
+			                     ArchitectureType::Intel86; \
+			auto repetitions   = is_8088 ? count : uint8_t{1}; \
+			const auto val = is_8088 ? uint8_t{1} \
+			                         : static_cast<uint8_t>(count & 0x1f); \
+			if (!val || !repetitions) { \
+				break; \
+			} \
+			do { \
+				switch (which) { \
+				case 0x00: \
+					ROLW(eaa, val, LoadMw, SaveMw); \
+					break; \
+				case 0x01: \
+					RORW(eaa, val, LoadMw, SaveMw); \
+					break; \
+				case 0x02: \
+					RCLW(eaa, val, LoadMw, SaveMw); \
+					break; \
+				case 0x03: \
+					RCRW(eaa, val, LoadMw, SaveMw); \
+					break; \
+				case 0x04: /* SHL and SAL are the same */ \
+				case 0x06: \
+					SHLW(eaa, val, LoadMw, SaveMw); \
+					break; \
+				case 0x05: \
+					SHRW(eaa, val, LoadMw, SaveMw); \
+					break; \
+				case 0x07: \
+					SARW(eaa, val, LoadMw, SaveMw); \
+					break; \
+				} \
+			} while (--repetitions); \
+		} \
+	}
 
 #define GRP2D(blah)											\
 {															\

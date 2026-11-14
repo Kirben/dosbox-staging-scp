@@ -32,7 +32,16 @@
 		AXIw(ORW);break;
 	CASE_W(0x0e)												/* PUSH CS */		
 		Push_16(SegValue(cs));break;
-	CASE_B(0x0f)												/* 2 byte opcodes*/		
+	CASE_B(0x0f)												/* 2 byte opcodes*/
+		if (CPU_ArchitectureType == ArchitectureType::Intel86) {
+			// POP CS leaves the next IP unchanged, even if CS changes.
+			reg_eip = static_cast<uint16_t>(GETIP);
+			if (CPU_PopSeg(cs, false)) {
+				RUNEXCEPTION();
+			}
+			LOADIP;
+			break;
+		}
 		core.opcode_index|=OPCODE_0F;
 		goto restart_opcode;
 		break;
@@ -176,7 +185,12 @@
 	CASE_W(0x53)												/* PUSH BX */
 		Push_16(reg_bx);break;
 	CASE_W(0x54)												/* PUSH SP */
-		Push_16(reg_sp);break;
+		if (CPU_ArchitectureType == ArchitectureType::Intel86) {
+			Push_16(static_cast<uint16_t>(reg_sp - 2));
+		} else {
+			Push_16(reg_sp);
+		}
+		break;
 	CASE_W(0x55)												/* PUSH BP */
 		Push_16(reg_bp);break;
 	CASE_W(0x56)												/* PUSH SI */
@@ -1154,8 +1168,16 @@
 				}
 				break;
 			case 0x06:										/* PUSH Ev */
-				if (rm >= 0xc0 ) {GetEArw;Push_16(*earw);}
-				else {GetEAa;Push_16(LoadMw(eaa));}
+				if (CPU_ArchitectureType == ArchitectureType::Intel86 &&
+				    rm == 0xf4) {
+					Push_16(static_cast<uint16_t>(reg_sp - 2));
+				} else if (rm >= 0xc0) {
+					GetEArw;
+					Push_16(*earw);
+				} else {
+					GetEAa;
+					Push_16(LoadMw(eaa));
+				}
 				break;
 			default:
 				LOG(LOG_CPU,LOG_ERROR)("CPU:GRP5:Illegal Call %2X",static_cast<uint32_t>(which));
