@@ -124,6 +124,7 @@ struct Controller {
 	uint8_t track_status_2                             = 0;
 	size_t formatted_ids                               = 0;
 	uint16_t format_rate_kbps                 = DefaultDataRateKbps;
+	double format_deadline_ms                          = 0;
 	std::shared_ptr<imageDisk> disk           = {};
 	std::shared_ptr<FloppyMedia> media        = {};
 	std::vector<uint8_t> pio_data             = {};
@@ -495,10 +496,9 @@ void schedule_track_sector(const FloppyMedia& image, const bool read_id)
 		                          static_cast<double>(sector.mfm_track->GetRevolutionBitCount(
 		                                  sector.revolution))
 		                : pio_byte_ms / 16;
-		// The rotational ID position is the first A1 sync cell.
-		// Read all three sync bytes, FE, CHRN and CRC before reporting
-		// Read ID results or rejecting a data command's bad ID CRC.
-		delay_ms += 160 * bit_ms;
+		// MFM starts at the first A1; FM starts at FE itself.
+		// Include the mark, CHRN and CRC before reporting the result.
+		delay_ms += (sector.fm ? 112 : 160) * bit_ms;
 	}
 	PIC_AddEvent(event, delay_ms);
 }
@@ -953,7 +953,8 @@ uint8_t commit_track_format()
 	                                        fdc.command[3],
 	                                        fdc.command[2],
 	                                        fdc.format_rate_kbps,
-	                                        fdc.fm));
+	                                        fdc.fm,
+	                                        fdc.command[4]));
 }
 
 void finish_track_format(const uint8_t status)
@@ -975,7 +976,10 @@ void finish_track_format(const uint8_t status)
 
 double track_format_slot_ms()
 {
-	return fdc.media->GetFormatCycleMs(fdc.cylinder, fdc.head) / fdc.command[3];
+	return static_cast<double>(floppy_format::sector_bytes(fdc.command[2],
+	                                                       fdc.command[4],
+	                                                       fdc.fm)) *
+	       pio_byte_ms;
 }
 
 void format_track_sector(uint32_t)
@@ -984,12 +988,18 @@ void format_track_sector(uint32_t)
 		finish_data(0x04);
 		return;
 	}
+	if (fdc.formatted_ids == fdc.command[3] ||
+	    PIC_FullIndex() >= fdc.format_deadline_ms) {
+		finish_track_format(0);
+		return;
+	}
+	fdc.sector_end_ms = std::min(fdc.format_deadline_ms,
+	                             PIC_FullIndex() + track_format_slot_ms());
 	if (fdc.non_dma && !fdc.fifo_enabled) {
 		start_pio_transfer(FormatIdSize);
 		return;
 	}
 	fdc.transfer_byte_ms = pio_byte_ms;
-	fdc.sector_end_ms    = PIC_FullIndex() + track_format_slot_ms();
 	start_byte_transfer(FormatIdSize);
 }
 
@@ -1227,7 +1237,10 @@ void complete_byte_transfer(uint32_t)
 			          fdc.format_ids.begin() +
 			                  fdc.formatted_ids * FormatIdSize);
 			if (++fdc.formatted_ids == fdc.command[3]) {
-				finish_track_format(0);
+				PIC_AddEvent(format_track_sector,
+				             std::max(0.0,
+				                      fdc.format_deadline_ms -
+				                              PIC_FullIndex()));
 			} else if (terminal) {
 				finish_track_format(0x10);
 			} else {
@@ -1251,7 +1264,8 @@ void finish_pio_transfer()
 {
 	const auto command = static_cast<Command>(fdc.command[0] & 0x1f);
 	if ((command == Command::ReadData || command == Command::ReadDeletedData ||
-	     is_write_command(command) || command == Command::ReadTrack) &&
+	     is_write_command(command) || command == Command::ReadTrack ||
+	     (command == Command::FormatTrack && fdc.media)) &&
 	    !fdc.pio_waiting_crc && PIC_FullIndex() < fdc.sector_end_ms) {
 		// Defer once: rounding at the target timestamp must not queue
 		// an endless sequence of events with effectively zero delay.
@@ -1280,10 +1294,12 @@ void finish_pio_transfer()
 		          data.end(),
 		          fdc.format_ids.begin() + fdc.formatted_ids * FormatIdSize);
 		if (++fdc.formatted_ids == fdc.command[3]) {
-			finish_track_format(0);
-		} else {
 			PIC_AddEvent(format_track_sector,
-			             std::max(0.0, track_format_slot_ms() - elapsed_ms));
+			             std::max(0.0,
+			                      fdc.format_deadline_ms -
+			                              PIC_FullIndex()));
+		} else {
+			PIC_AddEvent(format_track_sector, 0);
 		}
 		break;
 	default: assert(false); break;
@@ -1436,10 +1452,16 @@ void start_loaded_data(uint32_t)
 			                                 ? rotation_cycle_ms()
 			                                 : 0));
 		} else {
+			fdc.format_deadline_ms = PIC_FullIndex() + to_index +
+			                         fdc.media->GetFormatCycleMs(
+			                                 fdc.cylinder, fdc.head);
 			PIC_AddEvent(format_track_sector,
-			             to_index + (fdc.non_dma && !fdc.fifo_enabled
-			                                 ? track_format_slot_ms()
-			                                 : 0));
+			             to_index +
+			                     static_cast<double>(
+			                             floppy_format::lead_bytes(fdc.fm) +
+			                             floppy_format::id_prefix_bytes(
+			                                     fdc.fm)) *
+			                             pio_byte_ms);
 		}
 		return;
 	}
@@ -1926,7 +1948,8 @@ FloppyFormatResult FLOPPY_FormatTrack(imageDisk& disk, FloppyMedia* media,
                                       const std::span<const uint8_t> ids,
                                       const uint8_t fill, const uint8_t requested,
                                       const uint8_t size_code,
-                                      uint16_t rate_kbps, const bool fm)
+                                      uint16_t rate_kbps, const bool fm,
+                                      const std::optional<uint8_t> gap)
 {
 	using Result = FloppyFormatResult;
 	if (disk.IsWriteProtected()) {
@@ -1951,7 +1974,8 @@ FloppyFormatResult FLOPPY_FormatTrack(imageDisk& disk, FloppyMedia* media,
 		                           requested,
 		                           size_code,
 		                           rate_kbps,
-		                           fm)) {
+		                           fm,
+		                           gap)) {
 		case ScpResult::Success: return Result::Success;
 		case ScpResult::InvalidLayout: return Result::InvalidLayout;
 		case ScpResult::WriteError: return Result::WriteError;

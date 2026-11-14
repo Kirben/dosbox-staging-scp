@@ -8,6 +8,7 @@
 #include <cstdio>
 #include <map>
 #include <memory>
+#include <optional>
 #include <span>
 #include <string>
 #include <utility>
@@ -59,8 +60,9 @@ public:
 	FormatResult FormatTrack(const uint8_t cylinder, const uint8_t head,
 	                         const std::span<const uint8_t> ids,
 	                         const uint8_t fill, const uint8_t requested,
-	                         const uint8_t size_code, const uint16_t rate_kbps,
-	                         const bool fm = false) override;
+	                         const uint8_t size_code,
+	                         const uint16_t rate_kbps, const bool fm = false,
+	                         const std::optional<uint8_t> gap = {}) override;
 
 	uint32_t cylinders       = 0;
 	uint32_t heads           = 0;
@@ -92,6 +94,8 @@ private:
 		uint16_t rate_kbps = 0; // Zero preserves a legacy format's
 		                        // capture clock.
 		bool fm = false;
+		// Absent in older overlays, which used evenly spaced sectors.
+		std::optional<uint8_t> gap = {};
 	};
 	using TrackFormats = std::map<TrackAddress, std::vector<TrackFormat>>;
 	bool OpenOverlay(const std::string& path, const bool read_only,

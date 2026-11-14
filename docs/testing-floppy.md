@@ -271,6 +271,39 @@ an assertion of exact 82077AA behavior. NEC's uPD765A/B documentation describes
 FM and MFM; Intel's final 82077AA datasheet explicitly removes FM support.
 The branch also offers selected later-controller features such as the FIFO.
 
+### GPL-aware Format Track
+
+New controller formats on SCP, HxC MFM, 86F and TransCopy use the IBM
+3740/System 34 index gap, IAM, post-index gap, ID and data sync fields,
+marks and CRCs. The command's GPL byte controls Gap 3. The command's N
+controls payload length, independently of the ID's N byte. Sectors are
+written sequentially at the selected rate rather than spread evenly using
+SC; the remaining Gap 4b runs to the next index. A format never wraps its
+output over the first field. DMA and PCjr non-DMA ID requests follow the
+same field cadence, and normal completion waits for index.
+
+`Guest.FloppyFormatGap` measures duplicate and nonsequential Read ID results
+at GPL 0, 84 and 240, in FM and MFM, through DMA and PCjr non-DMA formatting
+on all four track backends. It checks absolute first-ID position, successive
+ID spacing, index wrap, terminal count, source integrity and read-only replay
+after restart. A 512-byte MFM sector at the 250-kbps selector occupies
+`(62 + 512 + GPL) * 32` microseconds per sector; a 128-byte FM sector occupies
+`(33 + 128 + GPL) * 64` microseconds. FM Read ID completion includes the
+seven-byte FE/CHRN/CRC field; MFM also includes its three A1 sync bytes.
+
+The layout follows Figure 5 of the
+[NEC uPD765A datasheet](https://hxc2001.com/download/datasheet/floppy/thirdparty/FDC/NEC/upd765A.pdf).
+This remains a digital controller model; it does not add analog write
+precompensation or arbitrary partial-sector write damage.
+
+Overlay version 11 stores GPL after the format encoding byte. Encoding bit
+0 still selects FM; bit 1 indicates that GPL is present. A format without
+GPL writes zero in that byte and retains its historical layout. Versions
+1 through 10 remain readable. The probe explicitly verifies version-10
+FM/MFM formats retain their old evenly spaced positions. Sector write
+records are unchanged. IMG and IMA remain logical sector files: formatting
+updates their sectors, but these containers cannot preserve physical gaps.
+
 ### PC-compatible TransCopy types
 
 The parser accepts disk types 02h (MFM high density), 03h (MFM DD captured in a

@@ -138,7 +138,9 @@ def check_rate(dosbox, nasm, directory, extension, rate, selector, bios=False):
         else:
             checks += format_checks(2) if writing else RESET
         if not writing:
-            wrong = 0 if rate == 250 else 2
+            # Use a well-separated clock: a short 300-kbps ID can still
+            # be recognized at 250 kbps for some gap/phase patterns.
+            wrong = 0 if rate in (250, 300) else 2
             checks += command_checks(wrong, 0x4a, "wrong", rate)
             checks += command_checks(selected, 0x4a, "restored", rate)
         checks += DMA.replace("mov cx,512", "mov cx,528") + TIMING
@@ -149,11 +151,12 @@ def check_rate(dosbox, nasm, directory, extension, rate, selector, bios=False):
         t0, p0, t1, p1 = unpack("<IHIH", (directory / "CLOCK.BIN").read_bytes())
         elapsed = (65536 * (t1 - t0) + p0 - p1) * 1000 / 1193182
         # One turn from motor start to index, then ID-to-data and data+CRC.
-        expected = 200 + (768 + 514 * 16) / (2 * rate)
+        # Gap4a/IAM/Gap1, ID sync/mark/CHRN/CRC, Gap2 and data sync/mark.
+        expected = 200 + (146 + 60 + 514) * 8 / rate
         assert abs(elapsed - expected) < 1, (extension, rate, writing, elapsed, expected)
         if writing:
             saved = overlay.read_bytes()
-            assert saved[6] == 8
+            assert saved[6] == 11
             assert int.from_bytes(saved[22:24], "little") == rate
         else:
             assert overlay.read_bytes() == saved

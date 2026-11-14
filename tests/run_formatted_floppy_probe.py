@@ -82,11 +82,12 @@ def check_sizes(dosbox, nasm, directory, extension):
                   program(format_checks(1) + checks, commands), read_only=False)
         overlay = Path(str(image) + ".overlay")
         saved = overlay.read_bytes()
-        assert saved[6] == 8
+        assert saved[6] == 11
         run_guest(dosbox, nasm, directory, image, program(RESET + checks, commands))
         assert overlay.read_bytes() == saved
         # Earlier records inferred the clock from the original capture.
         legacy = bytearray(saved)
+        del legacy[24:26]
         del legacy[22:24]
         legacy[6] = 7 if size_code == 2 else 4
         if size_code == 1:
@@ -194,6 +195,9 @@ def check_partial_ids(dosbox, nasm, directory, extension):
     sync = b"\x44\x89" * 3
     mark = cells.find(sync, cells.find(sync) + len(sync))
     cells[mark:mark + len(sync)] = b"\x92\x54" * 3
+    # Survive the first complete formatted sector rather than the old
+    # artificial 1/255-turn slot.
+    cells = (b'\x92\x54' * 2000 + cells)[:len(cells)]
     image = directory / f"idonly.{extension}"
     original = encode_tracks(extension, [cells])
     image.write_bytes(original)

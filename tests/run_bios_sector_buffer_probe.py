@@ -64,7 +64,7 @@ def check_overlay_writes(dosbox, nasm, directory):
                 run_probe(dosbox, nasm, directory, mount, options, machine)
             saved = overlay.read_bytes()
             # These writes first format tracks at an explicit data rate.
-            assert saved[6] == 8
+            assert saved[6] == 11
             for size_code, cylinder in ((1, 7), (3, 8)):
                 options = [f"-DSIZE_CODE={size_code}", f"-DSECTOR_BYTES={128 << size_code}",
                            f"-DCYLINDER={cylinder}", "-DOVERLAY_REPLAY"]

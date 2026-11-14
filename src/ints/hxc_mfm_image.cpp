@@ -691,7 +691,18 @@ std::shared_ptr<FloppyMfmTrack> FloppyTrackImage::format_track_cells(
 	auto captured       = std::make_shared<FloppyMfmTrack>();
 	captured->bit_count = bits;
 	captured->cells.resize((bits + 7) / 8);
-	const auto cutoff  = bits * count / format.requested;
+	const auto written_bytes =
+	        format.gap
+	                ? floppy_format::lead_bytes(format.fm) +
+	                          count * floppy_format::sector_bytes(format.size_code,
+	                                                              *format.gap,
+	                                                              format.fm)
+	                : 0;
+	const auto cutoff = format.gap ? check_cast<size_t>(std::min<uint64_t>(
+	                                         bits,
+	                                         uint64_t{written_bytes} * 16 *
+	                                                 bits / encoding_bits))
+	                               : bits * count / format.requested;
 	if (partial && source && !source->weak_cells.empty()) {
 		captured->weak_cells.resize(bits);
 	}
@@ -734,7 +745,8 @@ std::shared_ptr<FloppyMfmTrack> FloppyTrackImage::format_track_cells(
 		                                      bits / encoding_bits);
 		const auto end   = check_cast<size_t>((uint64_t{position} + 1) *
 		                                      bits / encoding_bits);
-		for (auto cell = begin; cell < end && (!partial || cell < cutoff);
+		for (auto cell = begin;
+		     cell < end && cell < bits && (!partial || cell < cutoff);
 		     ++cell) {
 			const auto mask = check_cast<uint8_t>(0x80u >> (cell % 8));
 			auto& byte = captured->cells[cell / 8];
@@ -748,7 +760,8 @@ std::shared_ptr<FloppyMfmTrack> FloppyTrackImage::format_track_cells(
 		}
 		// A partial field must not overwrite the surviving suffix or
 		// wrap back into the committed prefix.
-		position = partial ? position + 1 : (position + 1) % encoding_bits;
+		position = partial || format.gap ? position + 1
+		                                 : (position + 1) % encoding_bits;
 	};
 	const auto append = [&](const uint8_t byte) {
 		for (int bit = 7; bit >= 0; --bit) {
@@ -784,8 +797,39 @@ std::shared_ptr<FloppyMfmTrack> FloppyTrackImage::format_track_cells(
 			append(value);
 		}
 	};
+	if (format.gap) {
+		for (auto byte = 0; byte < (format.fm ? 40 : 80); ++byte) {
+			append(format.fm ? 0xff : 0x4e);
+		}
+		for (auto byte = 0; byte < (format.fm ? 6 : 12); ++byte) {
+			append(0);
+		}
+		if (format.fm) {
+			for (auto bit = 7; bit >= 0; --bit) {
+				write_bit(((0xd7u >> bit) & 1u) != 0);
+				write_bit(((0xfcu >> bit) & 1u) != 0);
+			}
+		} else {
+			for (auto byte = 0; byte < 3; ++byte) {
+				for (auto bit = 15; bit >= 0; --bit) {
+					write_bit(((0x5224u >> bit) & 1u) != 0);
+				}
+			}
+			last_data = false;
+			append(0xfc);
+		}
+		for (auto byte = 0; byte < (format.fm ? 26 : 50); ++byte) {
+			append(format.fm ? 0xff : 0x4e);
+		}
+	}
 	for (size_t i = 0; i < count; ++i) {
-		position = i * encoding_bits / format.requested;
+		if (!format.gap) {
+			position = i * encoding_bits / format.requested;
+		} else if (!format.fm) {
+			for (auto byte = 0; byte < 12; ++byte) {
+				append(0);
+			}
+		}
 		mark(0xfe);
 		const auto seed = format.fm ? uint16_t{0xffff} : SyncCrc;
 		auto crc        = update_crc(seed, 0xfe);
@@ -811,6 +855,18 @@ std::shared_ptr<FloppyMfmTrack> FloppyTrackImage::format_track_cells(
 			crc = update_crc(crc, format.fill);
 		}
 		append_crc(crc);
+		if (format.gap) {
+			for (auto byte = 0; byte < *format.gap; ++byte) {
+				append(format.fm ? 0xff : 0x4e);
+			}
+		}
+	}
+	if (format.gap && !partial) {
+		// Gap 4b runs to index, retaining the preceding data bit for
+		// MFM clock generation. Nothing wraps into the first field.
+		while (position < encoding_bits) {
+			append(format.fm ? 0xff : 0x4e);
+		}
 	}
 	return captured;
 }

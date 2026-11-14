@@ -211,7 +211,11 @@ def main():
         directory = Path(temp)
         for extension in ("tc", "mfm", "scp", "86f"):
             image = directory / f"overlap.{extension}"
-            original = encode_tracks(extension, [fixture[0xa00:]])
+            # Keep both overlapping fields beyond a real first format
+            # sector, including the index fields, payload and GPL.
+            cells = fixture[0xa00:]
+            cells = (b'\x92\x54' * 2000 + cells)[:len(cells)]
+            original = encode_tracks(extension, [cells])
             image.write_bytes(original)
             run_guest(args.dosbox.resolve(), args.nasm, directory, image,
                       INNER_WRITE + CHECKS + READBACK, read_only=False)
