@@ -104,10 +104,18 @@ static struct {
 static inline uint8_t Fetchb() {
 	uint8_t temp=LoadMb(core.cseip);
 	core.cseip+=1;
+	if (CPU_ArchitectureType == ArchitectureType::Intel86) {
+		core.cseip = SegBase(cs) + static_cast<uint16_t>(GETIP);
+	}
 	return temp;
 }
 
 static inline uint16_t Fetchw() {
+	if (CPU_ArchitectureType == ArchitectureType::Intel86) {
+		const auto low  = Fetchb();
+		const auto high = Fetchb();
+		return static_cast<uint16_t>(low | (high << 8));
+	}
 	uint16_t temp=LoadMw(core.cseip);
 	core.cseip+=2;
 	return temp;
@@ -130,6 +138,22 @@ static inline uint32_t Fetchd() {
 
 #define EALookupTable (core.ea_table)
 
+static Bitu decode_8088_opcode(const uint8_t opcode)
+{
+	// These encodings predate the instructions added on later x86 CPUs.
+	if (opcode >= 0x60 && opcode <= 0x6f) {
+		return opcode + 0x10;
+	}
+	switch (opcode) {
+	case 0xc0: return 0xc2;
+	case 0xc1: return 0xc3;
+	case 0xc8: return 0xca;
+	case 0xc9: return 0xcb;
+	case 0xf1: return 0xf0;
+	default: return opcode;
+	}
+}
+
 Bits CPU_Core_Normal_Run() noexcept
 {
 	while (CPU_Cycles-->0) {
@@ -150,8 +174,12 @@ Bits CPU_Core_Normal_Run() noexcept
 		cycle_count++;
 #endif
 restart_opcode:
-		switch (core.opcode_index+Fetchb()) {
-		#include "core_normal/prefix_none.h"
+	const auto opcode = Fetchb();
+	const auto decoded_opcode = CPU_ArchitectureType == ArchitectureType::Intel86
+		                          ? decode_8088_opcode(opcode)
+		                          : core.opcode_index + opcode;
+	switch (decoded_opcode) {
+#include "core_normal/prefix_none.h"
 		#include "core_normal/prefix_0f.h"
 		#include "core_normal/prefix_66.h"
 		#include "core_normal/prefix_66_0f.h"
@@ -172,7 +200,7 @@ restart_opcode:
 #endif
 			CPU_Exception(6,0);
 			continue;
-		}
+		        }
 		SAVEIP;
 	}
 	FillFlags();

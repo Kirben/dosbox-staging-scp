@@ -8,6 +8,7 @@ add_executable(dosbox_tests
     bitops_tests.cpp
     bitstream_capture_tests.cpp
     cmd_move_tests.cpp
+    cpu_8088_tests.cpp
     disk_image_factory_tests.cpp
     dos_files_tests.cpp
     dos_memory_struct_tests.cpp
