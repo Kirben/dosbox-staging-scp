@@ -15,6 +15,7 @@
 
 #include "config/setup.h"
 #include "cpu/callback.h"
+#include "cpu/cpu.h"
 #include "cpu/registers.h"
 #include "dos/cdrom_image.h"
 #include "dos/dos_files.h"
@@ -26,6 +27,7 @@
 #include "hardware/pic.h"
 #include "hardware/serialport/serialport.h"
 #include "ints/bios.h"
+#include "ints/bios_disk.h"
 #include "ints/ems.h"
 #include "ints/xms.h"
 #include "misc/support.h"
@@ -1768,6 +1770,54 @@ static Bitu DOS_27Handler(void)
 	return CBRET_NONE;
 }
 
+static uint16_t access_floppy_bios_sector(const fatDrive& drive,
+                                          const bool read, const uint32_t sector,
+                                          const uint16_t buffer_segment,
+                                          const uint16_t buffer_offset)
+{
+	std::optional<uint8_t> unit = {};
+	for (uint8_t candidate = 0; candidate < 2; ++candidate) {
+		if (BIOS_GetDisk(candidate) == drive.loadedDisk) {
+			unit = candidate;
+			break;
+		}
+	}
+	if (!unit) {
+		return 0x8002;
+	}
+	const auto heads   = drive.GetLogicalHeads();
+	const auto sectors = drive.GetLogicalSectorsPerTrack();
+	if (heads <= 0 || heads > 2 || sectors <= 0 || sectors > 63) {
+		return 0x0408;
+	}
+	const auto head_count        = check_cast<uint32_t>(heads);
+	const auto sectors_per_track = check_cast<uint32_t>(sectors);
+	const auto track_size        = head_count * sectors_per_track;
+	const auto cylinder          = sector / track_size;
+	if (cylinder > 1023) {
+		return 0x0408;
+	}
+
+	const auto saved_registers = cpu_regs;
+	const auto saved_segments  = Segs;
+	reg_ax                     = read ? 0x0201 : 0x0301;
+	reg_bx                     = buffer_offset;
+	reg_ch                     = check_cast<uint8_t>(cylinder & 0xff);
+	reg_cl = check_cast<uint8_t>((sector % sectors_per_track + 1) |
+	                             ((cylinder >> 2) & 0xc0));
+	reg_dh = check_cast<uint8_t>((sector / sectors_per_track) % head_count);
+	reg_dl = *unit;
+	SegSet16(es, buffer_segment);
+	// DOS absolute floppy I/O must honor the guest vector. Sierra probes
+	// the DOS-to-BIOS mapping with a hook that deliberately reads no data.
+	CALLBACK_RunRealInt(0x13);
+	const auto failed = GETFLAGBOOL(CF);
+	cpu_regs          = saved_registers;
+	CPU_SetFlags(saved_registers.flags, FMASK_ALL);
+	Segs = saved_segments;
+	return failed ? 0x0408 : 0;
+}
+
 static uint16_t DOS_SectorAccess(const bool read)
 {
 	const auto drive = std::dynamic_pointer_cast<fatDrive>(Drives.at(reg_al));
@@ -1792,6 +1842,16 @@ static uint16_t DOS_SectorAccess(const bool read)
 	while (sectorCnt--) {
 		if (sectorNum >= sectorEnd) {
 			return 0x0408; // sector not found
+		}
+		if (drive->loadedDisk && !drive->loadedDisk->hardDrive) {
+			const auto status = access_floppy_bios_sector(
+			        *drive, read, sectorNum++, bufferSeg, bufferOff);
+			if (status) {
+				return status;
+			}
+			bufferOff = static_cast<uint16_t>(bufferOff +
+			                                  sizeof(sectorBuf));
+			continue;
 		}
 		if (read) {
 			if (drive->readSector(sectorNum++, sectorBuf)) {

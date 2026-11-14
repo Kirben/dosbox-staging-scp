@@ -228,6 +228,8 @@ public:
 	uint8_t writeSector(uint32_t sectnum, std::span<const uint8_t> data);
 	uint32_t getAbsoluteSectFromBytePos(uint32_t startClustNum, uint32_t bytePos);
 	uint32_t getSectorCount();
+	int GetLogicalHeads() const;
+	int GetLogicalSectorsPerTrack() const;
 	uint32_t getSectorSize(void);
 	uint32_t getClusterSize(void);
 	uint32_t getAbsoluteSectFromChain(uint32_t startClustNum,
