@@ -730,6 +730,16 @@ uint8_t fatDrive::writeSector(uint32_t sectnum, const std::span<const uint8_t> d
 	return media->Write_Sector(head, cylinder, sector, data) != MediaResult::Ok;
 }
 
+int fatDrive::GetLogicalHeads() const
+{
+	return bootbuffer.headcount;
+}
+
+int fatDrive::GetLogicalSectorsPerTrack() const
+{
+	return bootbuffer.sectorspertrack;
+}
+
 uint32_t fatDrive::getSectorCount()
 {
 	if (bootbuffer.totalsectorcount != 0) {
