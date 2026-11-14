@@ -69,8 +69,8 @@ public:
 		return protected_media;
 	}
 	bool WriteSector(const uint32_t, const uint32_t, const uint32_t,
-	                 const std::span<const uint8_t> data,
-	                 const FloppySector*, const bool) override
+	                 const std::span<const uint8_t> data, const FloppySector*,
+	                 const bool, const std::optional<uint32_t>) override
 	{
 		if (fail_write) {
 			return false;

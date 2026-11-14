@@ -55,8 +55,8 @@ public:
 	bool IsWriteProtected() const override;
 	bool WriteSector(const uint32_t cylinder, const uint32_t head,
 	                 const uint32_t sector, const std::span<const uint8_t> data,
-	                 const FloppySector* selected,
-	                 const bool deleted = false) override;
+	                 const FloppySector* selected, const bool deleted = false,
+	                 const std::optional<uint32_t> write_bits = {}) override;
 	FormatResult FormatTrack(const uint8_t cylinder, const uint8_t head,
 	                         const std::span<const uint8_t> ids,
 	                         const uint8_t fill, const uint8_t requested,
@@ -80,6 +80,8 @@ private:
 		std::vector<uint8_t> bytes = {};
 		bool deleted               = false;
 		bool fm                    = false;
+		// Written cells from the DAM; the remaining cells stay untouched.
+		std::optional<uint32_t> write_bits = {};
 	};
 	// Preserve write order when physical fields overlap.
 	using Overlay      = std::vector<std::pair<OverlayKey, OverlaySector>>;
@@ -109,8 +111,8 @@ private:
 	bool CanOverlaySector(const OverlayKey& key, const bool fm = false) const;
 	void ensure_fm_fields(const uint32_t cylinder, const uint32_t head);
 	void copy_track_write(const uint32_t cylinder, const uint32_t head,
-	                      const FloppySector& sector,
-	                      const bool create_data_mark);
+	                      const FloppySector& sector, const bool create_data_mark,
+	                      const std::optional<uint32_t> write_bits = {});
 	bool HasOverlappingFields(const uint32_t cylinder, const uint32_t head) const;
 	void ApplyOverlaySector(const OverlayKey& key, const OverlaySector& data);
 	std::string overlay_path     = {};

@@ -137,6 +137,7 @@ struct Controller {
 	bool sector_data_crc_error                = false;
 	bool sector_transfer_ready                = false;
 	double sector_end_ms                      = 0;
+	double write_started_ms                            = -1;
 	uint64_t sector_sample_turn               = 0;
 	std::map<std::tuple<uint8_t, uint8_t, uint64_t, uint16_t, bool>, std::vector<FloppySector>>
 	        track_samples                     = {};
@@ -918,6 +919,9 @@ void transfer_sector(uint32_t)
 		finish_sector_transfer({}, false);
 		return;
 	}
+	if (writing) {
+		fdc.write_started_ms = PIC_FullIndex();
+	}
 	if (fdc.non_dma && !fdc.fifo_enabled) {
 		start_pio_transfer(host_size,
 		                   writing ? std::span<const uint8_t>{}
@@ -1363,6 +1367,7 @@ void acknowledge_pio_byte()
 
 void start_data(const Command command)
 {
+	fdc.write_started_ms      = -1;
 	fdc.fm                    = (fdc.command[0] & 0x40) == 0;
 	pio_byte_ms               = (fdc.fm ? 16.0 : 8.0) / data_rate_kbps;
 	fdc.skipped_control_mark  = false;
@@ -1831,6 +1836,54 @@ void write_ccr(io_port_t, const io_val_t value, io_width_t)
 	pio_byte_ms    = (fdc.fm ? 16.0 : 8.0) / data_rate_kbps;
 }
 
+bool preserve_interrupted_write()
+{
+	if (fdc.write_started_ms < 0 || !fdc.disk ||
+	    (!fdc.bytes.active && fdc.pio_data.empty())) {
+		return true;
+	}
+	auto data = fdc.bytes.active ? fdc.bytes.data : fdc.pio_data;
+	if (fdc.bytes.active && fdc.bytes.count &&
+	    fdc.bytes.disk_offset < data.size()) {
+		// DACK can fill the FIFO ahead of the physical write. Only the
+		// current shift byte, not the rest of the FIFO, can reach disk.
+		data[fdc.bytes.disk_offset] = fdc.bytes.fifo[fdc.bytes.first];
+	}
+	const auto elapsed = std::max(0.0, PIC_FullIndex() - fdc.write_started_ms);
+	const auto cells = std::floor(elapsed * 16 / fdc.transfer_byte_ms + 1e-8);
+	const auto payload_cells = static_cast<uint32_t>(
+	        std::clamp(cells, 0.0, static_cast<double>((data.size() + 2) * 16)));
+	const auto deleted = (fdc.command[0] & 0x1f) ==
+	                     static_cast<int>(Command::WriteDeletedData);
+	if (fdc.track_sector) {
+		return fdc.media->WriteSector(fdc.cylinder,
+		                              fdc.head,
+		                              fdc.sector,
+		                              data,
+		                              fdc.track_sector,
+		                              deleted,
+		                              payload_cells + 16);
+	}
+	// IMG/IMA retain payload changes, but cannot represent damaged CRCs
+	// or clock cells. Merge only the data bits that reached the medium.
+	std::vector<uint8_t> original(data.size());
+	if (!fdc.disk->ReadSectorForController(fdc.head, fdc.cylinder, fdc.sector, original)) {
+		return false;
+	}
+	const auto count = std::min<size_t>(payload_cells, data.size() * 16);
+	for (size_t cell = 1; cell < count; cell += 2) {
+		const auto bit    = cell / 2;
+		const auto mask   = check_cast<uint8_t>(0x80u >> (bit % 8));
+		original[bit / 8] = check_cast<uint8_t>(
+		        (original[bit / 8] & static_cast<uint8_t>(~mask)) |
+		        (data[bit / 8] & mask));
+	}
+	return fdc.disk->WriteSectorForController(fdc.head,
+	                                          fdc.cylinder,
+	                                          fdc.sector,
+	                                          original);
+}
+
 void reset_controller()
 {
 	PIC_RemoveEvents(start_loaded_data);
@@ -1873,6 +1926,9 @@ void write_dor(io_port_t, const io_val_t value, io_width_t)
 	                                      static_cast<int>(Command::FormatTrack) &&
 	                              media_ready(unit);
 	if (!(value & ResetReleased)) {
+		if (writing_data && !preserve_interrupted_write()) {
+			LOG_WARNING("FDC: Could not save sector write interrupted by reset");
+		}
 		if (formatting_track && fdc.formatted_ids && commit_track_format()) {
 			LOG_WARNING("FDC: Could not save track format interrupted by reset");
 		}
