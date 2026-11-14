@@ -35,20 +35,51 @@ def reset(pio):
 '''
 
 
-def wait_crc(fm, pio):
-    """Reach CRC emission after the last host byte, using PIT ticks."""
-    duration = (160 if pio else 128) if fm else (64 if pio else 48)
-    ticks = round(duration * 1.193182)
+def motor_stop(pio, unit=0, active=True):
+    """Stop the selected motor without reset, consume the result and recover."""
+    port = 0xf2 if pio else 0x3f2
+    stopped = 0x80 if pio else 0x0c | unit
+    running = 0x81 if pio else 0x0c | unit | (0x10 << unit)
+    code = f'mov dx,{port}\nmov al,{stopped}\nout dx,al\n'
+    if active:
+        code += f'''
+    call wait_result
+    cmp byte [ids],{0x40 | unit}
+    jne done
+    cmp byte [ids+1],4
+    jne done
+    cmp byte [ids+2],0
+    jne done
+    push es
+    xor ax,ax
+    mov es,ax
+    test byte [es:43eh],80h
+    pop es
+    {'jnz' if pio else 'jz'} done
+'''
+    return code + f'mov dx,{port}\nmov al,{running}\nout dx,al\n'
+
+
+def other_motor_stop(pio):
+    """Turning off B's motor cannot abort a transfer on A."""
+    assert not pio
+    return '''
+    mov dx,3f2h
+    mov al,1ch
+    out dx,al
+    call wait_result
+    cmp byte [ids+1],0
+    jne done
+    cmp byte [ids+2],0
+    jne done
+''' + motor_stop(False, active=False)
+
+
+def wait_crc(fm):
+    """Target the middle of CRC emission from the first host byte's PIT stamp."""
+    ticks = round(512.25 * (64 if fm else 32) * 1.193182)
     return f'''
-    pushf
-    cli
-    xor al,al
-    out 43h,al
-    in al,40h
-    mov ah,al
-    in al,40h
-    xchg al,ah
-    mov bx,ax
+    mov bx,[write_tick_start]
 crc_delay:
     xor al,al
     out 43h,al
@@ -60,35 +91,43 @@ crc_delay:
     sub dx,ax
     cmp dx,{ticks}
     jb crc_delay
-    popf
 '''
 
 
-def write_checks(pio, fm, phase):
+def write_checks(pio, fm, phase, interrupt=reset):
     """Watch actual host transfers, including FIFO prefetch ahead of the disk."""
     port = 0xf4 if pio else 0x3f4
     code = DMA + 'mov di,buffer\nmov cx,512\nmov al,55h\nrep stosb\n'
     code += 'mov al,4ah\nout 0bh,al\n'
     if pio:
         code += 'mov al,6\nout 0ah,al\n'
-    if phase in ('mid', 'history'):
+    if phase in ('mid', 'history', 'other'):
         code += '''
     mov si,configure
     mov cx,4
     call send_command
 '''
+    if phase == 'crc':
+        # Mode 2 provides a linear down-counter for the sub-byte check.
+        code += ('pushf\ncli\nmov al,34h\nout 43h,al\n'
+                 'xor al,al\nout 40h,al\nout 40h,al\n')
     code += f'''
     mov byte [command],{0x05 if fm else 0x45}
     mov byte [command+5],2
     mov si,command
     mov cx,9
+    push es
+    xor ax,ax
+    mov es,ax
+    and byte [es:43eh],7fh
+    pop es
     call send_command
 '''
     if phase == 'before':
-        return code + reset(pio)
+        return code + interrupt(pio)
     if phase == 'after':
         return (code + f'call wait_result\ncmp byte [ids+1],{0x80 if pio else 0}\njne done\n'
-                + reset(pio))
+                + interrupt(pio))
     count = 512 if phase == 'crc' else 64
     if pio:
         code += f'''
@@ -103,6 +142,15 @@ write_poll:
     inc dx
     mov al,55h
     out dx,al
+'''
+        if phase == 'crc':
+            code += '''
+    cmp bp,512
+    jne pio_already_stamped
+    call stamp_write
+pio_already_stamped:
+'''
+        code += '''
     dec bp
     jz write_reached
 write_next:
@@ -112,6 +160,24 @@ write_next:
 write_reached:
 '''
     else:
+        if phase == 'crc':
+            code += '''
+    mov ecx,2000000
+dma_first_byte:
+    xor al,al
+    out 0ch,al
+    in al,05h
+    mov ah,al
+    in al,05h
+    xchg al,ah
+    cmp ax,511
+    jne dma_stamp
+    dec ecx
+    jnz dma_first_byte
+    jmp done
+dma_stamp:
+    call stamp_write
+'''
         code += f'''
     mov ecx,2000000
 dma_poll:
@@ -129,8 +195,9 @@ dma_poll:
 write_reached:
 '''
     if phase == 'crc':
-        code += wait_crc(fm, pio)
-    return code + reset(pio)
+        code += wait_crc(fm)
+        return code + interrupt(pio).replace('out dx,al\n', 'out dx,al\npopf\n', 1)
+    return code + interrupt(pio)
 
 
 def read_checks(pio, fm, size_code=2):
@@ -170,6 +237,16 @@ AUXILIARY = '''
 configure db 13h,0,0fh,0
 snapshot db 'SNAP.BIN',0
 handle dw 0
+write_tick_start dw 0
+stamp_write:
+    xor al,al
+    out 43h,al
+    in al,40h
+    mov ah,al
+    in al,40h
+    xchg al,ah
+    mov [write_tick_start],ax
+    ret
 save_bytes:
     mov bx,[handle]
     mov ah,40h
@@ -181,17 +258,31 @@ save_bytes:
 '''
 
 
-# pylint: disable-next=too-many-arguments,too-many-positional-arguments
+# pylint: disable-next=too-many-arguments,too-many-positional-arguments,too-many-locals
 def run(args, directory, image, pio, fm, writing, phase):
     """Snapshot both physical duplicates immediately and in a fresh process."""
+    unit = getattr(args, 'unit', 0)
+    motor = getattr(args, 'motor_loss', False)
+    running = 0x0c | unit | (0x10 << unit)
     code = setup(pio)
+    if unit:
+        code = code.replace('mov al,1ch', f'mov al,{running}')
+    if motor:
+        def interrupt(native_pio):
+            return motor_stop(native_pio, unit, phase != 'after')
+    else:
+        interrupt = reset
+    if phase == 'other':
+        code += 'mov dx,3f2h\nmov al,3ch\nout dx,al\n'
+        interrupt = other_motor_stop
     if writing:
         if phase == 'history':
-            code += transfer(0x45, 0x33, pio).replace(
+            prior = transfer(0x45, 0x33, pio).replace(
                 '    call send_command',
                 '    mov si,command\n    mov cx,9\n    call send_command')
-            code += reset(pio)
-        code += write_checks(pio, fm, phase)
+            code += prior.replace('cmp byte [ids],0\n', f'cmp byte [ids],{unit}\n')
+            code += motor_stop(pio, unit, active=False) if motor else reset(pio)
+        code += write_checks(pio, fm, phase, interrupt)
     code += '''
     mov dx,snapshot
     xor cx,cx
@@ -205,17 +296,27 @@ def run(args, directory, image, pio, fm, writing, phase):
     functions = routines(pio).replace('    mov cx,9\n', '')
     functions = functions.replace('    mov si,command\n', '')
     functions = functions.replace('checked:\n', AUXILIARY + 'checked:\n')
-    run_guest(args.dosbox.resolve(), args.nasm, directory, image,
+    functions = functions.replace('command db 49h,0,', f'command db 49h,{unit},')
+    mounted = image
+    commands = ['config -set cpu cpu_cycles=20000']
+    if unit:
+        mounted = directory / 'control.img'
+        mounted.write_bytes(bytes(360 * 1024))
+        commands.append(f'mount 1 "{image}" -t floppy -fs none' + ('' if writing else ' -ro'))
+    run_guest(args.dosbox.resolve(), args.nasm, directory, mounted,
               code + functions, read_only=not writing,
               machine='pcjr' if pio else 'svga_s3',
-              extra_commands=('config -set cpu cpu_cycles=20000',))
+              extra_commands=commands)
+    if unit:
+        assert mounted.read_bytes() == bytes(360 * 1024)
     return (directory / 'SNAP.BIN').read_bytes()
 
 
 # pylint: disable-next=too-many-arguments,too-many-positional-arguments,too-many-locals
 def check(args, directory, extension, pio, fm, phase, turns=1):
     """An aborted write retains old CRC/tail cells and only changes one duplicate."""
-    image = directory / f'reset-{pio}-{fm}-{phase}-{turns}.{extension}'
+    unit = getattr(args, 'unit', 0)
+    image = directory / f'interrupt-{unit}-{pio}-{fm}-{phase}-{turns}.{extension}'
     cells = (fm_byte(0xff) * 128 + fm_track(2))[:6250] if fm else make_track(
         ((1, 0xfb, '', 0x11), (1, 0xfb, '', 0x77)), 2, lead_gap=200)
     original = fm_image(extension, cells) if fm else encode_tracks(extension, [cells])
@@ -235,7 +336,7 @@ def check(args, directory, extension, pio, fm, phase, turns=1):
     if phase == 'before':
         assert first[7:] == bytes([old]) * 512 and first[2] == 0
         assert not overlay.exists()
-    elif phase == 'after':
+    elif phase in ('after', 'other'):
         assert first[7:] == b'\x55' * 512 and first[2] == 0
     else:
         saved = overlay.read_bytes()
@@ -266,7 +367,8 @@ def check(args, directory, extension, pio, fm, phase, turns=1):
     if not pio and not fm and phase == 'mid':
         check_invalid(args, directory, image, saved)
     print(f'{extension} {"FM" if fm else "MFM"} {"PIO" if pio else "DMA"} '
-          f'{phase}: selected duplicate, CRC, old suffix, recovery and restart passed', flush=True)
+          f'drive {unit} {phase}: selected duplicate, CRC, old suffix, recovery and restart passed',
+          flush=True)
 
 
 def verify_crc(raw, fm, old, bits, phase):
@@ -314,7 +416,8 @@ def check_raw(args, directory, extension):
     functions = functions.replace('    mov si,command\n', '')
     functions = functions.replace('checked:\n', AUXILIARY + 'checked:\n')
     for writing in (True, False):
-        code = setup(False) + (write_checks(False, False, 'mid') if writing else '')
+        interrupt = motor_stop if getattr(args, 'motor_loss', False) else reset
+        code = setup(False) + (write_checks(False, False, 'mid', interrupt) if writing else '')
         code += '''
     mov dx,snapshot
     xor cx,cx
@@ -343,6 +446,8 @@ def main():
     parser.add_argument('--dosbox', required=True, type=Path)
     parser.add_argument('--nasm', default='nasm')
     parser.add_argument('--formats', nargs='+', default=['scp', 'mfm', '86f', 'tc'])
+    parser.add_argument('--motor-loss', action='store_true')
+    parser.set_defaults(unit=0)
     args = parser.parse_args()
     with TemporaryDirectory() as temporary:
         for extension in args.formats:
@@ -351,6 +456,11 @@ def main():
                     phases = ('mid', 'crc') if fm else ('before', 'mid', 'crc', 'after', 'history')
                     for phase in phases:
                         check(args, Path(temporary), extension, pio, fm, phase)
+            if args.motor_loss:
+                check(args, Path(temporary), extension, False, False, 'other')
+                drive_b = argparse.Namespace(**(vars(args) | {'unit': 1}))
+                for phase in ('before', 'mid', 'crc', 'after', 'history'):
+                    check(drive_b, Path(temporary), extension, False, False, phase)
         for extension in ('img', 'ima'):
             check_raw(args, Path(temporary), extension)
         for pio in (False, True):

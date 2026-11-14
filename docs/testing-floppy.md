@@ -198,7 +198,7 @@ Overruns stop reads. Write underruns stop requests but clock a zero-filled
 remainder and valid CRC before committing the sector. Early terminal count
 retains its distinct completion status. Reset and motor loss cancel pending
 byte/service/completion events. DOR reset preserves the written portion of an
-active sector; motor loss still cancels an unfinished sector in this model.
+active sector, as does loss of the selected drive's motor-enable signal.
 Format Track consumes its ID bytes progressively and persists completed slots.
 
 This is an event-driven digital timing model. Its fixed 1.5-microsecond DMA
@@ -339,6 +339,29 @@ unless partial-write history requires version 12. Partial records retain write
 order because their suffix depends on earlier writes. Source captures remain
 unchanged. IMG/IMA preserve the changed payload bits directly but cannot store
 damaged CRCs or physical clock cells.
+
+### Partial writes interrupted by motor loss
+
+`Guest.FloppyMotorWrite` checks the same written-cell preservation when the
+selected motor is disabled without resetting the controller. It covers both
+standard-PC drives, native PCjr non-DMA transfers, FM/MFM, FIFO prefetch,
+payload and CRC interruptions, earlier write history and restart persistence
+across SCP, HxC MFM, 86F and TransCopy. Five-revolution SCP and IMG/IMA controls
+are included. Stopping B's motor during an A write must leave that write alone.
+Re-enabling the selected motor must allow reads without a controller reset.
+The interrupted command returns its existing drive-unavailable status and
+standard-PC IRQ6 behavior; PCjr retains its polled completion path.
+
+This uses the model's existing digital drive-unavailable boundary. It does not
+simulate mechanical coast-down or a universal physical write-gate cutoff.
+The [TEAC FD-55BV specification](https://deramp.com/downloads/floppy_drives/teac/Teac%20FD-55BV.pdf)
+specifies READY deassertion within 0.3 ms of MOTOR ON becoming false, but that
+is not a spindle-stop time. Its write-mode expression differs from the READY
+gating described in the older
+[FD-55E/F specification](https://nfggames.com/X68000/Documentation/Floppy%20Drives/Teac/1981%20Teac%20FD55-E%20FD55-F%20Drive%20Specification.pdf).
+Drive-specific write gating and changing rotational speed remain separate work.
+Partial writes use the existing version-12 overlay records, preserving the
+original capture and the untouched duplicate's cells and CRC.
 
 ### PC-compatible TransCopy types
 

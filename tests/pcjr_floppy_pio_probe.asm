@@ -571,7 +571,12 @@ expected_st2 db 0
 specify db 03h,0dfh,1
 read_command db 46h,0,0,0,1,2,2,2ah,0ffh
 write_command db 45h,0,0,0,1,2,2,2ah,0ffh
+%ifdef TRACK_IMAGE
+; Keep the deleted mark used by the later SK check while interrupting its data.
+interrupted_write db 49h,0,0,0,3,2,3,2ah,0ffh
+%else
 interrupted_write db 45h,0,0,0,3,2,3,2ah,0ffh
+%endif
 format_command db 4dh,4,2,2,54h,0e5h
 format_ids db 0,1,1,2, 0,1,2,2
 read_track db 42h,4,0,1,1,2,2,2ah,0ffh
