@@ -952,7 +952,8 @@ uint8_t commit_track_format()
 	                                        fdc.command[5],
 	                                        fdc.command[3],
 	                                        fdc.command[2],
-	                                        fdc.format_rate_kbps));
+	                                        fdc.format_rate_kbps,
+	                                        fdc.fm));
 }
 
 void finish_track_format(const uint8_t status)
@@ -1370,8 +1371,9 @@ void start_data(const Command command)
 		finish_data(0x02);
 		return;
 	}
-	if (fdc.fm && (is_write_command(command) || command == Command::FormatTrack)) {
-		// FM writes need encoding-aware persistent records.
+	if (fdc.fm && !fdc.media &&
+	    (is_write_command(command) || command == Command::FormatTrack)) {
+		// Sector-only images cannot retain an FM track layout.
 		fdc.track_sector = nullptr;
 		finish_data(0x04);
 		return;
@@ -1483,7 +1485,8 @@ void start_loaded_data(uint32_t)
 	}
 	if (const auto& track = fdc.media) {
 		if (is_write_command(command) &&
-		    !IsFloppyOverlaySizeCode(fdc.command[5])) {
+		    !IsFloppyOverlaySizeCode(fdc.command[5]) &&
+		    !(fdc.fm && fdc.command[5] == 0)) {
 			finish_data(0x04);
 			return;
 		}
@@ -1922,7 +1925,8 @@ FloppyFormatResult FLOPPY_FormatTrack(imageDisk& disk, FloppyMedia* media,
                                       const uint32_t cylinder, const uint32_t head,
                                       const std::span<const uint8_t> ids,
                                       const uint8_t fill, const uint8_t requested,
-                                      const uint8_t size_code, uint16_t rate_kbps)
+                                      const uint8_t size_code,
+                                      uint16_t rate_kbps, const bool fm)
 {
 	using Result = FloppyFormatResult;
 	if (disk.IsWriteProtected()) {
@@ -1946,7 +1950,8 @@ FloppyFormatResult FLOPPY_FormatTrack(imageDisk& disk, FloppyMedia* media,
 		                           fill,
 		                           requested,
 		                           size_code,
-		                           rate_kbps)) {
+		                           rate_kbps,
+		                           fm)) {
 		case ScpResult::Success: return Result::Success;
 		case ScpResult::InvalidLayout: return Result::InvalidLayout;
 		case ScpResult::WriteError: return Result::WriteError;
@@ -1955,7 +1960,7 @@ FloppyFormatResult FLOPPY_FormatTrack(imageDisk& disk, FloppyMedia* media,
 	}
 
 	// Raw images only represent a full track with sequential, fixed-size IDs.
-	if (requested != disk.sectors || ids.size() / FormatIdSize != requested ||
+	if (fm || requested != disk.sectors || ids.size() / FormatIdSize != requested ||
 	    disk.getSectSize() != SectorSize) {
 		return Result::InvalidLayout;
 	}

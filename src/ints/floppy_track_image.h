@@ -59,8 +59,8 @@ public:
 	FormatResult FormatTrack(const uint8_t cylinder, const uint8_t head,
 	                         const std::span<const uint8_t> ids,
 	                         const uint8_t fill, const uint8_t requested,
-	                         const uint8_t size_code,
-	                         const uint16_t rate_kbps) override;
+	                         const uint8_t size_code, const uint16_t rate_kbps,
+	                         const bool fm = false) override;
 
 	uint32_t cylinders       = 0;
 	uint32_t heads           = 0;
@@ -77,6 +77,7 @@ private:
 	struct OverlaySector {
 		std::vector<uint8_t> bytes = {};
 		bool deleted               = false;
+		bool fm                    = false;
 	};
 	// Preserve write order when physical fields overlap.
 	using Overlay      = std::vector<std::pair<OverlayKey, OverlaySector>>;
@@ -90,6 +91,7 @@ private:
 		uint8_t size_code  = 0xff;
 		uint16_t rate_kbps = 0; // Zero preserves a legacy format's
 		                        // capture clock.
+		bool fm = false;
 	};
 	using TrackFormats = std::map<TrackAddress, std::vector<TrackFormat>>;
 	bool OpenOverlay(const std::string& path, const bool read_only,
@@ -100,7 +102,11 @@ private:
 	                        const std::span<const uint8_t> ids) const;
 	void ApplyTrackFormat(const TrackAddress& address, const TrackFormat& format);
 	static Overlay TakeTrackWrites(Overlay& entries, const TrackAddress& address);
-	bool CanOverlaySector(const OverlayKey& key) const;
+	bool CanOverlaySector(const OverlayKey& key, const bool fm = false) const;
+	void ensure_fm_fields(const uint32_t cylinder, const uint32_t head);
+	void copy_track_write(const uint32_t cylinder, const uint32_t head,
+	                      const FloppySector& sector,
+	                      const bool create_data_mark);
 	bool HasOverlappingFields(const uint32_t cylinder, const uint32_t head) const;
 	void ApplyOverlaySector(const OverlayKey& key, const OverlaySector& data);
 	std::string overlay_path     = {};
@@ -118,6 +124,7 @@ private:
 		std::vector<std::shared_ptr<FloppyMfmTrack>> raw_tracks = {};
 		std::shared_ptr<const FluxTrack> flux                   = {};
 		bool cells_changed                                = false;
+		bool fm_fields_ready                                    = false;
 		double cycle_ms                                   = 200.0;
 		double format_cycle_ms                            = 200.0;
 		std::vector<double> revolution_ends               = {1.0};
@@ -130,9 +137,12 @@ private:
 	static std::vector<FloppySector> DecodeRevolutions(
 	        const std::span<const std::shared_ptr<FloppyMfmTrack>> revolutions,
 	        const std::span<const double> ends, const bool fm = false);
-	static std::shared_ptr<FloppyMfmTrack> FormatMfmTrack(
-	        const std::span<const FloppySector> previous, const size_t revolution,
-	        const double duration_ms, const TrackFormat& format);
+	static std::shared_ptr<FloppyMfmTrack> join_revolutions(
+	        const std::span<const std::shared_ptr<FloppyMfmTrack>> revolutions);
+	static std::shared_ptr<FloppyMfmTrack> format_track_cells(
+	        const std::span<const FloppySector> previous,
+	        const size_t revolution, const double duration_ms,
+	        const TrackFormat& format, std::shared_ptr<FloppyMfmTrack> source);
 	void UpdateLogicalGeometry(const uint32_t cylinder, const uint32_t head,
 	                           const std::span<const FloppySector> sectors);
 	static void PositionSectors(std::vector<FloppySector>& sectors,

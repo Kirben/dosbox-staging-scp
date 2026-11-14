@@ -41,6 +41,7 @@ constexpr uint8_t OrderedOverlayVersion     = 6;
 constexpr uint8_t FormatSizeOverlayVersion  = 7;
 constexpr uint8_t FormatRateOverlayVersion  = 8;
 constexpr uint8_t DeletedMarkOverlayVersion = 9;
+constexpr uint8_t EncodingOverlayVersion      = 10;
 constexpr uint32_t LegacySizeCode           = 2;
 constexpr size_t ChrnSize                   = 4;
 
@@ -302,7 +303,170 @@ bool FloppyTrackImage::IsWriteProtected() const
 	return !overlay_writable;
 }
 
-bool FloppyTrackImage::CanOverlaySector(const OverlayKey& key) const
+void FloppyTrackImage::ensure_fm_fields(const uint32_t cylinder, const uint32_t head)
+{
+	if (cylinder >= cylinders || head >= heads) {
+		return;
+	}
+	auto& track = tracks[cylinder * heads + head];
+	if (track.fm_fields_ready) {
+		return;
+	}
+	// Preserve the original waveform as the controller's sampling source.
+	// Additional separator clocks supply stable addresses, not extra disks.
+	if (track.raw_tracks.empty()) {
+		for (const auto& field : track.sectors) {
+			if (field.mfm_track &&
+			    std::ranges::find(track.raw_tracks, field.mfm_track) ==
+			            track.raw_tracks.end()) {
+				track.raw_tracks.push_back(field.mfm_track);
+			}
+		}
+	}
+	std::vector<FloppySector> added = {};
+	for (const auto rate : {250, 300, 500, 1000}) {
+		std::vector<FloppySector> fields = {};
+		for (const auto& raw : track.raw_tracks) {
+			const auto sampled = raw->Sample(
+			        0, track.cycle_ms, check_cast<uint16_t>(rate / 2));
+			if (!sampled || !sampled->bit_count) {
+				continue;
+			}
+			auto decoded = DecodeTrack(sampled->cells,
+			                           sampled->bit_count,
+			                           sampled->index,
+			                           false,
+			                           sampled,
+			                           true);
+			if (!sampled->revolution_ends_bits.empty()) {
+				PositionSectors(decoded, track.revolution_ends);
+			}
+			fields.insert(fields.end(), decoded.begin(), decoded.end());
+		}
+		for (auto& field : fields) {
+			if (field.id_crc_error) {
+				continue;
+			}
+			const auto same = [&](const auto& other) {
+				return other.fm &&
+				       other.cylinder == field.cylinder &&
+				       other.head == field.head &&
+				       other.id == field.id &&
+				       other.size_code == field.size_code &&
+				       other.revolution == field.revolution &&
+				       std::abs(other.cycle_fraction -
+				                field.cycle_fraction) < 0.00002;
+			};
+			if (!std::ranges::any_of(track.sectors, same) &&
+			    !std::ranges::any_of(added, same)) {
+				added.push_back(std::move(field));
+			}
+		}
+	}
+	track.sectors.insert(track.sectors.end(), added.begin(), added.end());
+	track.fm_fields_ready = true;
+	track.dirty           = true;
+}
+
+void FloppyTrackImage::copy_track_write(const uint32_t cylinder, const uint32_t head,
+                                        const FloppySector& sector,
+                                        const bool create_data_mark)
+{
+	const auto source = sector.mfm_track;
+	if (!source || !source->bit_count) {
+		return;
+	}
+	auto& track = tracks[cylinder * heads + head];
+	auto copies = track.raw_tracks;
+	for (const auto& field : track.sectors) {
+		if (field.mfm_track &&
+		    std::ranges::find(copies, field.mfm_track) == copies.end()) {
+			copies.push_back(field.mfm_track);
+		}
+	}
+	const auto sync_bytes = create_data_mark ? (sector.fm ? 6u : 15u) : 0u;
+	const auto bits       = source->bit_count;
+	const auto start = (sector.data_bit + bits -
+	                    ((sync_bytes + 1) * 16 % bits) + bits - source->index) %
+	                   bits;
+	const auto length   = (sector.data.size() + sync_bytes + 3) * 16 +
+	                      (sector.fm ? 0 : 1);
+	const auto boundary = [](const FloppyMfmTrack& raw, const size_t cell) {
+		return !cell ? 0.0
+		     : raw.cell_ends.empty()
+		             ? static_cast<double>(cell) /
+		                       static_cast<double>(raw.bit_count)
+		             : raw.cell_ends[cell - 1];
+	};
+	const auto phase = [&](const FloppyMfmTrack& raw, const size_t cell) {
+		const auto position = boundary(raw, cell) - boundary(raw, raw.index);
+		return position < 0 ? position + 1 : position;
+	};
+	const auto first       = (start + source->index) % bits;
+	const auto start_phase = phase(*source, first);
+	const auto end_phase   = phase(*source, (first + length) % bits);
+	const auto duration    = end_phase >= start_phase
+	                               ? end_phase - start_phase
+	                               : end_phase + 1 - start_phase;
+	for (const auto& destination : copies) {
+		if (destination == source || !destination->bit_count) {
+			continue;
+		}
+		// Copy only the written arc between clock grids. Faster fields
+		// in a mixed-encoding track must retain their original
+		// transitions.
+		for (size_t cell = 0; cell < destination->bit_count; ++cell) {
+			const auto position = phase(*destination, cell + 1);
+			const auto offset = position >= start_phase
+			                          ? position - start_phase
+			                          : position + 1 - start_phase;
+			if (length < bits && (offset <= 0 || offset > duration)) {
+				continue;
+			}
+			const auto mask = check_cast<uint8_t>(0x80u >> (cell % 8));
+			auto& byte = destination->cells[cell / 8];
+			byte &= static_cast<uint8_t>(~mask);
+			if (!destination->weak_cells.empty()) {
+				destination->weak_cells[cell] = false;
+			}
+		}
+		for (size_t offset = 0; offset < std::min(length, bits); ++offset) {
+			const auto cell = (first + offset) % bits;
+			if (!(source->cells[cell / 8] & (0x80u >> (cell % 8)))) {
+				continue;
+			}
+			auto position = phase(*source, cell + 1) +
+			                boundary(*destination, destination->index);
+			if (position > 1) {
+				position -= 1;
+			}
+			size_t found = 0;
+			if (destination->cell_ends.empty()) {
+				const auto last = destination->bit_count - 1;
+				// Keep an exact cell boundary in the preceding
+				// cell, allowing for floating-point roundoff.
+				const auto end =
+				        std::ceil(position * static_cast<double>(
+				                                     destination->bit_count) -
+				                  1e-8) -
+				        1;
+				found = static_cast<size_t>(std::clamp(
+				        end, 0.0, static_cast<double>(last)));
+			} else {
+				const auto next = std::ranges::lower_bound(
+				        destination->cell_ends, position - 1e-12);
+				found = std::min(destination->bit_count - 1,
+				                 check_cast<size_t>(
+				                         next -
+				                         destination->cell_ends.begin()));
+			}
+			destination->cells[found / 8] |= check_cast<uint8_t>(
+			        0x80u >> (found % 8));
+		}
+	}
+}
+
+bool FloppyTrackImage::CanOverlaySector(const OverlayKey& key, const bool fm) const
 {
 	const auto [cylinder, head, id, slot, size_code] = key;
 	if (slot) {
@@ -312,14 +476,14 @@ bool FloppyTrackImage::CanOverlaySector(const OverlayKey& key) const
 		const auto& track = tracks[cylinder * heads + head].sectors;
 		return slot <= track.size() &&
 		       track[slot - 1].size_code == size_code &&
-		       !track[slot - 1].id_crc_error && !track[slot - 1].fm;
+		       !track[slot - 1].id_crc_error && track[slot - 1].fm == fm;
 	}
 	const auto track                      = GetTrack(cylinder, head);
 	std::optional<size_t> last_revolution = {};
 	for (const auto& sector : track) {
 		if (sector.cylinder != cylinder || sector.head != head ||
 		    sector.id != id || sector.size_code != size_code ||
-		    sector.id_crc_error || sector.fm) {
+		    sector.id_crc_error || sector.fm != fm) {
 			continue;
 		}
 		// A CHS write cannot distinguish duplicate IDs within a
@@ -354,6 +518,7 @@ void FloppyTrackImage::ApplyOverlaySector(const OverlayKey& key,
                 sector.weak_mask.clear();
                 sector.extended_data.clear();
                 sector.UpdateTrackData(create_data_mark);
+		copy_track_write(cylinder, head, sector, create_data_mark);
 	};
 	if (slot) {
 		apply(sectors[slot - 1]);
@@ -362,7 +527,7 @@ void FloppyTrackImage::ApplyOverlaySector(const OverlayKey& key,
 	for (auto& sector : sectors) {
 		if (sector.cylinder == cylinder && sector.head == head &&
 		    sector.id == id && sector.size_code == size_code &&
-		    !sector.id_crc_error) {
+		    !sector.id_crc_error && sector.fm == data.fm) {
 			apply(sector);
 		}
 	}
@@ -388,7 +553,8 @@ bool FloppyTrackImage::LoadOverlay()
 	     header != overlay_header(capture_fingerprint, OrderedOverlayVersion) &&
 	     header != overlay_header(capture_fingerprint, FormatSizeOverlayVersion) &&
 	     header != overlay_header(capture_fingerprint, FormatRateOverlayVersion) &&
-	     header != overlay_header(capture_fingerprint, DeletedMarkOverlayVersion))) {
+	     header != overlay_header(capture_fingerprint, DeletedMarkOverlayVersion) &&
+	     header != overlay_header(capture_fingerprint, EncodingOverlayVersion))) {
 		return false;
 	}
 	const auto version         = header[6];
@@ -415,7 +581,12 @@ bool FloppyTrackImage::LoadOverlay()
 			}
 			const auto rate_kbps = check_cast<uint16_t>(
 			        rate_low | (rate_high << 8));
+			const auto encoding = version >= EncodingOverlayVersion
+			                            ? fgetc(input.get())
+			                            : 0;
 			if (count <= 0 || fill == EOF || requested < count ||
+			    (encoding != 0 && encoding != 1) ||
+			    (encoding && !rate_kbps) ||
 			    (rate_kbps && !IsFloppyDataRate(rate_kbps)) ||
 			    (size_code != 0xff && (size_code < 0 || size_code > 7)) ||
 			    (size_code != 0xff &&
@@ -431,6 +602,7 @@ bool FloppyTrackImage::LoadOverlay()
 			                      check_cast<uint8_t>(requested)};
 			format.size_code   = check_cast<uint8_t>(size_code);
 			format.rate_kbps   = rate_kbps;
+			format.fm          = encoding == 1;
 			if (fread(format.ids.data(), 1, format.ids.size(), input.get()) !=
 			            format.ids.size() ||
 			    !IsValidTrackFormat(address, format.ids)) {
@@ -471,23 +643,31 @@ bool FloppyTrackImage::LoadOverlay()
 			const auto size_code = version >= SizedOverlayVersion
 			                             ? fgetc(input.get())
 			                             : check_cast<int>(LegacySizeCode);
-			if (!IsFloppyOverlaySizeCode(size_code)) {
+			if (!IsFloppyOverlaySizeCode(size_code) &&
+			    !(size_code == 0 && version >= EncodingOverlayVersion)) {
 				return false;
 			}
 			address.back() = check_cast<uint32_t>(size_code);
-			if (!CanOverlaySector(address)) {
-				return false;
-			}
 			// Version 9 stores a normal/deleted mark flag before
 			// the payload.
 			const auto mark = version >= DeletedMarkOverlayVersion
 			                        ? fgetc(input.get())
 			                        : 0;
-			if (mark != 0 && mark != 1) {
+			if (mark < 0 ||
+			    mark > (version >= EncodingOverlayVersion ? 3 : 1)) {
+				return false;
+			}
+			const auto fm = (mark & 2) != 0;
+			if (fm) {
+				ensure_fm_fields(address[0], address[1]);
+			}
+			if ((!size_code && !fm) || !CanOverlaySector(address, fm)) {
 				return false;
 			}
 			const auto size = size_t{128} << size_code;
-			OverlaySector data = {std::vector<uint8_t>(size), mark == 1};
+			OverlaySector data  = {std::vector<uint8_t>(size),
+			                       (mark & 1) != 0,
+			                       fm};
 			const auto repeated = std::ranges::any_of(
 			        overlay, [&](const auto& entry) {
 				        return entry.first == address;
@@ -581,7 +761,20 @@ bool FloppyTrackImage::SaveOverlay(const Overlay& entries,
 			        return has_deleted(format.prior_writes);
 		        });
 	        });
-	const auto version = deleted        ? DeletedMarkOverlayVersion
+	const auto has_fm = [](const Overlay& writes) {
+		return std::ranges::any_of(writes, [](const auto& entry) {
+			return entry.second.fm;
+		});
+	};
+	const auto fm =
+	        has_fm(entries) ||
+	        std::ranges::any_of(formats, [&](const auto& track) {
+		        return std::ranges::any_of(track.second, [&](const auto& format) {
+			        return format.fm || has_fm(format.prior_writes);
+		        });
+	        });
+	const auto version = fm             ? EncodingOverlayVersion
+	                   : deleted        ? DeletedMarkOverlayVersion
 	                   : formatted_rate ? FormatRateOverlayVersion
 	                   : formatted_size ? FormatSizeOverlayVersion
 	                   : ordered        ? OrderedOverlayVersion
@@ -617,7 +810,8 @@ bool FloppyTrackImage::SaveOverlay(const Overlay& entries,
 			          (version < SizedOverlayVersion ||
 			           fputc(check_cast<int>(size_code), file) != EOF) &&
 			          (version < DeletedMarkOverlayVersion ||
-			           fputc(data.deleted ? 1 : 0, file) != EOF) &&
+			           fputc((data.deleted ? 1 : 0) | (data.fm ? 2 : 0),
+			                 file) != EOF) &&
 			          fwrite(data.bytes.data(), 1, data.bytes.size(), file) ==
 			                  data.bytes.size();
 		}
@@ -634,7 +828,7 @@ bool FloppyTrackImage::SaveOverlay(const Overlay& entries,
 			                           address[1],
 			                           count,
 			                           format.fill};
-			success                 = success &&
+			success = success &&
 			          fwrite(record.data(), 1, record.size(), file) ==
 			                  record.size() &&
 			          (!partial || fputc(format.requested, file) != EOF) &&
@@ -643,6 +837,8 @@ bool FloppyTrackImage::SaveOverlay(const Overlay& entries,
 			          (version < FormatRateOverlayVersion ||
 			           (fputc(format.rate_kbps & 0xff, file) != EOF &&
 			            fputc(format.rate_kbps >> 8, file) != EOF)) &&
+			          (version < EncodingOverlayVersion ||
+			           fputc(format.fm ? 1 : 0, file) != EOF) &&
 			          fwrite(format.ids.data(), 1, format.ids.size(), file) ==
 			                  format.ids.size();
 		}
@@ -663,6 +859,12 @@ bool FloppyTrackImage::HasOverlappingFields(const uint32_t cylinder,
                                             const uint32_t head) const
 {
 	const auto& sectors = tracks[cylinder * heads + head].sectors;
+	// Different separator clocks can expose overlapping FM and MFM fields.
+	// Keep their write history rather than compacting across encodings.
+	if (std::ranges::any_of(sectors,
+	                        [](const auto& sector) { return sector.fm; })) {
+		return true;
+	}
 	for (const auto& sector : sectors) {
 		if (!sector.mfm_track) {
 			continue;
@@ -700,16 +902,37 @@ bool FloppyTrackImage::WriteSector(const uint32_t cylinder, const uint32_t head,
                                    const std::span<const uint8_t> data,
                                    const FloppySector* selected, const bool deleted)
 {
-	if ((selected && selected->fm) || IsWriteProtected() || cylinder >= cylinders ||
-	    head >= heads || sector > UINT8_MAX || data.size() < 256 ||
+	if (IsWriteProtected() || cylinder >= cylinders || head >= heads ||
+	    sector > UINT8_MAX || data.size() < 128 ||
+	    (data.size() == 128 && (!selected || !selected->fm)) ||
 	    data.size() > 1024 || !std::has_single_bit(data.size())) {
 		return false;
 	}
+	std::optional<FloppySector> fm_selected = {};
+	if (selected && selected->fm) {
+		ensure_fm_fields(cylinder, head);
+		const auto fields = GetTrack(cylinder, head);
+		const auto found = std::ranges::find_if(fields, [&](const auto& field) {
+			return field.fm && field.cylinder == selected->cylinder &&
+			       field.head == selected->head &&
+			       field.id == selected->id &&
+			       field.size_code == selected->size_code &&
+			       field.revolution == selected->revolution &&
+			       std::abs(field.cycle_fraction -
+			                selected->cycle_fraction) < 0.00002;
+		});
+		if (found == fields.end()) {
+			return false;
+		}
+		fm_selected = *found;
+		selected    = &*fm_selected;
+	}
+	const auto fm = selected && selected->fm;
 	const auto size_code = check_cast<uint32_t>(std::countr_zero(data.size()) - 7);
 	const OverlayKey logical = {cylinder, head, sector, 0, size_code};
 	std::vector<OverlayKey> targets = {};
 	if ((!selected || (selected->cylinder == cylinder && selected->head == head)) &&
-	    CanOverlaySector(logical)) {
+	    CanOverlaySector(logical, fm)) {
 		targets.push_back(logical);
 	} else if (selected) {
 		const auto track = GetTrack(cylinder, head);
@@ -718,7 +941,8 @@ bool FloppyTrackImage::WriteSector(const uint32_t cylinder, const uint32_t head,
 		uint32_t selected_slot = 0;
 		for (size_t i = 0; i < track.size(); ++i) {
 			const auto& candidate = track[i];
-			if (candidate.cylinder == selected->cylinder &&
+			if (candidate.fm == fm &&
+			    candidate.cylinder == selected->cylinder &&
 			    candidate.head == selected->head &&
 			    candidate.id == selected->id &&
 			    candidate.size_code == size_code) {
@@ -766,7 +990,7 @@ bool FloppyTrackImage::WriteSector(const uint32_t cylinder, const uint32_t head,
 				                        check_cast<uint32_t>(
 				                                (*closest)->overlay_slot),
 				                        size_code};
-				if (CanOverlaySector(key)) {
+				if (CanOverlaySector(key, fm)) {
 					targets.push_back(key);
 				}
 			}
@@ -777,8 +1001,8 @@ bool FloppyTrackImage::WriteSector(const uint32_t cylinder, const uint32_t head,
 	} else {
 		return false;
 	}
-	const OverlaySector updated = {std::vector<uint8_t>(data.begin(), data.end()),
-	                               deleted};
+	const OverlaySector updated = {
+	        std::vector<uint8_t>(data.begin(), data.end()), deleted, fm};
 	auto entries       = overlay;
 	const auto ordered = HasOverlappingFields(cylinder, head);
 	for (const auto& key : targets) {
@@ -855,10 +1079,32 @@ void FloppyTrackImage::ApplyTrackFormat(const TrackAddress& address,
 		                            ? track.revolution_ends[revolution - 1]
 		                            : 0;
 		const auto duration = track.revolution_ends[revolution] - start;
-		revolutions.push_back(FormatMfmTrack(
-		        previous, revolution, duration * track.cycle_ms, format));
+		revolutions.push_back(
+		        format_track_cells(previous,
+		                           revolution,
+		                           duration * track.cycle_ms,
+		                           format,
+		                           track.raw_tracks.empty()
+		                                   ? nullptr
+		                                   : track.raw_tracks.front()));
 	}
+	const auto canonical = join_revolutions(revolutions);
 	auto sectors = DecodeRevolutions(revolutions, track.revolution_ends);
+	if (format.fm) {
+		auto sampled    = canonical->Sample(0,
+		                                    track.cycle_ms,
+		                                    format.rate_kbps / 2);
+		auto fm_sectors = DecodeTrack(sampled->cells,
+		                              sampled->bit_count,
+		                              sampled->index,
+		                              false,
+		                              sampled,
+		                              true);
+		if (!sampled->revolution_ends_bits.empty()) {
+			PositionSectors(fm_sectors, track.revolution_ends);
+		}
+		sectors.insert(sectors.end(), fm_sectors.begin(), fm_sectors.end());
+	}
 	if (partial) {
 		for (size_t revolution = 0;
 		     revolution < track.revolution_ends.size();
@@ -893,21 +1139,16 @@ void FloppyTrackImage::ApplyTrackFormat(const TrackAddress& address,
 	track.sectors       = std::move(sectors);
 	track.dirty         = true;
 	track.cells_changed = false;
+	track.fm_fields_ready = false;
 	track.flux.reset();
-	track.raw_tracks.clear();
-	for (const auto& sector : track.sectors) {
-		if (sector.mfm_track &&
-		    std::ranges::find(track.raw_tracks, sector.mfm_track) ==
-		            track.raw_tracks.end()) {
-			track.raw_tracks.push_back(sector.mfm_track);
-		}
-	}
+	track.raw_tracks = {canonical};
 }
 
 FloppyTrackImage::FormatResult FloppyTrackImage::FormatTrack(
         const uint8_t cylinder, const uint8_t head,
         const std::span<const uint8_t> ids, const uint8_t fill,
-        const uint8_t requested, const uint8_t size_code, const uint16_t rate_kbps)
+        const uint8_t requested, const uint8_t size_code,
+        const uint16_t rate_kbps, const bool fm)
 {
 	if (IsWriteProtected()) {
 		return FormatResult::WriteError;
@@ -929,7 +1170,12 @@ FloppyTrackImage::FormatResult FloppyTrackImage::FormatTrack(
 	}
 	history.push_back({
 	        {ids.begin(), ids.end()},
-                fill, requested, std::move(prior), size_code, rate_kbps
+	        fill,
+	        requested,
+	        std::move(prior),
+	        size_code,
+	        rate_kbps,
+	        fm
         });
 	if (!SaveOverlay(entries, formats)) {
 		return FormatResult::WriteError;

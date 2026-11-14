@@ -151,7 +151,7 @@ def main():
 
 # pylint: disable-next=too-many-locals
 def check_selection(dosbox, nasm, directory, extension):
-    """Select FM or MFM fields on one track, reject wrong rates and FM writes."""
+    """Select FM or MFM fields on one track and reject the wrong data rate."""
     fm = fm_track(2)[:3000]
     bits = "".join(f"{byte:08b}" for byte in fm)
     expanded = "".join("0" + bit for bit in bits)
@@ -165,8 +165,7 @@ def check_selection(dosbox, nasm, directory, extension):
     # Both encodings use selector 2, despite their different byte rates.
     for index, (opcode, sector, selector, success) in enumerate(
             ((0x06, 1, 2, True), (0x46, 3, 2, True), (0x06, 1, 0, False),
-             (0x06, 1, 2, True), (0x05, 1, 2, False), (0x09, 1, 2, False),
-             (0x0d, 1, 2, False), (0x46, 3, 2, True))):
+             (0x06, 1, 2, True), (0x46, 3, 2, True))):
         checks += DMA + f"""
     mov byte [stage],{index + 1}
     mov dx,3f7h
@@ -208,7 +207,7 @@ payload_{index}:
               read_only=False, extra_commands=("config -set cpu cpu_cycles=20000",))
     assert image.read_bytes() == original
     assert not Path(str(image) + ".overlay").exists()
-    print(f".{extension}: mixed FM/MFM, rate selection, recovery and FM write rejection passed",
+    print(f".{extension}: mixed FM/MFM, rate selection and recovery passed",
           flush=True)
 
 

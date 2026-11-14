@@ -237,11 +237,30 @@ to FFFF at the mark. At the same rate selector its byte period is twice MFM's.
 Track sampling caches include encoding as well as rate and revolution, allowing
 a guest to select different encodings within the same physical track.
 
-This milestone supports FM reads only. FM Write Data, Write Deleted Data and
-Format Track are rejected; sector-view writes also reject FM records. Existing
-MFM writes and overlays keep their current representation. Raw IMG/IMA media
-expose a synthesized MFM layout. Standard BIOS requests still select MFM;
-a guest must issue FM controller commands to access FM fields.
+FM Write Data, Write Deleted Data and Format Track use the persistent overlay
+on SCP, HxC MFM, 86F and TransCopy. Writes support 128-, 256-, 512- and
+1,024-byte sectors, C7 normal/deleted marks and FM CRCs. Raw IMG/IMA media
+expose a synthesized MFM layout and reject FM writes and formats. Standard
+BIOS requests still select MFM; a guest must issue FM controller commands to
+access FM fields. Sector-view writes also continue to reject FM records.
+
+`Guest.FloppyFmWrite` checks DMA and PCjr non-DMA writes, duplicate-ID
+selection, deleted marks, CRCs, terminal count, IRQ6, buffer guards, read-only
+rejection and replay in a fresh emulator. Mixed tracks sharing CHRN values
+must retain the other encoding's fields. `Guest.FloppyFmFormat` checks DMA
+and PCjr non-DMA formatting at the 250-, 300- and 500-kbps selectors,
+restart persistence and wrong-encoding rejection. Interrupted formats retain
+the original MFM suffix; subsequent writes and another interrupted format
+must preserve it as well. Malformed overlay records must fail mounting.
+
+FM operations use overlay version 10. A sector record's flags byte retains
+bit 0 for the deleted mark and adds bit 1 for FM. A format record adds one
+encoding byte after its little-endian data rate: 0 for MFM and 1 for FM.
+A 128-byte write record requires the FM flag. Versions 1 through 9 remain
+readable, and MFM-only overlays continue to use their earlier representation.
+The source capture stays unchanged; saved writes require its `.overlay`
+sidecar. Sampled cell endpoints retain the angular extent of writes between
+different clock grids, preserving adjacent faster fields on mixed tracks.
 
 The automated fixtures are synthetic. No original PC game whose protection
 requires FM decoding has yet been validated. FM duplication metadata on a

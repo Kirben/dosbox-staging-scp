@@ -23,7 +23,7 @@ FloppyFormatResult FLOPPY_FormatTrack(imageDisk& disk, FloppyMedia* media,
                                       const std::span<const uint8_t> ids,
                                       const uint8_t fill, const uint8_t requested,
                                       const uint8_t size_code,
-                                      uint16_t rate_kbps = 0);
+                                      uint16_t rate_kbps = 0, const bool fm = false);
 
 enum class FloppyBiosTransfer { Read, Write, Verify };
 
