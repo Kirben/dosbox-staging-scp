@@ -183,6 +183,100 @@ TEST(FloppyTrackData, HoldSeparatorFrequencyAcrossLongGaps)
 	}
 }
 
+TEST(FloppyTrackData, AcquireSeparatorFromRecordedTail)
+{
+	constexpr uint64_t CellNs         = 1875;
+	constexpr uint64_t DurationNs     = 512 * CellNs;
+	std::vector<uint64_t> transitions = {};
+	for (uint64_t time = 100; time < DurationNs; time += 2 * CellNs) {
+		transitions.push_back(time);
+	}
+	const std::array<uint64_t, 1> ends = {DurationNs};
+	const auto acquired = FloppyMfmTrack::RecoverFluxRevolutions(transitions,
+	                                                             ends,
+	                                                             2000);
+	const auto cold = FloppyMfmTrack::RecoverFlux(transitions, DurationNs, 2000);
+	ASSERT_TRUE(acquired);
+	ASSERT_TRUE(cold);
+	// The first transition is only 100 ns after index. Its interval starts
+	// in the preceding recorded tail; cold decoding loses that transition.
+	EXPECT_EQ(acquired->bit_count, size_t{512});
+	EXPECT_EQ(acquired->cells, std::vector<uint8_t>(64, 0xaa));
+	EXPECT_NE(acquired->cells, cold->cells);
+	EXPECT_EQ(acquired->revolution_ends_bits, std::vector<size_t>({512}));
+}
+
+TEST(FloppyTrackData, KeepSeparatorPhaseAcrossFractionalIndex)
+{
+	constexpr uint64_t CellNs         = 1820;
+	constexpr uint64_t DurationNs     = 1024 * CellNs;
+	std::vector<uint64_t> transitions = {};
+	for (uint64_t time = 2 * CellNs; time <= DurationNs; time += 2 * CellNs) {
+		transitions.push_back(time);
+	}
+	// Neither boundary is a byte boundary; both bisect a flux interval.
+	const std::array<uint64_t, 3> ends = {257 * CellNs + CellNs / 4,
+	                                      513 * CellNs + 3 * CellNs / 4,
+	                                      DurationNs};
+	const std::array<uint64_t, 1> unsplit_end = {DurationNs};
+	const auto split   = FloppyMfmTrack::RecoverFluxRevolutions(transitions,
+	                                                            ends,
+	                                                            2000);
+	const auto unsplit = FloppyMfmTrack::RecoverFluxRevolutions(transitions,
+	                                                            unsplit_end,
+	                                                            2000);
+	ASSERT_TRUE(split);
+	ASSERT_TRUE(unsplit);
+	EXPECT_EQ(split->bit_count, size_t{1024});
+	EXPECT_EQ(split->cells, std::vector<uint8_t>(128, 0x55));
+	EXPECT_EQ(split->cells, unsplit->cells);
+	EXPECT_EQ(split->revolution_ends_bits,
+	          std::vector<size_t>({257, 513, 1024}));
+	EXPECT_EQ(split->GetRevolutionBitCount(0), size_t{257});
+	EXPECT_EQ(split->GetRevolutionBitCount(1), size_t{256});
+	EXPECT_EQ(split->GetRevolutionBitCount(2), size_t{511});
+}
+
+TEST(FloppyTrackData, AcquisitionDoesNotInventFlux)
+{
+	const std::array<uint64_t, 2> ends = {500000, 1000000};
+	const auto empty = FloppyMfmTrack::RecoverFluxRevolutions({}, ends, 2000);
+	ASSERT_TRUE(empty);
+	EXPECT_EQ(empty->bit_count, size_t{500});
+	EXPECT_EQ(empty->cells, std::vector<uint8_t>(63));
+	EXPECT_EQ(empty->revolution_ends_bits, std::vector<size_t>({250, 500}));
+	for (const auto nominal : {0.0,
+	                           -1.0,
+	                           std::numeric_limits<double>::infinity(),
+	                           std::numeric_limits<double>::quiet_NaN()}) {
+		EXPECT_FALSE(FloppyMfmTrack::RecoverFluxRevolutions({}, ends, nominal));
+	}
+	for (const auto invalid : {
+	             std::array<uint64_t, 2>{   0, 1000},
+	             std::array<uint64_t, 2>{1000, 1000},
+	             std::array<uint64_t, 2>{2000, 1000}
+        }) {
+		EXPECT_FALSE(FloppyMfmTrack::RecoverFluxRevolutions({}, invalid, 2000));
+	}
+	const std::array<uint64_t, 2> unordered = {6000, 4000};
+	EXPECT_FALSE(FloppyMfmTrack::RecoverFluxRevolutions(unordered, ends, 2000));
+	const std::array<uint64_t, 1> beyond_end = {1000001};
+	EXPECT_FALSE(FloppyMfmTrack::RecoverFluxRevolutions(beyond_end, ends, 2000));
+	EXPECT_FALSE(FloppyMfmTrack::RecoverFlux(beyond_end, 1000001, 1e-20));
+}
+
+TEST(FloppyTrackData, ContinuousFluxKeepsPerRevolutionLimits)
+{
+	const std::array<uint64_t, 3> ends = {550000000, 1100000000, 1650000000};
+	const auto many = FloppyMfmTrack::RecoverFluxRevolutions({}, ends, 500);
+	ASSERT_TRUE(many);
+	EXPECT_EQ(many->bit_count, size_t{3300000});
+	EXPECT_EQ(many->revolution_ends_bits,
+	          std::vector<size_t>({1100000, 2200000, 3300000}));
+	const std::array<uint64_t, 1> oversized = {1050000500};
+	EXPECT_FALSE(FloppyMfmTrack::RecoverFluxRevolutions({}, oversized, 500));
+}
+
 TEST(FloppyTrackData, RecoverTransitionsAtSelectedRate)
 {
 	// Pulses every four microseconds form alternating raw cells at 250 kbps.

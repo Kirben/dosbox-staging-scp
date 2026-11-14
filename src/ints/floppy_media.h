@@ -61,6 +61,12 @@ struct FloppyMfmTrack {
 	        const std::span<const uint64_t> transitions_ns,
 	        const uint64_t duration_ns, const double nominal_cell_ns,
 	        const bool preserve_timing = false);
+	// Index boundaries do not reset the separator. Acquire from recorded
+	// history before the first index, then retain phase across all turns.
+	static std::shared_ptr<FloppyMfmTrack> RecoverFluxRevolutions(
+	        const std::span<const uint64_t> transitions_ns,
+	        const std::span<const uint64_t> index_ends_ns,
+	        const double nominal_cell_ns);
 
 	size_t GetRevolutionBitCount(const size_t revolution) const
 	{

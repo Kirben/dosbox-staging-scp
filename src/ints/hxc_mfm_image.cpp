@@ -113,11 +113,21 @@ std::vector<bool> find_weak_cells(const MfmBitstream track)
 
 } // namespace
 
-std::shared_ptr<FloppyMfmTrack> FloppyMfmTrack::RecoverFlux(
+namespace {
+
+constexpr size_t MaxFluxCellsPerRevolution = 2'100'000;
+
+std::shared_ptr<FloppyMfmTrack> recover_flux(
         const std::span<const uint64_t> transitions_ns, const uint64_t duration_ns,
-        const double nominal_cell_ns, const bool preserve_timing)
+        const double nominal_cell_ns, const bool preserve_timing,
+        const std::span<const uint64_t> index_ends_ns = {})
 {
-	constexpr size_t MaxCells      = 2'100'000;
+	if (!duration_ns || !std::isfinite(nominal_cell_ns) ||
+	    nominal_cell_ns <= 0 || index_ends_ns.size() > 256) {
+		return {};
+	}
+	const auto max_cells = MaxFluxCellsPerRevolution *
+	                       std::max(size_t{1}, index_ends_ns.size());
 	std::vector<uint8_t> bitstream = {};
 	double clock_ns                = nominal_cell_ns;
 	double phase_ns                = 0;
@@ -125,32 +135,61 @@ std::shared_ptr<FloppyMfmTrack> FloppyMfmTrack::RecoverFlux(
 	size_t cells_written           = 0;
 	std::vector<double> cell_ends  = {};
 	uint64_t emitted_ns            = 0;
-	const auto append_times = [&](const size_t count, const uint64_t end_ns) {
+	std::vector<size_t> index_ends = {};
+	const auto append_times        = [&](const size_t count,
+	                                     const uint64_t end_ns,
+	                                     const size_t first_cell) {
+		const auto endpoint = [&](const size_t cell) {
+			return static_cast<double>(emitted_ns) +
+			       static_cast<double>(end_ns - emitted_ns) *
+			               static_cast<double>(cell) /
+			               static_cast<double>(count);
+		};
+		while (index_ends.size() < index_ends_ns.size() &&
+		       index_ends_ns[index_ends.size()] <= end_ns) {
+			// Assign cells by endpoint even when index bisects an
+			// interval. Binary search avoids rounding the two
+			// interval halves separately.
+			const auto boundary_ns = index_ends_ns[index_ends.size()];
+			size_t low = 0;
+			auto high  = count;
+			while (low < high) {
+				const auto middle = low + (high - low + 1) / 2;
+				if (endpoint(middle) <=
+				    static_cast<double>(boundary_ns)) {
+					low = middle;
+				} else {
+					high = middle - 1;
+				}
+			}
+			index_ends.push_back(first_cell + low);
+		}
 		if (preserve_timing) {
 			for (size_t cell = 1; cell <= count; ++cell) {
-				cell_ends.push_back(
-				        (static_cast<double>(emitted_ns) +
-				         static_cast<double>(end_ns - emitted_ns) *
-				                 static_cast<double>(cell) /
-				                 static_cast<double>(count)) /
-				        static_cast<double>(duration_ns));
+				cell_ends.push_back(endpoint(cell) /
+				                    static_cast<double>(duration_ns));
 			}
 		}
 		emitted_ns = end_ns;
 	};
 	for (const auto time_ns : transitions_ns) {
+		if (time_ns < previous_ns || time_ns > duration_ns) {
+			return {};
+		}
 		phase_ns += static_cast<double>(time_ns - previous_ns);
 		previous_ns      = time_ns;
-		const auto cells = static_cast<size_t>(
-		        std::max(0.0, std::floor(phase_ns / clock_ns + 0.5)));
+		const auto count = std::max(0.0,
+		                            std::floor(phase_ns / clock_ns + 0.5));
+		if (!std::isfinite(count) ||
+		    count > static_cast<double>(max_cells - cells_written)) {
+			return {};
+		}
+		const auto cells = static_cast<size_t>(count);
 		if (cells == 0) {
 			continue;
 		}
-		if (cells > MaxCells - cells_written) {
-			return {};
-		}
+		append_times(cells, time_ns, cells_written);
 		cells_written += cells;
-		append_times(cells, time_ns);
 		bitstream.resize((cells_written + 7) / 8);
 		const auto bit = cells_written - 1;
 		bitstream[bit / 8] |= static_cast<uint8_t>(0x80u >> (bit % 8));
@@ -166,18 +205,122 @@ std::shared_ptr<FloppyMfmTrack> FloppyMfmTrack::RecoverFlux(
 		phase_ns *= 0.4;
 	}
 
-	const auto tail = static_cast<size_t>(std::round(
-	        static_cast<double>(duration_ns - previous_ns) / clock_ns));
-	if (tail > MaxCells - cells_written) {
+	const auto remaining_ns = static_cast<double>(duration_ns - previous_ns);
+	const auto tail_count = index_ends_ns.empty()
+	                              ? std::round(remaining_ns / clock_ns)
+	                              : std::floor(std::max(0.0,
+	                                                    (remaining_ns + phase_ns) /
+	                                                            clock_ns));
+	if (!std::isfinite(tail_count) ||
+	    tail_count > static_cast<double>(max_cells - cells_written)) {
 		return {};
 	}
+	const auto tail      = static_cast<size_t>(tail_count);
 	const auto bit_count = cells_written + tail;
-	append_times(tail, duration_ns);
+	if (index_ends_ns.empty()) {
+		append_times(tail, duration_ns, cells_written);
+	} else {
+		// Do not round an unfinished cell into the end of the capture.
+		// The next loop's first cell may straddle the physical index.
+		if (tail) {
+			const auto end_ns = round_nonnegative(
+			        static_cast<double>(previous_ns) +
+			        static_cast<double>(tail) * clock_ns - phase_ns);
+			if (!end_ns) {
+				return {};
+			}
+			append_times(tail, std::min(*end_ns, duration_ns), cells_written);
+		}
+		append_times(0, duration_ns, bit_count);
+	}
 	bitstream.resize((bit_count + 7) / 8);
 	auto raw       = std::make_shared<FloppyMfmTrack>();
 	raw->cells     = std::move(bitstream);
 	raw->bit_count = bit_count;
 	raw->cell_ends = std::move(cell_ends);
+	raw->revolution_ends_bits = std::move(index_ends);
+	return raw;
+}
+
+} // namespace
+
+std::shared_ptr<FloppyMfmTrack> FloppyMfmTrack::RecoverFlux(
+        const std::span<const uint64_t> transitions_ns, const uint64_t duration_ns,
+        const double nominal_cell_ns, const bool preserve_timing)
+{
+	return recover_flux(transitions_ns, duration_ns, nominal_cell_ns, preserve_timing);
+}
+
+std::shared_ptr<FloppyMfmTrack> FloppyMfmTrack::RecoverFluxRevolutions(
+        const std::span<const uint64_t> transitions_ns,
+        const std::span<const uint64_t> index_ends_ns, const double nominal_cell_ns)
+{
+	if (index_ends_ns.empty() || index_ends_ns.size() > 255 ||
+	    !index_ends_ns.front() ||
+	    std::adjacent_find(index_ends_ns.begin(),
+	                       index_ends_ns.end(),
+	                       [](const auto a, const auto b) { return a >= b; }) !=
+	            index_ends_ns.end()) {
+		return {};
+	}
+	// Eight encoded bytes provide the 64 data-bit acquisition interval.
+	// Use actual recorded history, including any no-flux area, not fake sync.
+	const auto acquisition_ns = round_nonnegative(nominal_cell_ns * 128);
+	if (!acquisition_ns || !*acquisition_ns) {
+		return {};
+	}
+	const auto duration_ns = index_ends_ns.back();
+	const auto last_start  = index_ends_ns.size() > 1
+	                               ? index_ends_ns[index_ends_ns.size() - 2]
+	                               : 0;
+	const auto history_ns = std::min(*acquisition_ns, duration_ns - last_start);
+	if (history_ns > UINT64_MAX - duration_ns) {
+		return {};
+	}
+	const auto history_start          = duration_ns - history_ns;
+	std::vector<uint64_t> transitions = {};
+	for (const auto time_ns : transitions_ns) {
+		if (time_ns > history_start && time_ns <= duration_ns) {
+			transitions.push_back(time_ns - history_start);
+		}
+	}
+	for (const auto time_ns : transitions_ns) {
+		if (time_ns > duration_ns) {
+			return {};
+		}
+		transitions.push_back(time_ns + history_ns);
+	}
+	std::vector<uint64_t> boundaries = {history_ns};
+	for (const auto end_ns : index_ends_ns) {
+		boundaries.push_back(end_ns + history_ns);
+	}
+	auto raw = recover_flux(transitions,
+	                        duration_ns + history_ns,
+	                        nominal_cell_ns,
+	                        false,
+	                        boundaries);
+	if (!raw || raw->revolution_ends_bits.size() != boundaries.size()) {
+		return {};
+	}
+	const auto discard = raw->revolution_ends_bits.front();
+	const auto count   = raw->bit_count - discard;
+	std::vector<uint8_t> cells((count + 7) / 8);
+	for (size_t bit = 0; bit < count; ++bit) {
+		if (bit_at({raw->cells, raw->bit_count}, bit + discard)) {
+			cells[bit / 8] |= check_cast<uint8_t>(0x80u >> (bit % 8));
+		}
+	}
+	raw->cells     = std::move(cells);
+	raw->bit_count = count;
+	raw->revolution_ends_bits.erase(raw->revolution_ends_bits.begin());
+	size_t previous = 0;
+	for (auto& end : raw->revolution_ends_bits) {
+		end -= discard;
+		if (end <= previous || end - previous > MaxFluxCellsPerRevolution) {
+			return {};
+		}
+		previous = end;
+	}
 	return raw;
 }
 
