@@ -6,7 +6,10 @@
 #include <array>
 #include <cassert>
 #include <cmath>
+#include <limits>
 #include <map>
+#include <optional>
+#include <utility>
 
 #include "ints/bitstream_capture.h"
 #include "utils/checks.h"
@@ -19,6 +22,21 @@ struct MfmBitstream {
 	std::span<const uint8_t> bytes = {};
 	size_t bit_count               = 0;
 };
+
+std::optional<uint64_t> round_nonnegative(const double value)
+{
+	// llround returns a signed value. Check its domain before rounding,
+	// then use the standard range check for the unsigned destination.
+	if (!std::isfinite(value) || value < 0 ||
+	    value >= static_cast<double>(std::numeric_limits<long long>::max())) {
+		return {};
+	}
+	const auto rounded = std::llround(value);
+	if (!std::in_range<uint64_t>(rounded)) {
+		return {};
+	}
+	return static_cast<uint64_t>(rounded);
+}
 
 uint8_t bit_at(const MfmBitstream track, size_t bit)
 {
@@ -168,6 +186,10 @@ std::shared_ptr<FloppyMfmTrack> FloppyMfmTrack::Sample(const uint64_t cycle,
 	if (!rate_kbps || !bit_count || duration_ms <= 0) {
 		return sampled;
 	}
+	const auto duration_ns = round_nonnegative(duration_ms * 1'000'000);
+	if (!duration_ns || !*duration_ns) {
+		return {};
+	}
 	const auto cell_ns = duration_ms * 1'000'000 / static_cast<double>(bit_count);
 	const auto selected_cell_ns = 500'000.0 / rate_kbps;
 	// Bitstream captures already contain recovered cells. Preserve their
@@ -178,26 +200,39 @@ std::shared_ptr<FloppyMfmTrack> FloppyMfmTrack::Sample(const uint64_t cycle,
 	std::vector<uint64_t> transitions = {};
 	for (size_t bit = 0; bit < bit_count; ++bit) {
 		if (bit_at({sampled->cells, bit_count}, bit)) {
-			transitions.push_back(check_cast<uint64_t>(std::llround(
-			        static_cast<double>(bit + 1) * cell_ns)));
+			const auto time_ns = round_nonnegative(
+			        static_cast<double>(bit + 1) * cell_ns);
+			if (!time_ns) {
+				return {};
+			}
+			transitions.push_back(*time_ns);
 		}
 	}
-	auto decoded = RecoverFlux(transitions,
-	                           check_cast<uint64_t>(
-	                                   std::llround(duration_ms * 1'000'000)),
-	                           selected_cell_ns);
+	auto decoded = RecoverFlux(transitions, *duration_ns, selected_cell_ns);
 	if (!decoded || !decoded->bit_count) {
 		return {};
 	}
-	const auto position = [&](const size_t bit) {
-		return check_cast<size_t>(
-		        std::llround(static_cast<double>(bit) *
-		                     static_cast<double>(decoded->bit_count) /
-		                     static_cast<double>(bit_count)));
+	const auto position = [&](const size_t bit) -> std::optional<size_t> {
+		const auto rounded = round_nonnegative(
+		        static_cast<double>(bit) *
+		        static_cast<double>(decoded->bit_count) /
+		        static_cast<double>(bit_count));
+		if (!rounded || !std::in_range<size_t>(*rounded)) {
+			return {};
+		}
+		return static_cast<size_t>(*rounded);
 	};
-	decoded->index = position(index) % decoded->bit_count;
+	const auto decoded_index = position(index);
+	if (!decoded_index) {
+		return {};
+	}
+	decoded->index = *decoded_index % decoded->bit_count;
 	for (const auto end : revolution_ends_bits) {
-		decoded->revolution_ends_bits.push_back(position(end));
+		const auto decoded_end = position(end);
+		if (!decoded_end) {
+			return {};
+		}
+		decoded->revolution_ends_bits.push_back(*decoded_end);
 	}
 	return decoded;
 }
@@ -552,8 +587,10 @@ void FloppyTrackImage::PositionSectors(std::vector<FloppySector>& sectors,
 		        sector.mfm_track->revolution_ends_bits.begin(),
 		        sector.mfm_track->revolution_ends_bits.end(),
 		        sector.id_bit);
-		sector.revolution = check_cast<size_t>(
-		        next - sector.mfm_track->revolution_ends_bits.begin());
+		const auto revolution = next -
+		                        sector.mfm_track->revolution_ends_bits.begin();
+		assert(std::in_range<size_t>(revolution));
+		sector.revolution = static_cast<size_t>(revolution);
 		const auto start_bit =
 		        sector.revolution
 		                ? sector.mfm_track->revolution_ends_bits[sector.revolution - 1]
@@ -587,9 +624,16 @@ std::shared_ptr<FloppyMfmTrack> FloppyTrackImage::FormatMfmTrack(
 	                                ? source->revolution_ends_bits[revolution - 1]
 	                                : 0;
 	const auto rate = format.rate_kbps ? format.rate_kbps : uint16_t{250};
-	auto bits = check_cast<size_t>(std::lround(duration_ms * 2 * rate));
+	const auto rounded_bits = round_nonnegative(duration_ms * 2 * rate);
+	if (!rounded_bits || !std::in_range<size_t>(*rounded_bits)) {
+		return {};
+	}
+	auto bits = static_cast<size_t>(*rounded_bits);
 	if (!format.rate_kbps && source) {
 		bits = source_bits;
+	}
+	if (!bits) {
+		return {};
 	}
 	auto captured       = std::make_shared<FloppyMfmTrack>();
 	captured->bit_count = bits;
@@ -608,10 +652,14 @@ std::shared_ptr<FloppyMfmTrack> FloppyTrackImage::FormatMfmTrack(
 			value = 0;
 			// Keep suffix transition times when changing the cell
 			// clock.
-			const auto begin = check_cast<size_t>(
-			        uint64_t{bit} * source_bits / bits);
-			const auto end = check_cast<size_t>((uint64_t{bit} + 1) *
-			                                    source_bits / bits);
+			const auto begin_bit = uint64_t{bit} * source_bits / bits;
+			const auto end_bit = (uint64_t{bit} + 1) * source_bits / bits;
+			if (!std::in_range<size_t>(begin_bit) ||
+			    !std::in_range<size_t>(end_bit)) {
+				return {};
+			}
+			const auto begin = static_cast<size_t>(begin_bit);
+			const auto end   = static_cast<size_t>(end_bit);
 			for (auto old = begin; old < end; ++old) {
 				const auto index = (old + source_start +
 				                    source->index) %
