@@ -182,6 +182,40 @@ The model's gains and 10% clock bounds are approximations, not datasheet
 guarantees. Noise during an erased area, pulse qualification and command-time
 analog acquisition remain unmodeled.
 
+### Separator acquisition and index continuity
+
+SCP recovery now feeds all captured revolutions through one separator. Index
+marks partition the resulting cells without restarting clock or phase, or
+rounding the two halves of a crossing transition interval independently.
+A cell is assigned to the revolution containing its endpoint. An unfinished
+cell at the end of the capture is not rounded into an extra trailing cell.
+This applies both when mounting the logical sector view and when sampling
+tracks at the FDC's programmed rate.
+
+Before the first visible index, the decoder processes up to 128 nominal
+channel cells of the final recorded turn's tail. This eight-byte history
+interval supplies actual input for digital acquisition. Its output is then
+discarded, so it adds no guest-visible cells or extra revolution. A blank or
+damaged tail is retained as such; no sync pulses or successful lock are
+fabricated. Each decode starts fresh for its selected clock and capture;
+state is not reused between unrelated tracks or data rates.
+
+The history length is motivated by the 64-data-bit sync-field acquisition
+interval in Intel's section 3.2.2. This is not a measured model of the analog
+lock detector, VCO-enable gating or acquisition/jitter curves. It represents
+recorded-history acquisition and continuous digital phase recovery; analog
+noise and electrical pulse qualification remain separate work.
+
+Native regressions check a transition 100 ns after index, fractional-cell
+index positions, unchanged cells when index markers are inserted, blank
+history, malformed inputs and the existing per-revolution allocation limit.
+`Guest.FloppyScpAcquisition` uses off-speed, two-revolution fields crossing
+index, with 100-ns phase displacement. BIOS reads and direct FDC Read Track
+must retain valid CRCs and distinct recorded payloads; writes must survive a
+restart without changing the capture. Existing nominal/exact-index controls
+continue to run separately. Bitstream containers retain their existing
+recovered-cell path, and overlay record layouts are unchanged.
+
 ### Seek completion and bounded recalibration
 
 `Guest.FloppySeekStatus` sends head-1 Seek and Recalibrate commands on A and B

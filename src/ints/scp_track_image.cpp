@@ -109,7 +109,8 @@ std::vector<FluxTurn> split_at_index(const ScpCapture::Header& header,
 } // namespace
 
 struct FloppyTrackImage::FluxTrack {
-	std::vector<FluxTurn> turns = {};
+	std::vector<uint64_t> transitions_ns = {};
+	std::vector<uint64_t> index_ends_ns  = {};
 	double cell_ns              = 2000;
 };
 
@@ -117,22 +118,18 @@ std::vector<FloppySector> FloppyTrackImage::DecodeFluxTrack(
         const FluxTrack& flux, const std::span<const double> ends,
         const uint16_t rate_kbps, const bool fm)
 {
-	std::vector<std::shared_ptr<FloppyMfmTrack>> raw = {};
-	for (const auto& turn : flux.turns) {
-		auto decoded = FloppyMfmTrack::RecoverFlux(
-		        turn.transitions_ns,
-		        turn.duration_ns,
-		        rate_kbps ? (fm ? 1'000'000.0 : 500'000.0) / rate_kbps
-		                  : flux.cell_ns);
-		if (!decoded || !decoded->bit_count) {
-			return {};
-		}
-		// A long transition interval is recorded data, not a weak-bit
-		// mask. Preserve each captured turn; its actual variations
-		// provide the input for subsequent rotational reads.
-		raw.push_back(std::move(decoded));
+	const auto raw = FloppyMfmTrack::RecoverFluxRevolutions(
+	        flux.transitions_ns,
+	        flux.index_ends_ns,
+	        rate_kbps ? (fm ? 1'000'000.0 : 500'000.0) / rate_kbps : flux.cell_ns);
+	if (!raw || !raw->bit_count) {
+		return {};
 	}
-	return DecodeRevolutions(raw, ends, fm);
+	auto sectors = DecodeTrack(raw->cells, raw->bit_count, 0, false, raw, fm);
+	if (ends.size() > 1) {
+		PositionSectors(sectors, ends);
+	}
+	return sectors;
 }
 
 std::unique_ptr<FloppyTrackImage> FloppyTrackImage::LoadScp(FILE* file,
@@ -167,6 +164,15 @@ std::unique_ptr<FloppyTrackImage> FloppyTrackImage::LoadScp(FILE* file,
 		if (turns.empty()) {
 			continue;
 		}
+		auto flux          = std::make_shared<FluxTrack>();
+		uint64_t offset_ns = 0;
+		for (const auto& turn : turns) {
+			for (const auto time_ns : turn.transitions_ns) {
+				flux->transitions_ns.push_back(offset_ns + time_ns);
+			}
+			offset_ns += turn.duration_ns;
+			flux->index_ends_ns.push_back(offset_ns);
+		}
 		auto& track = image->tracks[(index / 2) * image->heads + index % 2];
 		track.format_cycle_ms = static_cast<double>(turns.front().duration_ns) /
 		                        1'000'000;
@@ -195,17 +201,9 @@ std::unique_ptr<FloppyTrackImage> FloppyTrackImage::LoadScp(FILE* file,
 			if (cell_ns > 2000 && best_score > 0) {
 				continue;
 			}
-			std::vector<std::shared_ptr<FloppyMfmTrack>> revolutions = {};
-			for (const auto& turn : turns) {
-				auto raw = FloppyMfmTrack::RecoverFlux(turn.transitions_ns,
-				                                       turn.duration_ns,
-				                                       cell_ns);
-				if (!raw || !raw->bit_count) {
-					break;
-				}
-				revolutions.push_back(std::move(raw));
-			}
-			if (revolutions.size() != turns.size()) {
+			const auto raw = FloppyMfmTrack::RecoverFluxRevolutions(
+			        flux->transitions_ns, flux->index_ends_ns, cell_ns);
+			if (!raw || !raw->bit_count) {
 				continue;
 			}
 			// Index does not restart the data separator. A field
@@ -214,9 +212,12 @@ std::unique_ptr<FloppyTrackImage> FloppyTrackImage::LoadScp(FILE* file,
 				if (fm && best_score > 0) {
 					continue;
 				}
-				auto candidate = DecodeRevolutions(revolutions,
-				                                   track.revolution_ends,
-				                                   fm);
+				auto candidate = DecodeTrack(
+				        raw->cells, raw->bit_count, 0, false, raw, fm);
+				if (turns.size() > 1) {
+					PositionSectors(candidate,
+					                track.revolution_ends);
+				}
 				int score      = 0;
 				for (const auto& sector : candidate) {
 					if (!sector.id_crc_error) {
@@ -238,8 +239,8 @@ std::unique_ptr<FloppyTrackImage> FloppyTrackImage::LoadScp(FILE* file,
 		                             static_cast<uint32_t>(index % 2),
 		                             decoded);
 		found_ids |= !decoded.empty();
-		track.flux = std::make_shared<FluxTrack>(
-		        FluxTrack{turns, best_cell_ns});
+		flux->cell_ns = best_cell_ns;
+		track.flux    = std::move(flux);
 		track.sectors = std::move(decoded);
 	}
 	if (!found_ids) {

@@ -37,19 +37,23 @@ def oracle(cells):
     assert len(fields) == 2
     return fields
 
-def scp_image(cells):
+def scp_image(cells, clock_ticks=80, index_offset_ticks=0):
     """Encode a continuous flux sequence into two indexed SCP descriptors."""
     turns = []
     last = 0
     turn_bytes = len(cells) // 2
+    duration = len(cells) * 8 * clock_ticks
+    edges = sorted(((offset * 8 + bit + 1) * clock_ticks + index_offset_ticks - 1)
+                   % duration + 1 for offset, value in enumerate(cells)
+                   for bit in range(8) if value & (0x80 >> bit))
+    cursor = 0
     for turn in range(2):
         flux = bytearray()
-        for offset, value in enumerate(cells[turn*turn_bytes:(turn+1)*turn_bytes]):
-            for bit in range(8):
-                if value & (0x80 >> bit):
-                    edge = (turn*turn_bytes + offset)*8 + bit + 1
-                    flux.extend(pack('>H', (edge-last)*80))
-                    last = edge
+        while cursor < len(edges) and edges[cursor] <= (turn + 1) * duration // 2:
+            edge = edges[cursor]
+            flux.extend(pack('>H', edge - last))
+            last = edge
+            cursor += 1
         turns.append(flux)
     image = bytearray(0x2b0)
     image[:11] = b'SCP' + bytes((0x10, 0x31, 2, 0, 0, 0x81, 0, 1))
@@ -57,14 +61,15 @@ def scp_image(cells):
     image.extend(b'TRK\0')
     relative = 28
     for flux in turns:
-        image.extend(pack('<III', turn_bytes*8*80, len(flux)//2, relative))
+        image.extend(pack('<III', turn_bytes*8*clock_ticks, len(flux)//2, relative))
         relative += len(flux)
     for flux in turns:
         image.extend(flux)
     pack_into('<I', image, 12, sum(image[16:]) & 0xffffffff)
     return image
 
-def make_capture(varied, crossing, marker=0x12, index_shift_bits=0):
+def make_capture(varied, crossing, marker=0x12, index_shift_bits=0,
+                 *, timing=(80, 0)):
     """Rotate the entire capture, keeping fields intact across the physical indexes."""
     first = make_track(((1, 0xfb, "", marker),), 2)
     second = make_track(((1, 0xfb, "", 0x24 if varied else marker),), 2)
@@ -79,7 +84,7 @@ def make_capture(varied, crossing, marker=0x12, index_shift_bits=0):
         cells = bytearray(int(bits[i:i+8], 2) for i in range(0, len(bits), 8))
     markers = oracle(cells)
     assert set(markers) == ({marker, 0x24} if varied else {marker})
-    return scp_image(cells)
+    return scp_image(cells, *timing)
 
 
 def check_direct(dosbox, nasm, directory, image, marker):
@@ -121,6 +126,7 @@ def main():
     parser.add_argument("--dosbox", required=True, type=Path)
     parser.add_argument("--nasm", default="nasm")
     parser.add_argument("--exact-index", action="store_true")
+    parser.add_argument("--acquisition", action="store_true")
     args = parser.parse_args()
     with TemporaryDirectory() as temporary:
         directory = Path(temporary)
@@ -130,9 +136,14 @@ def main():
         if args.exact_index:
             cases = (("exact-index-transition", False, True, 0x11, 0),
                      ("index-between-transitions", False, True, 0x11, 1))
-        for name, varied, crossing, marker, phase in cases:
+        cases = [(*case, 80, 0) for case in cases]
+        if args.acquisition:
+            cases = [("acquired-fast-crossing", True, True, 0x11, 0, 73, 4),
+                     ("acquired-slow-crossing", True, True, 0x11, 0, 87, 4),
+                     ("nominal-phase-control", False, True, 0x11, 0, 80, 4)]
+        for name, varied, crossing, marker, phase, clock, offset in cases:
             image = directory / f"{name}.scp"
-            original = make_capture(varied, crossing, marker, phase)
+            original = make_capture(varied, crossing, marker, phase, timing=(clock, offset))
             image.write_bytes(original)
             samples, statuses, carry = read_samples(
                 args.dosbox.resolve(), args.nasm, directory, image)
