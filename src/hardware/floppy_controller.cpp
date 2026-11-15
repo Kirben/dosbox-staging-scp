@@ -523,6 +523,16 @@ void schedule_next_sector()
 	if (const auto& track = fdc.media) {
 		schedule_track_sector(*track, false);
 	} else {
+		if (!fdc.sector || fdc.sector > fdc.disk->sectors) {
+			// EOT need not describe the physical geometry. Search
+			// for a missing ID only if the transfer actually
+			// reaches it.
+			fdc.track_sector         = nullptr;
+			fdc.missing_address_mark = false;
+			PIC_AddEvent(missing_sector,
+			             2 * rotation_cycle_ms() - rotation_ms());
+			return;
+		}
 		const auto target_ms   = (fdc.sector - 1) * slot_length_ms();
 		const auto position_ms = rotation_ms();
 		const auto delay_ms    = target_ms > position_ms
@@ -1593,10 +1603,8 @@ void start_loaded_data(uint32_t)
 		return;
 	}
 
-	const auto end_sector = fdc.command[6];
 	if (fdc.command[2] != fdc.cylinder || fdc.command[3] != fdc.head ||
-	    fdc.command[5] != SectorSizeCode || fdc.sector == 0 ||
-	    fdc.sector > end_sector || end_sector > fdc.disk->sectors) {
+	    fdc.command[5] != SectorSizeCode) {
 		finish_data(0x04);
 		return;
 	}
