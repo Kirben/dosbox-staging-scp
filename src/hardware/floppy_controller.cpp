@@ -1128,24 +1128,29 @@ void dma_fifo_event(uint32_t)
 	}
 	auto* dma = DMA_GetChannel(FloppyDma);
 	if (dma && !dma->is_masked && (fdc.dor & InterruptEnabled) &&
-	    (bytes.writing ? dma->is_memory_to_device : dma->is_device_to_memory)) {
+	    (dma->is_verifying || (bytes.writing ? dma->is_memory_to_device
+	                                         : dma->is_device_to_memory))) {
 		const auto terminal = dma->curr_count == 0;
 		auto* value = &bytes.fifo[bytes.writing ? (bytes.first + bytes.count) % FifoSize
 		                                        : bytes.first];
-		const auto count = bytes.writing ? dma->Read(1, value)
-		                                 : dma->Write(1, value);
+		const auto count = dma->is_verifying ? dma->Verify(1)
+		                 : bytes.writing     ? dma->Read(1, value)
+		                                     : dma->Write(1, value);
 		if (count != 1) {
 			bytes.overrun = true;
 			defer_byte_completion();
 			return;
 		}
-		if (bytes.writing) {
-			++bytes.count;
-		} else {
-			bytes.first = (bytes.first + 1) % FifoSize;
-			--bytes.count;
+		// DACK acknowledges a read byte even without an I/O read strobe.
+		if (!dma->is_verifying || !bytes.writing) {
+			if (bytes.writing) {
+				++bytes.count;
+			} else {
+				bytes.first = (bytes.first + 1) % FifoSize;
+				--bytes.count;
+			}
+			++bytes.host_offset;
 		}
-		++bytes.host_offset;
 		bytes.terminal_count = terminal;
 	}
 	refresh_fifo_request();
