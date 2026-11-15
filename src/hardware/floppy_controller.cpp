@@ -169,10 +169,18 @@ struct Controller {
 double pio_byte_ms      = 8.0 / DefaultDataRateKbps;
 uint16_t data_rate_kbps = DefaultDataRateKbps;
 
-uint16_t bios_data_rate(imageDisk& disk)
+uint16_t bios_data_rate(imageDisk& disk,
+                        const double revolution_ms = StandardRevolutionMs)
 {
 	const auto type = disk.GetBiosType();
-	return type == 6 ? 1000 : (type == 2 || type == 4 ? 500 : 250);
+	if (type == 6) {
+		return 1000;
+	}
+	if (type == 2 || type == 4) {
+		return 500;
+	}
+	// Double-density media captured in a 360-RPM drive uses 300 kbps.
+	return revolution_ms < 180.0 ? 300 : 250;
 }
 
 // The BIOS consumes PCjr FIFO bytes as they become ready, while the
@@ -2099,6 +2107,16 @@ BiosCommandResult bios_command(const uint8_t unit, const uint32_t cylinder,
 	    cylinder >= disk->cylinders || head > 1 || head >= disk->heads) {
 		return {.error = 0x04};
 	}
+	const auto media = BIOS_GetFloppyMedia(unit);
+	const auto rate  = bios_data_rate(*disk,
+                                         media ? media->GetFormatCycleMs(cylinder, head)
+	                                        : StandardRevolutionMs);
+	// BIOS-owned commands select the drive's media rate. Direct FDC
+	// commands continue to use the rate explicitly programmed in CCR.
+	write_ccr(0x3f7,
+	          rate == 1000 ? 3 : (rate == 500 ? 0 : (rate == 300 ? 1 : 2)),
+	          io_width_t::byte);
+
 	constexpr auto MaskChannel = 0x04 | FloppyDma;
 	const auto pcjr            = is_machine_pcjr();
 	auto* dma = size && !pcjr ? DMA_GetChannel(FloppyDma) : nullptr;
@@ -2204,7 +2222,6 @@ static FloppyBiosTransferResult bios_transfer_track(
 	    cylinder > UINT8_MAX || head > 1) {
 		return {0x04, 0};
 	}
-
 	const auto writing   = operation == FloppyBiosTransfer::Write;
 	const auto verifying = operation == FloppyBiosTransfer::Verify;
 	const auto dma       = !is_machine_pcjr() && !verifying;
@@ -2369,8 +2386,6 @@ uint8_t FLOPPY_BiosFormat(const uint8_t unit, const uint32_t cylinder,
 	if (!FLOPPY_CanStartBiosCommand()) {
 		return 0x80;
 	}
-	const auto rate = bios_data_rate(*disk);
-	write_ccr(0x3f7, rate == 1000 ? 3 : (rate == 500 ? 0 : 2), io_width_t::byte);
 	const auto size     = check_cast<uint32_t>(count * FormatIdSize);
 	const auto transfer = bios_command(
 	        unit, cylinder, head, command, address, size, true, 3, buffer_offset);
