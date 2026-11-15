@@ -105,7 +105,7 @@ struct Controller {
 	ByteTransfer bytes      = {};
 	bool fm                 = false;
 	bool fifo_enabled       = false;
-	uint8_t fifo_threshold  = 0;
+	uint8_t fifo_threshold  = 1;
 	double transfer_byte_ms = 8.0 / DefaultDataRateKbps;
 
 	std::array<Drive, 2> drives                        = {};
@@ -1083,8 +1083,9 @@ void refresh_fifo_request()
 		}
 	} else if (!bytes.count) {
 		bytes.request = false;
-	} else if (bytes.count >=
-	                   (fdc.fifo_enabled ? FifoSize - fdc.fifo_threshold : 1) ||
+	} else if (bytes.count >= (fdc.fifo_enabled
+	                                   ? std::max(size_t{1}, FifoSize - fdc.fifo_threshold)
+	                                   : 1) ||
 	           bytes.disk_offset == bytes.data.size()) {
 		bytes.request = true;
 	}
@@ -1575,7 +1576,7 @@ void execute_command(const Command command)
 	switch (command) {
 	case Command::Configure:
 		fdc.fifo_enabled   = (fdc.command[2] & 0x20) == 0;
-		fdc.fifo_threshold = fdc.command[2] & 0x0f;
+		fdc.fifo_threshold = check_cast<uint8_t>((fdc.command[2] & 0x0f) + 1);
 		break;
 	case Command::Specify:
 		fdc.non_dma          = (fdc.command[2] & 1) != 0;
