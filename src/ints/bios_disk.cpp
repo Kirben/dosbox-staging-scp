@@ -687,14 +687,18 @@ static uint8_t format_floppy_track(imageDisk& disk, const uint8_t unit,
 	if (size_code > 7) {
 		return 0x01;
 	}
-	for (size_t i = IdSize - 1; i < table_size; i += IdSize) {
-		const auto id_size =
-		        use_dma ? mem_readb(address + check_cast<PhysPt>(i))
-		                : real_readb(RealSegment(table),
-		                             static_cast<uint16_t>(
-		                                     RealOffset(table) + i));
-		if (id_size != size_code) {
-			return 0x04;
+	// Track backends preserve arbitrary ID size bytes independently of
+	// the command's physical field size. Raw files cannot retain them.
+	if (!BIOS_GetFloppyMedia(unit)) {
+		for (size_t i = IdSize - 1; i < table_size; i += IdSize) {
+			const auto id_size =
+			        use_dma ? mem_readb(address + check_cast<PhysPt>(i))
+			                : real_readb(RealSegment(table),
+			                             static_cast<uint16_t>(
+			                                     RealOffset(table) + i));
+			if (id_size != size_code) {
+				return 0x04;
+			}
 		}
 	}
 	const auto gap = mem_readb(params + 7);

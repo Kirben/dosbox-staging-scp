@@ -365,6 +365,15 @@ bios_format_probe:
     jne finish
 %endif
     ; Alias 61000h with a wrapping segment offset on the same DMA page.
+%ifdef FORMAT_INVALID
+%ifdef SCP_FORMAT
+    ; ID/command size mismatches are valid on track images. Reject an
+    ; unsupported physical size instead, before transferring the table.
+    mov ax,351eh
+    int 21h
+    mov byte [es:bx+3],8
+%endif
+%endif
     mov ax,6000h
     mov es,ax
     mov di,1000h
@@ -388,7 +397,11 @@ bios_format_probe:
     cmp ah,03h
 %elifdef FORMAT_INVALID
     jnc finish
+%ifdef SCP_FORMAT
+    cmp ah,01h
+%else
     cmp ah,04h
+%endif
 %else
     jc finish
     test ah,ah
