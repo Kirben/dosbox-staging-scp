@@ -358,17 +358,26 @@ void BOOT::Run(void)
 	const auto boot_disk       = boot_from_files ? boot_disks.front()
 	                                             : BIOS_GetDisk(drive_index(drive));
 	bootSector bootarea        = {};
+	// Cartridges have a file header, not floppy geometry. Recognize them
+	// before requiring the sector interface to validate a disk boot.
+	const auto cartridge =
+	        boot_from_files && usefile_1 && !boot_disk->GetFloppyMedia() &&
+	        rombytesize_1 >= sizeof(bootarea.rawdata) &&
+	        fseek(usefile_1, 0, SEEK_SET) == 0 &&
+	        fread(bootarea.rawdata, 1, sizeof(bootarea.rawdata), usefile_1) ==
+	                sizeof(bootarea.rawdata) &&
+	        bootarea.rawdata[0] == 0x50 && bootarea.rawdata[1] == 0x43 &&
+	        bootarea.rawdata[2] == 0x6a && bootarea.rawdata[3] == 0x72;
 	if (!boot_disk ||
-	    (boot_from_files && rombytesize_1 < sizeof(bootarea.rawdata)) ||
-	    boot_disk->getSectSize() != sizeof(bootarea.rawdata) ||
-	    boot_disk->Read_Sector(0, 0, 1, bootarea.rawdata) != MediaResult::Ok) {
+	    (!cartridge &&
+	     ((boot_from_files && rombytesize_1 < sizeof(bootarea.rawdata)) ||
+	      boot_disk->getSectSize() != sizeof(bootarea.rawdata) ||
+	      boot_disk->Read_Sector(0, 0, 1, bootarea.rawdata) != MediaResult::Ok))) {
 		WriteOut(MSG_Get("PROGRAM_BOOT_UNABLE"), drive);
 		return;
 	}
 
-	if (!boot_disk->GetFloppyMedia() && (bootarea.rawdata[0] == 0x50) &&
-	    (bootarea.rawdata[1] == 0x43) && (bootarea.rawdata[2] == 0x6a) &&
-	    (bootarea.rawdata[3] == 0x72)) {
+	if (cartridge) {
 		if (!is_machine_pcjr()) {
 			WriteOut(MSG_Get("PROGRAM_BOOT_CART_WO_PCJR"));
 		} else {
