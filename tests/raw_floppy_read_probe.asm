@@ -771,6 +771,16 @@ write_duplicate db 45h,DRIVE_HEAD,2,1,6,2,6,2ah,0ffh
 %endif
 
 reset_and_seek:
+    ; Select the synthesized track's physical MFM rate.
+    mov dx,3f7h
+%if SECTORS >= 36
+    mov al,3
+%elif SECTORS >= 15
+    xor al,al
+%else
+    mov al,2
+%endif
+    out dx,al
     mov byte [interrupts],0
     mov dx,3f2h
     xor al,al

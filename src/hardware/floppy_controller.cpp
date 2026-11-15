@@ -1573,6 +1573,15 @@ void start_loaded_data(uint32_t)
 		finish_data(0x04);
 		return;
 	}
+	if (data_rate_kbps != bios_data_rate(*fdc.disk, rotation_cycle_ms())) {
+		// The synthesized MFM track has a fixed physical clock, just
+		// like a captured track. A different CCR cannot recover its IDs.
+		fdc.missing_address_mark = true;
+		fdc.track_sector         = nullptr;
+		PIC_AddEvent(missing_sector,
+		             2 * rotation_cycle_ms() - rotation_ms());
+		return;
+	}
 
 	const auto length_ms   = slot_length_ms();
 	const auto position_ms = rotation_ms();
