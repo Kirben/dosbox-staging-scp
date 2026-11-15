@@ -416,7 +416,9 @@ std::shared_ptr<FloppyMfmTrack> FloppyMfmTrack::Sample(const uint64_t cycle,
 		if (upper == decoded->cell_ends.end()) {
 			return decoded->bit_count;
 		}
-		const auto lower_index = check_cast<size_t>(
+		// lower_bound returns an iterator in this vector, so its
+		// nonnegative distance from begin fits size_t.
+		const auto lower_index = static_cast<size_t>(
 		        upper - decoded->cell_ends.begin());
 		const auto lower_time = lower_index
 		                              ? decoded->cell_ends[lower_index - 1]
@@ -914,7 +916,7 @@ std::shared_ptr<FloppyMfmTrack> FloppyTrackImage::format_track_cells(
 	                                                              format.fm)
 	                : 0;
 	const auto cutoff = format.gap
-	                          ? check_cast<size_t>(std::min<uint64_t>(
+	                          ? static_cast<size_t>(std::min<uint64_t>(
 	                                    bits,
 	                                    uint64_t{format.written_cells.value_or(
 	                                            check_cast<uint32_t>(
@@ -958,11 +960,14 @@ std::shared_ptr<FloppyMfmTrack> FloppyTrackImage::format_track_cells(
 	}
 	size_t position      = 0;
 	bool last_data       = false;
+	const auto scaled_cell = [&](const uint64_t offset) {
+		const auto cell = offset * bits / encoding_bits;
+		assert(std::in_range<size_t>(cell));
+		return static_cast<size_t>(cell);
+	};
 	const auto write_bit = [&](const bool value) {
-		const auto begin = check_cast<size_t>(uint64_t{position} *
-		                                      bits / encoding_bits);
-		const auto end   = check_cast<size_t>((uint64_t{position} + 1) *
-		                                      bits / encoding_bits);
+		const auto begin = scaled_cell(position);
+		const auto end   = scaled_cell(uint64_t{position} + 1);
 		for (auto cell = begin;
 		     cell < end && cell < bits && (!partial || cell < cutoff);
 		     ++cell) {

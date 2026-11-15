@@ -498,7 +498,7 @@ void FloppyTrackImage::copy_track_write(const uint32_t cylinder, const uint32_t 
 				const auto next = std::ranges::lower_bound(
 				        destination->cell_ends, position - 1e-12);
 				found = std::min(destination->bit_count - 1,
-				                 check_cast<size_t>(
+				                 static_cast<size_t>(
 				                         next -
 				                         destination->cell_ends.begin()));
 			}

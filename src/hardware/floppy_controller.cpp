@@ -453,7 +453,7 @@ void schedule_track_sector(const FloppyMedia& image, const bool read_id)
 	const auto next  = std::upper_bound(ends.begin(),
                                            ends.end() - 1,
                                            position_ms / cycle_ms);
-	const auto index = check_cast<size_t>(next - ends.begin());
+	const auto index = static_cast<size_t>(next - ends.begin());
 	// Search through two physical index pulses, not one capture cycle.
 	// A capture can contain several distinct recorded revolutions.
 	const auto second_index   = index + 1 < ends.size()
@@ -1589,7 +1589,7 @@ void start_loaded_data(uint32_t)
 		const auto index = std::upper_bound(ends.begin(),
 		                                    ends.end() - 1,
 		                                    position);
-		const auto next  = check_cast<size_t>(index - ends.begin()) + 1;
+		const auto next = static_cast<size_t>(index - ends.begin()) + 1;
 		fdc.track_revolution = next % ends.size();
 		fdc.track_cycle      = rotation_capture_cycle() +
 		                  (next == ends.size() ? 1u : 0u);
@@ -1601,7 +1601,7 @@ void start_loaded_data(uint32_t)
                         [](const FloppySector& sector, const size_t revolution) {
                                 return sector.revolution < revolution;
                         });
-		fdc.track_offset    = check_cast<size_t>(first - track.begin());
+		fdc.track_offset = static_cast<size_t>(first - track.begin());
 		fdc.track_remaining = fdc.command[6];
 		fdc.track_transfer_ready = false;
 		const auto has_sector    = first != track.end() &&
