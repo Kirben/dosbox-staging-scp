@@ -515,16 +515,19 @@ bool FloppyTrackImage::CanOverlaySector(const OverlayKey& key, const bool fm) co
 			return false;
 		}
 		const auto& track = tracks[cylinder * heads + head].sectors;
+		// A physical record can replay a write selected on another
+		// captured turn, where the same ID had a good CRC.
 		return slot <= track.size() &&
 		       track[slot - 1].size_code == size_code &&
-		       !track[slot - 1].id_crc_error && track[slot - 1].fm == fm;
+		       track[slot - 1].fm == fm;
 	}
 	const auto track                      = GetTrack(cylinder, head);
 	std::optional<size_t> last_revolution = {};
+	auto has_good_id                      = false;
 	for (const auto& sector : track) {
 		if (sector.cylinder != cylinder || sector.head != head ||
 		    sector.id != id || sector.size_code != size_code ||
-		    sector.id_crc_error || sector.fm != fm) {
+		    sector.fm != fm) {
 			continue;
 		}
 		// A CHS write cannot distinguish duplicate IDs within a
@@ -533,8 +536,9 @@ bool FloppyTrackImage::CanOverlaySector(const OverlayKey& key, const bool fm) co
 			return false;
 		}
 		last_revolution = sector.revolution;
+		has_good_id |= !sector.id_crc_error;
 	}
-	return last_revolution.has_value();
+	return has_good_id;
 }
 
 void FloppyTrackImage::ApplyOverlaySector(const OverlayKey& key,
@@ -582,7 +586,10 @@ void FloppyTrackImage::ApplyOverlaySector(const OverlayKey& key,
 	for (auto& sector : sectors) {
 		if (sector.cylinder == cylinder && sector.head == head &&
 		    sector.id == id && sector.size_code == size_code &&
-		    !sector.id_crc_error && sector.fm == data.fm) {
+		    sector.fm == data.fm) {
+			// A successful write changes the same physical data arc
+			// on every turn, even when another turn has a weak ID
+			// CRC.
 			apply(sector);
 		}
 	}
@@ -1039,6 +1046,9 @@ bool FloppyTrackImage::WriteSector(const uint32_t cylinder, const uint32_t head,
 	}
 	std::optional<FloppySector> stable_selected = {};
 	if (selected) {
+		if (selected->id_crc_error) {
+			return false;
+		}
 		ensure_encoding_fields(cylinder, head, selected->fm);
 		const auto fields = GetTrack(cylinder, head);
 		const auto found = std::ranges::find_if(fields, [&](const auto& field) {
