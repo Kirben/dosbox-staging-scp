@@ -382,8 +382,10 @@ std::vector<uint8_t> overlapping_capture(const uint8_t size_code,
 		field(id);
 		field(data);
 	}
-	std::vector<uint8_t> image = {'H', 'X', 'C', 'M', 'F', 'M', 0};
-	image.resize(19 + size_t{cylinders} * 11);
+	const auto data_start = 19 + size_t{cylinders} * 11;
+	std::vector<uint8_t> image(data_start + size_t{cylinders} * cells.size());
+	constexpr std::array<uint8_t, 7> signature = {'H', 'X', 'C', 'M', 'F', 'M', 0};
+	std::ranges::copy(signature, image.begin());
 	write_le16(image, 7, cylinders);
 	image[9] = 1;
 	write_le16(image, 10, 300);
@@ -393,8 +395,10 @@ std::vector<uint8_t> overlapping_capture(const uint8_t size_code,
 		const auto entry = 19 + size_t{cylinder} * 11;
 		write_le16(image, entry, cylinder);
 		write_le32(image, entry + 3, static_cast<uint32_t>(cells.size()));
-		write_le32(image, entry + 7, static_cast<uint32_t>(image.size()));
-		image.insert(image.end(), cells.begin(), cells.end());
+		const auto offset = data_start + size_t{cylinder} * cells.size();
+		write_le32(image, entry + 7, static_cast<uint32_t>(offset));
+		std::ranges::copy(cells,
+		                  std::span(image).subspan(offset, cells.size()).begin());
 	}
 	return image;
 }
