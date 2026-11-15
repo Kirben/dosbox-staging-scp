@@ -1933,11 +1933,12 @@ void write_dor(io_port_t, const io_val_t value, io_width_t)
 			LOG_WARNING("FDC: Could not save track format interrupted by reset");
 		}
 		reset_controller();
-	} else if (writing_data && motor_on(unit) && !(value & (0x10u << unit))) {
+	} else if (writing_data && motor_on(unit) &&
+	           (!(value & (0x10u << unit)) || (value & 3u) != unit)) {
 		// Persist at the model's drive-unavailable boundary. Mechanical
 		// coast-down and drive-specific write-gate delays are separate.
 		if (!preserve_interrupted_write()) {
-			LOG_WARNING("FDC: Could not save sector write interrupted by motor loss");
+			LOG_WARNING("FDC: Could not save sector write interrupted by drive loss");
 		}
 	}
 	fdc.dor = check_cast<uint8_t>(value);

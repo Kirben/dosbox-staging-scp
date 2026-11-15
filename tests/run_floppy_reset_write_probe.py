@@ -75,6 +75,13 @@ def other_motor_stop(pio):
 ''' + motor_stop(False, active=False)
 
 
+def drive_switch(pio, unit=0, active=True):
+    """Deselect A without stopping its motor, then recover and rephase A."""
+    assert not pio and unit == 0
+    return motor_stop(pio, unit, active).replace(
+        'mov al,12\n', 'mov al,29\n') + motor_stop(False, active=False)
+
+
 def wait_crc(fm):
     """Target the middle of CRC emission from the first host byte's PIT stamp."""
     ticks = round(512.25 * (64 if fm else 32) * 1.193182)
@@ -269,7 +276,8 @@ def run(args, directory, image, pio, fm, writing, phase):
         code = code.replace('mov al,1ch', f'mov al,{running}')
     if motor:
         def interrupt(native_pio):
-            return motor_stop(native_pio, unit, phase != 'after')
+            stop = drive_switch if getattr(args, 'drive_switch', False) else motor_stop
+            return stop(native_pio, unit, phase != 'after')
     else:
         interrupt = reset
     if phase == 'other':
