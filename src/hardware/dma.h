@@ -17,6 +17,7 @@
 enum class DmaDirection {
 	Read,
 	Write,
+	Verify,
 };
 
 enum class DmaEvent {
@@ -47,6 +48,7 @@ public:
 	bool is_incremented             = true;
 	bool is_memory_to_device        = false;
 	bool is_device_to_memory        = false;
+	bool is_verifying               = false;
 	bool is_autoiniting             = false;
 	bool is_masked                  = true;
 	bool has_reached_terminal_count = false;
@@ -66,6 +68,7 @@ public:
 	void ClearRequest();
 	size_t Read(size_t words, uint8_t* const dest_buffer);
 	size_t Write(size_t words, uint8_t* const src_buffer);
+	size_t Verify(const size_t words);
 	void LogDetails() const;
 
 	// Reset the channel back to defaults, without callbacks or reservations.

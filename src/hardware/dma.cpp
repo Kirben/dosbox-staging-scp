@@ -294,6 +294,7 @@ void DmaController::WriteControllerReg(const io_port_t reg,
 		chan                      = GetChannel(val & 3);
 		chan->is_memory_to_device = (val & 0x0c) == 0x08;
 		chan->is_device_to_memory = (val & 0x0c) == 0x04;
+		chan->is_verifying        = (val & 0x0c) == 0;
 		chan->is_autoiniting      = (val & 0x10) > 0;
 		chan->is_incremented      = (val & 0x20) > 0;
 		// TODO Maybe other bits?
@@ -443,6 +444,13 @@ size_t DmaChannel::Write(const size_t words, uint8_t* const src_buffer)
 	return ReadOrWrite(DmaDirection::Write, words, src_buffer);
 }
 
+size_t DmaChannel::Verify(const size_t words)
+{
+	// The 8237 advances its address/count and emits TC without asserting
+	// memory or I/O strobes during a Verify transfer.
+	return ReadOrWrite(DmaDirection::Verify, words, nullptr);
+}
+
 size_t DmaChannel::ReadOrWrite(const DmaDirection direction, const size_t words,
                                uint8_t* const buffer)
 {
@@ -455,13 +463,27 @@ size_t DmaChannel::ReadOrWrite(const DmaDirection direction, const size_t words,
 again:
 	uint32_t left = (curr_count + 1);
 	if (want < left) {
-		perform_dma_io(direction, page_base, curr_addr, curr_buffer, want, is_16bit);
+		if (direction != DmaDirection::Verify) {
+			perform_dma_io(direction,
+			               page_base,
+			               curr_addr,
+			               curr_buffer,
+			               want,
+			               is_16bit);
+		}
 		done += want;
 		curr_addr += check_cast<uint32_t>(want);
 		curr_count -= check_cast<uint16_t>(want);
 	} else {
-		perform_dma_io(direction, page_base, curr_addr, curr_buffer, left, is_16bit);
-		curr_buffer += left << is_16bit;
+		if (direction != DmaDirection::Verify) {
+			perform_dma_io(direction,
+			               page_base,
+			               curr_addr,
+			               curr_buffer,
+			               left,
+			               is_16bit);
+			curr_buffer += left << is_16bit;
+		}
 		want -= left;
 		done += left;
 		ReachedTerminalCount();
@@ -532,6 +554,7 @@ void DmaChannel::Reset()
 	is_incremented             = true;
 	is_memory_to_device        = false;
 	is_device_to_memory        = false;
+	is_verifying               = false;
 	is_autoiniting             = false;
 	is_masked                  = true;
 	has_reached_terminal_count = false;
