@@ -8,9 +8,11 @@ from hashlib import sha256
 import json
 import os
 from pathlib import Path
+import re
 import shutil
 import subprocess
 import sys
+from xml.etree import ElementTree
 
 
 INPUT_DIRECTORIES = ("src", "include", "tests", "cmake", "scripts", "resources", ".github")
@@ -125,8 +127,10 @@ def artifact_path(path, distro):
 
 def validate_stamp(source, stamp):
     """Reject partial tests, changed inputs, or replaced build artifacts."""
-    if stamp.get("schema") != 1 or stamp.get("group") != "full" or not stamp.get("passed"):
+    if stamp.get("schema") != 2 or stamp.get("group") != "full" or not stamp.get("passed"):
         raise ValueError("A successful full CTest run is required before pushing")
+    if stamp.get("floppy_tests") != required_floppy_tests(source):
+        raise ValueError("Full validation does not cover the required floppy tests")
     if stamp.get("source_digest") != manifest_digest(input_manifest(source)):
         raise ValueError("Build/test inputs changed since the full run; rerun full tests")
     for name, digest in stamp.get("artifacts", {}).items():
@@ -185,6 +189,46 @@ def install_hook(source):
     print(f"Installed local full-test gate: {path}")
 
 
+def required_floppy_tests(source):
+    """Derive required guest coverage from the source, not an incomplete build."""
+    configuration = (source / "tests/CMakeLists.txt").read_text()
+    configuration = re.sub(r"#[^\n]*", "", configuration)
+    guests = re.findall(r"add_floppy_guest_test\(\s*(\w+)", configuration)
+    if not guests:
+        raise ValueError("No required floppy guest tests were found in the source")
+    return sorted({"FloppyFixtureCache", "FloppyWorkflow",
+                   *(f"Guest.{name}" for name in guests)})
+
+
+def verify_full_registration(source, build, environment):
+    """Reject missing dependencies and disabled probes before running full tests."""
+    required = required_floppy_tests(source)
+    inventory = json.loads(subprocess.check_output(
+        ["ctest", "--test-dir", str(build), "--show-only=json-v1"],
+        cwd=source, env=environment, text=True))
+    available = {test["name"]: test for test in inventory["tests"]}
+    missing = set(required) - available.keys()
+    disabled = {name for name in required if name in available
+                and any(prop["name"] == "DISABLED" and prop["value"]
+                        for prop in available[name].get("properties", []))}
+    if missing or disabled:
+        raise ValueError("Full floppy coverage is unavailable; install Python/NASM and "
+                         "reconfigure the Linux build. Missing or disabled: "
+                         + ", ".join(sorted(missing | disabled)))
+    return required
+
+
+def verify_full_results(report, required):
+    """A registered probe must also execute successfully, rather than be skipped."""
+    cases = ElementTree.parse(report).getroot().iter("testcase")
+    passed = {case.get("name") for case in cases
+              if case.get("status") in (None, "run")
+              and all(case.find(tag) is None for tag in ("failure", "error", "skipped"))}
+    missing = set(required) - passed
+    if missing:
+        raise ValueError("Required floppy tests did not pass: " + ", ".join(sorted(missing)))
+
+
 def run_tests(args):
     """Build incrementally, run the selected group and stamp full runs only."""
     source, build = args.source.resolve(), args.build.resolve()
@@ -208,14 +252,23 @@ def run_tests(args):
                  (build / "dosbox", build / "tests/dosbox_tests", build / "CMakeCache.txt")}
     command = ["ctest", "--test-dir", str(build), "--parallel", str(args.jobs),
                "--output-on-failure", "--no-tests=error"]
-    if args.group != "full":
+    report = build / "floppy-test-full.xml"
+    required = []
+    if args.group == "full":
+        required = verify_full_registration(source, build, environment)
+        report.unlink(missing_ok=True)
+        command += ["--output-junit", str(report)]
+    else:
         command += ["-R", GROUPS[args.group]]
     run_logged(command, source, build / f"floppy-test-{args.group}.log", environment)
+    if args.group == "full":
+        verify_full_results(report, required)
     if input_manifest(source) != before or any(digest_file(Path(path)) != digest
                                                for path, digest in artifacts.items()):
         raise ValueError("Inputs or build artifacts changed during testing; no validation saved")
     if args.group == "full":
-        stamp = {"schema": 1, "group": "full", "passed": True,
+        stamp = {"schema": 2, "group": "full", "passed": True,
+                 "floppy_tests": required,
                  "source_digest": manifest_digest(before), "artifacts": artifacts,
                  "distro": os.environ.get("WSL_DISTRO_NAME"),
                  "completed_utc": datetime.now(timezone.utc).isoformat()}
