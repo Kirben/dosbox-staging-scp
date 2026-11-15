@@ -161,6 +161,28 @@ mixed_data_{index}:
     assert image.read_bytes() == original
     print(f".{extension}: mixed-rate IDs and payloads passed", flush=True)
 
+def check_raw(dosbox, nasm, directory, extension):
+    """Apply the same separator-rate and recovery expectations to raw disks."""
+    for size_kb, rate in ((360, 250), (720, 250), (1200, 500),
+                          (1440, 500), (2880, 1000)):
+        image = directory / f"raw-rate-{size_kb}.{extension}"
+        original = b"\x77" * (size_kb * 1024)
+        image.write_bytes(original)
+        correct = (500, 300, 250, 1000).index(rate)
+        checks, commands = RESET, ""
+        for index, selector in enumerate((correct, 0, correct, 1, correct, 2, 3, correct)):
+            for opcode in (0x4a, 0x46):
+                label = f"{index}_{opcode}"
+                checks += command_checks(selector, opcode, label, rate)
+                commands += f"command_{label} db {opcode},0,0,0,1,2,1,54h,0ffh\n"
+        run_guest(dosbox, nasm, directory, image,
+                  checks + "jmp checked\n" + commands + ROUTINES + "checked:\n",
+                  extra_commands=("config -set cpu cpu_cycles=20000",))
+        assert image.read_bytes() == original
+        print(f".{extension} {size_kb} KiB: rate rejection/recovery, IRQ6, DMA and guards passed",
+              flush=True)
+
+
 def main():
     """Exercise each captured-track backend using unchanged read-only images."""
     parser = argparse.ArgumentParser(description=__doc__)
@@ -168,6 +190,8 @@ def main():
     parser.add_argument("--nasm", default="nasm")
     args = parser.parse_args()
     with TemporaryDirectory() as temp:
+        for extension in ("img", "ima"):
+            check_raw(args.dosbox.resolve(), args.nasm, Path(temp), extension)
         for extension in ("scp", "mfm", "86f", "tc"):
             check_image(args.dosbox.resolve(), args.nasm, Path(temp), extension)
             check_mixed(args.dosbox.resolve(), args.nasm, Path(temp), extension)
