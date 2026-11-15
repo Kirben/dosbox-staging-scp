@@ -1603,9 +1603,18 @@ void start_loaded_data(uint32_t)
 		return;
 	}
 
-	if (fdc.command[2] != fdc.cylinder || fdc.command[3] != fdc.head ||
-	    fdc.command[5] != SectorSizeCode) {
+	if (fdc.command[3] != fdc.head || fdc.command[5] != SectorSizeCode) {
 		finish_data(0x04);
+		return;
+	}
+	if (fdc.command[2] != fdc.cylinder && fdc.sector &&
+	    fdc.sector <= fdc.disk->sectors) {
+		// The synthesized ID matches H/R/N but advertises the physical
+		// cylinder. Preserve WC and that ID after the two-index search.
+		fdc.wrong_field = {fdc.cylinder, fdc.head, fdc.sector, SectorSizeCode};
+		fdc.wrong_cylinder_sector = &fdc.wrong_field;
+		PIC_AddEvent(missing_sector,
+		             2 * rotation_cycle_ms() - rotation_ms());
 		return;
 	}
 
