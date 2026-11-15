@@ -320,6 +320,23 @@ TEST(FloppyTrackData, ResampleIndexAndRevolutionBoundaries)
 	EXPECT_EQ(raw.revolution_ends_bits, std::vector<size_t>({8, 16}));
 }
 
+TEST(FloppyTrackData, ResampleBoundaryCellsWithAssertions)
+{
+	FloppyMfmTrack raw       = {};
+	raw.cells                = {0x55};
+	raw.bit_count            = 8;
+	raw.revolution_ends_bits = {0, 1, 8};
+	for (const auto index : {size_t{0}, size_t{1}, size_t{7}}) {
+		raw.index          = index;
+		const auto sampled = raw.Sample(0, 0.016, 500);
+		ASSERT_TRUE(sampled);
+		EXPECT_EQ(sampled->index, index * 2);
+		EXPECT_EQ(sampled->revolution_ends_bits,
+		          std::vector<size_t>({0, 2, 16}));
+		EXPECT_EQ(sampled->cells, std::vector<uint8_t>({0x11, 0x11}));
+	}
+}
+
 TEST(FloppyTrackData, ResamplePhysicalIndexTimestamp)
 {
 	const std::array<uint64_t, 8> transitions = {
