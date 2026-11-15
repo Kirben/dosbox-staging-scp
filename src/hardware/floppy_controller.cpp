@@ -243,6 +243,7 @@ void pio_byte_event(uint32_t);
 void byte_transfer_event(uint32_t);
 void dma_fifo_event(uint32_t);
 void complete_byte_transfer(uint32_t);
+void complete_empty_track_sector(uint32_t);
 void refresh_fifo_request();
 void start_byte_transfer(const size_t size,
                          const std::span<const uint8_t> source = {},
@@ -281,6 +282,7 @@ void finish_data(const uint8_t status_1, const uint8_t status_2 = 0,
 	PIC_RemoveEvents(byte_transfer_event);
 	PIC_RemoveEvents(dma_fifo_event);
 	PIC_RemoveEvents(complete_byte_transfer);
+	PIC_RemoveEvents(complete_empty_track_sector);
 	if (fdc.bytes.active) {
 		if (auto* dma = DMA_GetChannel(FloppyDma); dma && !fdc.non_dma) {
 			dma->ClearRequest();
@@ -635,6 +637,16 @@ void finish_track_sector(const bool terminal_count, const double elapsed_ms)
 	}
 }
 
+void complete_empty_track_sector(uint32_t)
+{
+	if (!media_ready(selected_unit())) {
+		finish_data(0x04);
+		return;
+	}
+	fdc.track_transfer_ready = false;
+	finish_track_sector(false, fdc.track_transfer_ms);
+}
+
 void transfer_track_sector(uint32_t)
 {
 	if (!media_ready(selected_unit())) {
@@ -727,15 +739,26 @@ void transfer_track_sector(uint32_t)
 		fdc.sector_end_ms    = PIC_FullIndex() +
 		                    static_cast<double>(size + 2) * pio_byte_ms;
 	}
+	const auto host_size = fdc.command[5] == 0
+	                             ? std::min(size, size_t{fdc.command[8]})
+	                             : size;
+	if (!host_size) {
+		// DTL limits host bytes; CRC checking still consumes the
+		// complete physical N=0 field, even when no byte is delivered
+		// to the host.
+		PIC_AddEvent(complete_empty_track_sector,
+		             std::max(0.0, fdc.sector_end_ms - PIC_FullIndex()));
+		return;
+	}
 	if (fdc.non_dma && !fdc.fifo_enabled) {
 		if (!fdc.track_physical_transfer) {
 			fdc.sector_end_ms = PIC_FullIndex() +
 			                    static_cast<double>(size + 2) * pio_byte_ms;
 		}
-		start_pio_transfer(size, std::span(data).first(size));
+		start_pio_transfer(host_size, data.first(host_size));
 		return;
 	}
-	start_byte_transfer(size, std::span(data).first(size));
+	start_byte_transfer(host_size, data.first(host_size));
 }
 
 bool is_write_command(const Command command)
@@ -1913,6 +1936,7 @@ bool preserve_interrupted_write()
 
 void reset_controller()
 {
+	PIC_RemoveEvents(complete_empty_track_sector);
 	PIC_RemoveEvents(start_loaded_data);
 	PIC_RemoveEvents(complete_seek);
 	PIC_RemoveEvents(complete_read_id);
