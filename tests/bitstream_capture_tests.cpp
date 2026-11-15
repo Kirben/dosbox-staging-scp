@@ -1,12 +1,15 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 
 #include "ints/bitstream_capture.h"
+#include "ints/floppy_track_image.h"
 #include "ints/scp_capture.h"
 
 #include <algorithm>
 #include <array>
 #include <cstdio>
 #include <memory>
+#include <span>
+#include <string>
 #include <vector>
 
 #include <gtest/gtest.h>
@@ -336,6 +339,106 @@ TEST(BitstreamCapture, ScpPreservesOverflowEntriesAndRejectsDamagedExtentsAtomic
 	auto damaged = bytes;
 	damaged[8]   = 1;
 	EXPECT_FALSE(load_scp(capture, damaged, error));
+}
+
+std::vector<uint8_t> overlapping_capture(const uint8_t size_code,
+                                         const int records        = 768,
+                                         const uint16_t cylinders = 1)
+{
+	std::vector<uint8_t> cells = {};
+	bool previous              = false;
+	const auto append          = [&](const uint8_t byte) {
+                uint16_t word = 0;
+                for (auto bit = 7; bit >= 0; --bit) {
+                        const auto data = ((byte >> bit) & 1) != 0;
+                        word            = static_cast<uint16_t>(
+                                (word << 2) | ((!previous && !data) ? 2 : 0) | data);
+                        previous = data;
+                }
+                cells.push_back(static_cast<uint8_t>(word >> 8));
+                cells.push_back(static_cast<uint8_t>(word));
+	};
+	const auto field = [&](const std::span<const uint8_t> bytes) {
+		for (auto i = 0; i < 12; ++i) {
+			append(0);
+		}
+		cells.insert(cells.end(), {0x44, 0x89, 0x44, 0x89, 0x44, 0x89});
+		previous = true;
+		auto crc = uint16_t{0xcdb4};
+		for (const auto byte : bytes) {
+			append(byte);
+			crc ^= static_cast<uint16_t>(byte << 8);
+			for (auto bit = 0; bit < 8; ++bit) {
+				crc = static_cast<uint16_t>(
+				        (crc << 1) ^ ((crc & 0x8000) ? 0x1021 : 0));
+			}
+		}
+		append(static_cast<uint8_t>(crc >> 8));
+		append(static_cast<uint8_t>(crc));
+	};
+	const std::array<uint8_t, 5> id   = {0xfe, 0, 0, 1, size_code};
+	const std::array<uint8_t, 1> data = {0xfb};
+	for (auto i = 0; i < records; ++i) {
+		field(id);
+		field(data);
+	}
+	std::vector<uint8_t> image = {'H', 'X', 'C', 'M', 'F', 'M', 0};
+	image.resize(19 + size_t{cylinders} * 11);
+	write_le16(image, 7, cylinders);
+	image[9] = 1;
+	write_le16(image, 10, 300);
+	write_le16(image, 12, 1000);
+	write_le32(image, 15, 19);
+	for (uint16_t cylinder = 0; cylinder < cylinders; ++cylinder) {
+		const auto entry = 19 + size_t{cylinder} * 11;
+		write_le16(image, entry, cylinder);
+		write_le32(image, entry + 3, static_cast<uint32_t>(cells.size()));
+		write_le32(image, entry + 7, static_cast<uint32_t>(image.size()));
+		image.insert(image.end(), cells.begin(), cells.end());
+	}
+	return image;
+}
+
+TEST(BitstreamCapture, BoundDecodedDataWithoutRejectingOverlappingIds)
+{
+	for (const auto size_code : {uint8_t{2}, uint8_t{7}}) {
+		const auto bytes = overlapping_capture(size_code);
+		ASSERT_LT(bytes.size(), 64 * 1024u);
+		const auto close_file = [](FILE* file) { fclose(file); };
+		std::unique_ptr<FILE, decltype(close_file)> file(tmpfile(),
+		                                                 close_file);
+		ASSERT_TRUE(file);
+		ASSERT_EQ(fwrite(bytes.data(), 1, bytes.size(), file.get()),
+		          bytes.size());
+		std::string error = {};
+		const auto image  = FloppyTrackImage::LoadHxcMfm(file.get(),
+                                                                "decoded-budget",
+                                                                true,
+                                                                error);
+		if (size_code == 2) {
+			ASSERT_TRUE(image) << error;
+			EXPECT_EQ(image->GetTrack(0, 0).size(), 768u);
+		} else {
+			EXPECT_FALSE(image);
+			EXPECT_NE(error.find("resource limits"), std::string::npos);
+		}
+	}
+}
+
+TEST(BitstreamCapture, BoundAggregateDecodedImageData)
+{
+	// Every track is below the per-track limit, but 33 * 4 MB exceeds
+	// the image budget. The container itself occupies less than 1 MB.
+	const auto bytes = overlapping_capture(7, 256, 33);
+	ASSERT_LT(bytes.size(), 1024 * 1024u);
+	const auto close_file = [](FILE* file) { fclose(file); };
+	std::unique_ptr<FILE, decltype(close_file)> file(tmpfile(), close_file);
+	ASSERT_TRUE(file);
+	ASSERT_EQ(fwrite(bytes.data(), 1, bytes.size(), file.get()), bytes.size());
+	std::string error = {};
+	EXPECT_FALSE(
+	        FloppyTrackImage::LoadHxcMfm(file.get(), "decoded-budget", true, error));
+	EXPECT_NE(error.find("resource limits"), std::string::npos);
 }
 
 } // namespace

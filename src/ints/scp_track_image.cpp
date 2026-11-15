@@ -212,13 +212,23 @@ std::unique_ptr<FloppyTrackImage> FloppyTrackImage::LoadScp(FILE* file,
 				if (fm && best_score > 0) {
 					continue;
 				}
-				auto candidate = DecodeTrack(
-				        raw->cells, raw->bit_count, 0, false, raw, fm);
+				bool exceeded_budget = false;
+				auto candidate       = DecodeTrack(raw->cells,
+                                                             raw->bit_count,
+                                                             0,
+                                                             false,
+                                                             raw,
+                                                             fm,
+                                                             &exceeded_budget);
+				if (exceeded_budget) {
+					error = "SCP decoded track exceeds resource limits";
+					return {};
+				}
 				if (turns.size() > 1) {
 					PositionSectors(candidate,
 					                track.revolution_ends);
 				}
-				int score      = 0;
+				int score = 0;
 				for (const auto& sector : candidate) {
 					if (!sector.id_crc_error) {
 						score += sector.data.empty() ||
@@ -234,6 +244,10 @@ std::unique_ptr<FloppyTrackImage> FloppyTrackImage::LoadScp(FILE* file,
 					best_cell_ns = cell_ns;
 				}
 			}
+		}
+		if (!image->within_decoded_budget(decoded)) {
+			error = "SCP decoded image exceeds resource limits";
+			return {};
 		}
 		image->UpdateLogicalGeometry(static_cast<uint32_t>(index / 2),
 		                             static_cast<uint32_t>(index % 2),
@@ -383,6 +397,9 @@ void FloppyTrackImage::ensure_encoding_fields(const uint32_t cylinder,
 				added.push_back(std::move(field));
 			}
 		}
+	}
+	if (!within_decoded_budget(added)) {
+		return;
 	}
 	track.sectors.insert(track.sectors.end(), added.begin(), added.end());
 	track.encoding_fields_ready[fm] = true;
