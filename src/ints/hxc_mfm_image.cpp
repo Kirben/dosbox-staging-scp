@@ -1353,7 +1353,8 @@ double FloppyTrackImage::GetDataRateKbps(const uint32_t cylinder,
 	}
 	const auto& track = tracks[cylinder * heads + head];
 	for (const auto& sector : GetTrack(cylinder, head)) {
-		if (sector.fm || sector.id_crc_error || !sector.mfm_track ||
+		// A damaged ID CRC does not change the recovered physical clock.
+		if (sector.fm || !sector.mfm_track ||
 		    sector.revolution >= track.revolution_ends.size()) {
 			continue;
 		}
