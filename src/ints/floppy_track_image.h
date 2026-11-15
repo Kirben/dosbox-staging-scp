@@ -109,7 +109,8 @@ private:
 	void ApplyTrackFormat(const TrackAddress& address, const TrackFormat& format);
 	static Overlay TakeTrackWrites(Overlay& entries, const TrackAddress& address);
 	bool CanOverlaySector(const OverlayKey& key, const bool fm = false) const;
-	void ensure_fm_fields(const uint32_t cylinder, const uint32_t head);
+	void ensure_encoding_fields(const uint32_t cylinder,
+	                            const uint32_t head, const bool fm);
 	void copy_track_write(const uint32_t cylinder, const uint32_t head,
 	                      const FloppySector& sector, const bool create_data_mark,
 	                      const std::optional<uint32_t> write_bits = {});
@@ -130,7 +131,7 @@ private:
 		std::vector<std::shared_ptr<FloppyMfmTrack>> raw_tracks = {};
 		std::shared_ptr<const FluxTrack> flux                   = {};
 		bool cells_changed                                = false;
-		bool fm_fields_ready                                    = false;
+		std::array<bool, 2> encoding_fields_ready = {};
 		double cycle_ms                                   = 200.0;
 		double format_cycle_ms                            = 200.0;
 		std::vector<double> revolution_ends               = {1.0};
