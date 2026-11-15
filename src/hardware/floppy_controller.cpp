@@ -1575,7 +1575,8 @@ void complete_seek(const uint32_t unit)
 		seek.status    = check_cast<uint8_t>(
                         (seek.equipment_check ? 0x70u : 0x20u) | drive_bits);
 	} else {
-		seek.status = check_cast<uint8_t>(0x68u | drive_bits);
+		// 82077AA ST0 bit 3 is reserved and always reads as zero.
+		seek.status = check_cast<uint8_t>(0x60u | drive_bits);
 	}
 	seek.pcn = unit < fdc.drives.size() ? fdc.drives[unit].pcn : 0;
 	seek.active          = false;
