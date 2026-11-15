@@ -1032,7 +1032,7 @@ static Bitu DOS_21Handler(void)
 		   // TODO	Give errors for these functions to see if anyone
 		// actually uses this shit-
 		switch (reg_al) {
-		case 0:
+		case 0: // Called by 'Iron Blood' aka 'Interrupt : Bloody Signal'
 			reg_al = 0;
 			reg_dl = 0x2f;
 			break; /* always return '/' like dos 5.0+ */
