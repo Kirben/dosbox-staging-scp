@@ -2109,9 +2109,24 @@ BiosCommandResult bios_command(const uint8_t unit, const uint32_t cylinder,
 		return {.error = 0x04};
 	}
 	const auto media = BIOS_GetFloppyMedia(unit);
-	const auto rate  = bios_data_rate(*disk,
-                                         media ? media->GetFormatCycleMs(cylinder, head)
+	auto rate        = bios_data_rate(*disk,
+                                   media ? media->GetFormatCycleMs(cylinder, head)
 	                                        : StandardRevolutionMs);
+	if (media) {
+		const auto measured = media->GetDataRateKbps(cylinder, head);
+		// Preserve the nominal clock for captures with speed variation.
+		// A different density must not depend on an exact CHS-table match.
+		if (measured > 0 && std::abs(measured - rate) > rate / 8.0) {
+			constexpr std::array<uint16_t, 4> rates = {250, 300, 500, 1000};
+			const auto closest = std::ranges::min_element(
+			        rates, {}, [&](const auto value) {
+				        return std::abs(measured - value);
+			        });
+			if (std::abs(measured - *closest) <= *closest / 8.0) {
+				rate = *closest;
+			}
+		}
+	}
 	// BIOS-owned commands select the drive's media rate. Direct FDC
 	// commands continue to use the rate explicitly programmed in CCR.
 	write_ccr(0x3f7,
