@@ -10,6 +10,8 @@ from tempfile import TemporaryDirectory
 from run_floppy_bios_machine_probe import SETUP, FINISH, Case, request
 from run_floppy_read_deleted_probe import make_track
 from run_floppy_zero_sector_probe import encode_tracks
+from run_floppy_transfer_edges_probe import DMA
+from run_floppy_write_deleted_probe import routines, setup
 from run_transcopy_layout_probe import run_guest
 
 
@@ -96,7 +98,7 @@ def format_checks(case, order):
     jnz done
     inc byte [stage]
 """
-    expected = (case.unit, 0, 0, 0, 0, order[-1], case.size_code)
+    expected = (case.unit, 0, 0, 0, 0, order[-1], case.size_code + int(case.invalid_size))
     for index, value in enumerate(expected):
         code += f"cmp byte [es:{0x442 + index}],{value if transferred else 0xa5}\njne done\n"
     code += f"""
@@ -289,6 +291,74 @@ def check_busy(args, directory, machine):
     print(f"{machine}: busy format rejected, reset recovered, formatted data replayed", flush=True)
 
 
+def check_independent_id(args, directory, extension, machine):
+    """BIOS formatting retains ID N3 around a physical N2 field after restart."""
+    image = directory / f"independent-id-{machine}.{extension}"
+    original = encode_tracks(extension, [make_track(((1, 0xfb, "", 0x11),), 2)])
+    image.write_bytes(original)
+    run_guest(args.dosbox.resolve(), args.nasm, directory, image,
+              format_checks(Scenario(machine, invalid_size=True), (1,)),
+              machine=machine, read_only=False,
+              extra_commands=("config -set cpu cpu_cycles=20000",))
+    overlay = Path(str(image) + ".overlay")
+    saved = overlay.read_bytes()
+    pio = machine == "pcjr"
+    port = 0xf5 if pio else 0x3f5
+    checks = setup(pio) + f"""
+    mov dx,{port}
+    mov al,4ah
+    out dx,al
+    xor al,al
+    out dx,al
+    call wait_result
+    cmp byte [ids+1],0
+    jne done
+    cmp byte [ids+5],1
+    jne done
+    cmp byte [ids+6],3
+    jne done
+    inc byte [stage]
+"""
+    checks += DMA.replace("mov cx,512", "mov cx,528")
+    if pio:
+        checks += "mov al,6\nout 0ah,al\n"
+    checks += f"""
+    in al,08h
+    mov byte [command],42h
+    call send_command
+    call wait_result
+    cmp byte [ids+1],4
+    jne done
+    cmp byte [ids+2],0
+    jne done
+    cmp byte [ids+6],3
+    jne done
+    cmp word [io_count],{512 if pio else 0}
+    jne done
+    in al,08h
+    and al,4
+    cmp al,{0 if pio else 4}
+    jne done
+    mov di,buffer
+    mov cx,512
+    mov al,0e5h
+    repe scasb
+    jne done
+    mov cx,16
+    mov al,0a5h
+    repe scasb
+    jne done
+    inc byte [stage]
+"""
+    run_guest(args.dosbox.resolve(), args.nasm, directory, image,
+              checks + routines(pio), machine=machine,
+              extra_commands=("config -set cpu cpu_cycles=20000",))
+    assert image.read_bytes() == original
+    assert overlay.read_bytes() == saved
+    print(f"{extension} {machine}: BIOS ID/physical size independence, CRC and replay passed",
+          flush=True)
+
+
 def main():
     """Run A/B mounts, sizes, table boundaries and rejection controls."""
     parser = argparse.ArgumentParser(description=__doc__)
@@ -315,9 +385,12 @@ def main():
                     check_image(args, directory, extension,
                                 Scenario(machine, status=4, invalid_size=True))
                 else:
+                    check_independent_id(args, directory, extension, machine)
                     for size_code in (1, 3):
                         check_image(args, directory, extension,
                                     Scenario(machine, size_code=size_code))
+            if not raw:
+                check_independent_id(args, directory, extension, "svga_s3")
             count = 9 if raw else 3
             check_image(args, directory, extension, Scenario("tandy", offset=65536 - count * 4))
         for machine in ("pcjr", "tandy"):
