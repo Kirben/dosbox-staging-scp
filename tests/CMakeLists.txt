@@ -95,6 +95,8 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Linux" AND NOT CMAKE_CROSSCOMPILING)
         endfunction()
 
         add_floppy_guest_test(FloppyFatCache run_fat_floppy_cache_probe.py)
+        add_floppy_guest_test(FloppyHardwareContract run_floppy_contract_probe.py)
+        add_floppy_guest_test(FloppyWeakIdWriteContract run_floppy_contract_probe.py --weak-id)
         add_floppy_guest_test(FloppyTiming run_floppy_timing_probe.py)
         add_floppy_guest_test(FloppyReporting run_floppy_reporting_probe.py)
         add_floppy_guest_test(FloppyBootMemory run_floppy_boot_memory_probe.py)
