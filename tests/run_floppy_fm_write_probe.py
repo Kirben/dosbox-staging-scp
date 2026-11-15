@@ -257,18 +257,120 @@ def check_raw(args, directory, extension, formatting):
     assert image.read_bytes() == original
 
 
+# pylint: disable-next=too-many-arguments,too-many-positional-arguments,too-many-locals
+def dtl_checks(pio, fifo, dtl, opcode, writing, padded_dma=False):
+    """Distinguish host-byte limits from physical data, CRC and FIFO timing."""
+    host_size = dtl if writing else 128
+    count = 128 if padded_dma or not writing else max(1, dtl)
+    code = DMA.replace('mov cx,512', 'mov cx,144').replace(
+        'mov al,0ffh\n    out 05h,al', f'mov al,{count - 1}\n    out 05h,al').replace(
+            'mov al,1\n    out 05h,al', 'xor al,al\n    out 05h,al')
+    if writing:
+        code += 'mov di,buffer\nmov cx,128\nmov al,55h\nrep stosb\n'
+        code += 'mov al,4ah\nout 0bh,al\n'
+    if pio:
+        code += 'mov al,6\nout 0ah,al\n'
+    if fifo:
+        port = 0xf5 if pio else 0x3f5
+        code += f'''
+    mov dx,{port}
+    mov al,13h
+    out dx,al
+    xor al,al
+    out dx,al
+    out dx,al
+    out dx,al
+'''
+    terminal = not pio and host_size == count
+    status = 0 if terminal else 0x80
+    code += f'''
+    mov byte [command],{opcode}
+    mov byte [command+5],0
+    mov byte [command+8],{dtl if writing else 255}
+    in al,08h
+    call send_command
+    call wait_result
+    cmp byte [ids],{0 if terminal else 0x40}
+    jne done
+    cmp byte [ids+1],{status}
+    jne done
+    cmp byte [ids+2],0
+    jne done
+    cmp word [io_count],{host_size if pio else 0}
+    jne done
+    in al,08h
+    and al,4
+    cmp al,{4 if terminal else 0}
+    jne done
+    xor al,al
+    out 0ch,al
+    in al,05h
+    cmp al,{(count - (0 if pio else host_size) - 1) & 255}
+    jne done
+    in al,05h
+    cmp al,{255 if terminal else 0}
+    jne done
+    inc byte [stage]
+'''
+    if not writing:
+        code += f'''
+    mov di,buffer
+    mov cx,{dtl}
+    jcxz zero_tail
+    mov al,55h
+    repe scasb
+    jne done
+zero_tail:
+    mov cx,{128 - dtl}
+    jcxz guard_tail
+    xor al,al
+    repe scasb
+    jne done
+guard_tail:
+'''
+    else:
+        code += 'mov di,buffer+128\n'
+    code += 'mov cx,16\nmov al,0a5h\nrepe scasb\njne done\n'
+    return code
+
+
+def check_dtl(args, directory, extension):
+    """Replay short normal/deleted FM writes with DMA and both PCjr FIFO modes."""
+    for pio in (False, True):
+        for fifo in (False, True):
+            for dtl, opcode, padded in ((0, 5, False), (1, 5, False),
+                                        (64, 5, False), (64, 9, False),
+                                        (64, 5, True), (128, 5, False)):
+                image = directory / f'dtl-{pio}-{fifo}-{dtl}-{opcode}-{padded}.{extension}'
+                cells = (fm_byte(0xff) * 64 + fm_track(0))[:6250]
+                original = fm_image(extension, cells)
+                image.write_bytes(original)
+                run(args, directory, image, pio,
+                    dtl_checks(pio, fifo, dtl, opcode, True, padded), True)
+                run(args, directory, image, pio,
+                    dtl_checks(pio, fifo, dtl, 0x0c if opcode == 9 else 6, False)
+                    + fm_transfer(0x46, 0x22, pio, size_code=0))
+                assert image.read_bytes() == original
+                assert Path(str(image) + '.overlay').exists()
+    print(f'{extension}: FM DTL=0/1/64/128, FB/F8, DMA/PIO, FIFO, TC, '
+          'duplicate isolation, CRC and restart persistence passed', flush=True)
+
+
 def main():
     """Run FM writes and formatting independently for useful CTest timeouts."""
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--dosbox', required=True, type=Path)
     parser.add_argument('--nasm', default='nasm')
     parser.add_argument('--format', action='store_true')
+    parser.add_argument('--dtl', action='store_true')
     parser.add_argument('--formats', nargs='+', default=['scp', 'mfm', '86f', 'tc'])
     args = parser.parse_args()
     with TemporaryDirectory() as temporary:
         directory = Path(temporary)
         for extension in args.formats:
-            if args.format:
+            if args.dtl:
+                check_dtl(args, directory, extension)
+            elif args.format:
                 for pio in (False, True):
                     for rate, selector in ((250, 2), (300, 1), (500, 0)):
                         check_format(args, directory, extension, pio, rate, selector)

@@ -55,6 +55,7 @@ struct ByteTransfer {
 	std::array<uint8_t, FifoSize> fifo = {};
 	size_t disk_offset                 = 0;
 	size_t host_offset                 = 0;
+	size_t host_size                   = 0;
 	size_t first                       = 0;
 	size_t count                       = 0;
 	bool active                        = false;
@@ -129,6 +130,7 @@ struct Controller {
 	std::shared_ptr<FloppyMedia> media        = {};
 	std::vector<uint8_t> pio_data             = {};
 	size_t pio_offset                         = 0;
+	size_t pio_host_size                               = 0;
 	double pio_started_ms                     = 0;
 	bool pio_ready                            = false;
 	bool pio_writing                          = false;
@@ -243,7 +245,8 @@ void dma_fifo_event(uint32_t);
 void complete_byte_transfer(uint32_t);
 void refresh_fifo_request();
 void start_byte_transfer(const size_t size,
-                         const std::span<const uint8_t> source = {});
+                         const std::span<const uint8_t> source = {},
+                         const std::optional<size_t> host_size = {});
 void start_loaded_data(uint32_t);
 
 void begin_result(const size_t length, const bool interrupt)
@@ -549,7 +552,9 @@ void verify_sector()
 	}
 }
 
-void start_pio_transfer(const size_t size, const std::span<const uint8_t> source = {})
+void start_pio_transfer(const size_t size,
+                        const std::span<const uint8_t> source = {},
+                        const std::optional<size_t> host_size = {})
 {
 	fdc.pio_writing = source.empty();
 	fdc.pio_data.assign(size, 0);
@@ -557,11 +562,12 @@ void start_pio_transfer(const size_t size, const std::span<const uint8_t> source
 		std::copy(source.begin(), source.end(), fdc.pio_data.begin());
 	}
 	fdc.pio_offset      = 0;
+	fdc.pio_host_size   = host_size.value_or(size);
 	fdc.pio_waiting_crc = false;
 	fdc.pio_underrun    = false;
 	fdc.pio_started_ms  = PIC_FullIndex();
-	fdc.pio_ready       = true;
-	fdc.irq_pending     = true;
+	fdc.pio_ready       = fdc.pio_host_size != 0;
+	fdc.irq_pending     = fdc.pio_ready;
 	update_irq();
 	PIC_AddEvent(pio_byte_event, pio_byte_ms);
 	service_bios_pio();
@@ -918,7 +924,7 @@ void transfer_sector(uint32_t)
 	const auto host_size = fdc.command[5] == 0
 	                             ? std::min(data.size(), size_t{fdc.command[8]})
 	                             : data.size();
-	if (!host_size) {
+	if (!host_size && !writing) {
 		if (PIC_FullIndex() < fdc.sector_end_ms) {
 			PIC_AddEvent(transfer_sector,
 			             fdc.sector_end_ms - PIC_FullIndex());
@@ -931,14 +937,18 @@ void transfer_sector(uint32_t)
 		fdc.write_started_ms = PIC_FullIndex();
 	}
 	if (fdc.non_dma && !fdc.fifo_enabled) {
-		start_pio_transfer(host_size,
+		start_pio_transfer(writing ? data.size() : host_size,
 		                   writing ? std::span<const uint8_t>{}
-		                           : data.first(host_size));
+		                           : data.first(host_size),
+		                   host_size);
 		return;
 	}
-	start_byte_transfer(host_size,
+	// DTL limits host bytes, not the physical N=0 write. The rest of
+	// the 128-byte field remains zero and is clocked before its CRC.
+	start_byte_transfer(writing ? data.size() : host_size,
 	                    writing ? std::span<const uint8_t>{}
-	                            : data.first(host_size));
+	                            : data.first(host_size),
+	                    host_size);
 }
 
 
@@ -1083,8 +1093,7 @@ void refresh_fifo_request()
 	} else if (bytes.writing) {
 		const auto low = fdc.fifo_enabled ? size_t{fdc.fifo_threshold}
 		                                  : size_t{0};
-		if (bytes.count == capacity ||
-		    bytes.host_offset == bytes.data.size()) {
+		if (bytes.count == capacity || bytes.host_offset == bytes.host_size) {
 			bytes.request = false;
 		} else if (bytes.count <= low) {
 			bytes.request = true;
@@ -1117,6 +1126,7 @@ void refresh_fifo_request()
 	     (bytes.terminal_count ||
 	      (bytes.disk_offset == bytes.data.size() && !bytes.count))) ||
 	    (bytes.writing && (bytes.disk_offset == bytes.data.size() ||
+	                       (bytes.host_offset == bytes.host_size && !bytes.count) ||
 	                       (bytes.terminal_count && !bytes.count)))) {
 		if (bytes.writing && bytes.disk_offset < bytes.data.size() &&
 		    (fdc.command[0] & 0x1f) ==
@@ -1205,13 +1215,15 @@ void byte_transfer_event(uint32_t)
 	}
 }
 
-void start_byte_transfer(const size_t size, const std::span<const uint8_t> source)
+void start_byte_transfer(const size_t size, const std::span<const uint8_t> source,
+                         const std::optional<size_t> host_size)
 {
 	fdc.bytes   = {};
 	auto& bytes = fdc.bytes;
 	bytes.data.assign(size, 0);
 	bytes.active  = true;
 	bytes.writing = source.empty();
+	bytes.host_size = host_size.value_or(size);
 	if (!source.empty()) {
 		std::copy(source.begin(), source.end(), bytes.data.begin());
 	}
@@ -1361,7 +1373,7 @@ void pio_byte_event(uint32_t)
 		}
 		return;
 	}
-	if (fdc.pio_offset == fdc.pio_data.size()) {
+	if (fdc.pio_offset == fdc.pio_host_size) {
 		finish_pio_transfer();
 		return;
 	}
