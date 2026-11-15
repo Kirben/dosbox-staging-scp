@@ -26,7 +26,7 @@ def recovery_checks(unit):
     mov al,8
     out dx,al
     in al,dx
-    cmp al,{0x68 | unit}
+    cmp al,{0x60 | unit}
     jne done
     in al,dx
     cmp al,0
@@ -149,6 +149,45 @@ def main():
                       'drive busy retained through completion until Sense Interrupt; '
                       f'bit {1 << unit:02x} clears after acknowledgement; '
                       'head-1 command returns H=0; IRQ6 and final cylinders verified', flush=True)
+            check_unavailable_drives(args.dosbox.resolve(), args.nasm,
+                                     directory, image)
+
+
+def check_unavailable_drives(dosbox, nasm, directory, image):
+    """Keep reserved ST0 bits clear on failed Seek/Recalibrate for units 2/3."""
+    for unit in (2, 3):
+        for opcode in (7, 15):
+            checks = RESET + f'''
+    mov dx,3f2h
+    mov al,{0x0c | unit}
+    out dx,al
+    mov si,command
+    mov cx,{2 if opcode == 7 else 3}
+    call send_command
+''' + wait_microseconds(20000) + f'''
+    push ds
+    xor ax,ax
+    mov ds,ax
+    test byte [043eh],80h
+    pop ds
+    jz done
+    mov dx,3f5h
+    mov al,8
+    out dx,al
+    in al,dx
+    cmp al,{0x60 | unit}
+    jne done
+    in al,dx
+    cmp al,0
+    jne done
+    mov al,8
+    out dx,al
+    in al,dx
+    cmp al,80h
+    jne done
+'''
+            run_guest(dosbox, nasm, directory, image,
+                      program(checks, f'command db {opcode},{unit | 4},2\n'))
 
 
 if __name__ == "__main__":
