@@ -2060,6 +2060,31 @@ void write_pcjr_dor(io_port_t, const io_val_t value, const io_width_t width)
 
 } // namespace
 
+void FLOPPY_DetachDisk(const size_t unit)
+{
+	if (unit >= fdc.drives.size() || unit != selected_unit() ||
+	    fdc.phase != Phase::Execution || !fdc.disk ||
+	    fdc.disk != BIOS_GetDisk(unit)) {
+		return;
+	}
+	// Save while the old media is still attached. Replacement must not
+	// redirect an interrupted write or format into the incoming image.
+	const auto command = static_cast<Command>(fdc.command[0] & 0x1f);
+	const auto saved   = !is_write_command(command) ||
+	                   preserve_interrupted_write();
+	PIC_RemoveEvents(complete_read_id);
+	PIC_RemoveEvents(transfer_sector);
+	PIC_RemoveEvents(transfer_track_sector);
+	PIC_RemoveEvents(format_raw_track);
+	PIC_RemoveEvents(format_track_sector);
+	PIC_RemoveEvents(missing_sector);
+	if (command == Command::FormatTrack && fdc.media) {
+		finish_track_format(0x04);
+	} else {
+		finish_data(saved ? 0x04 : 0x20);
+	}
+}
+
 FloppyFormatResult FLOPPY_FormatTrack(imageDisk& disk, FloppyMedia* media,
                                       const uint32_t cylinder, const uint32_t head,
                                       const std::span<const uint8_t> ids,

@@ -164,6 +164,7 @@ static BiosDiskSlot exchange_disk_slot(const size_t slot, BiosDiskSlot replaceme
 static void set_disk_slot(const size_t slot, std::shared_ptr<imageDisk> disk)
 {
 	if (slot < 2 && disk_slots[slot].sector != disk) {
+		FLOPPY_DetachDisk(slot);
 		FLOPPY_SetDiskChanged(slot, true);
 	}
 	auto floppy = slot < 2 && disk ? disk->GetFloppyMedia() : nullptr;
