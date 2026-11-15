@@ -48,6 +48,8 @@ uint8_t FLOPPY_BiosFormat(const uint8_t unit, const uint32_t cylinder,
 
 void FLOPPY_SetDiskChanged(const size_t unit, const bool changed);
 bool FLOPPY_IsDiskChanged(const size_t unit);
+// Finish any active media transaction before the BIOS slot releases its image.
+void FLOPPY_DetachDisk(const size_t unit);
 
 bool FLOPPY_CanStartBiosCommand();
 void FLOPPY_BiosPosition(const uint8_t unit, const uint8_t cylinder);
