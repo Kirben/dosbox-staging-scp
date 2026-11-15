@@ -841,32 +841,35 @@
 			if (!val || !repetitions) { \
 				break; \
 			} \
+			/* Read once, shift internally, write once. */ \
+			auto operand = LoadMb(eaa); \
 			do { \
 				switch (which) { \
 				case 0x00: \
-					ROLB(eaa, val, LoadMb, SaveMb); \
+					ROLB(operand, val, LoadRb, SaveRb); \
 					break; \
 				case 0x01: \
-					RORB(eaa, val, LoadMb, SaveMb); \
+					RORB(operand, val, LoadRb, SaveRb); \
 					break; \
 				case 0x02: \
-					RCLB(eaa, val, LoadMb, SaveMb); \
+					RCLB(operand, val, LoadRb, SaveRb); \
 					break; \
 				case 0x03: \
-					RCRB(eaa, val, LoadMb, SaveMb); \
+					RCRB(operand, val, LoadRb, SaveRb); \
 					break; \
 				case 0x04: /* SHL and SAL are the same */ \
 				case 0x06: \
-					SHLB(eaa, val, LoadMb, SaveMb); \
+					SHLB(operand, val, LoadRb, SaveRb); \
 					break; \
 				case 0x05: \
-					SHRB(eaa, val, LoadMb, SaveMb); \
+					SHRB(operand, val, LoadRb, SaveRb); \
 					break; \
 				case 0x07: \
-					SARB(eaa, val, LoadMb, SaveMb); \
+					SARB(operand, val, LoadRb, SaveRb); \
 					break; \
 				} \
 			} while (--repetitions); \
+			SaveMb(eaa, operand); \
 		} \
 	}
 
@@ -922,32 +925,35 @@
 			if (!val || !repetitions) { \
 				break; \
 			} \
+			/* Read once, shift internally, write once. */ \
+			auto operand = LoadMw(eaa); \
 			do { \
 				switch (which) { \
 				case 0x00: \
-					ROLW(eaa, val, LoadMw, SaveMw); \
+					ROLW(operand, val, LoadRw, SaveRw); \
 					break; \
 				case 0x01: \
-					RORW(eaa, val, LoadMw, SaveMw); \
+					RORW(operand, val, LoadRw, SaveRw); \
 					break; \
 				case 0x02: \
-					RCLW(eaa, val, LoadMw, SaveMw); \
+					RCLW(operand, val, LoadRw, SaveRw); \
 					break; \
 				case 0x03: \
-					RCRW(eaa, val, LoadMw, SaveMw); \
+					RCRW(operand, val, LoadRw, SaveRw); \
 					break; \
 				case 0x04: /* SHL and SAL are the same */ \
 				case 0x06: \
-					SHLW(eaa, val, LoadMw, SaveMw); \
+					SHLW(operand, val, LoadRw, SaveRw); \
 					break; \
 				case 0x05: \
-					SHRW(eaa, val, LoadMw, SaveMw); \
+					SHRW(operand, val, LoadRw, SaveRw); \
 					break; \
 				case 0x07: \
-					SARW(eaa, val, LoadMw, SaveMw); \
+					SARW(operand, val, LoadRw, SaveRw); \
 					break; \
 				} \
 			} while (--repetitions); \
+			SaveMw(eaa, operand); \
 		} \
 	}
 
