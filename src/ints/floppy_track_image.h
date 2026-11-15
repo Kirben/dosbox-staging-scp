@@ -64,7 +64,8 @@ public:
 	                         const uint8_t fill, const uint8_t requested,
 	                         const uint8_t size_code,
 	                         const uint16_t rate_kbps, const bool fm = false,
-	                         const std::optional<uint8_t> gap = {}) override;
+	                         const std::optional<uint8_t> gap = {},
+	                         const std::optional<uint32_t> written_cells = {}) override;
 
 	uint32_t cylinders       = 0;
 	uint32_t heads           = 0;
@@ -100,6 +101,8 @@ private:
 		bool fm = false;
 		// Absent in older overlays, which used evenly spaced sectors.
 		std::optional<uint8_t> gap = {};
+		// Final-gap interruption: cells actually written from index.
+		std::optional<uint32_t> written_cells = {};
 	};
 	using TrackFormats = std::map<TrackAddress, std::vector<TrackFormat>>;
 	bool OpenOverlay(const std::string& path, const bool read_only,

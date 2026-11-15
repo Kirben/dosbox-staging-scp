@@ -162,13 +162,13 @@ public:
 	                         const FloppySector* selected = nullptr,
 	                         const bool deleted           = false,
 	                         const std::optional<uint32_t> write_bits = {}) = 0;
-	virtual FormatResult FormatTrack(const uint8_t cylinder, const uint8_t head,
-	                                 const std::span<const uint8_t> ids,
-	                                 const uint8_t fill, const uint8_t requested,
-	                                 const uint8_t size_code,
-	                                 const uint16_t rate_kbps,
-	                                 const bool fm = false,
-	                                 const std::optional<uint8_t> gap = {}) = 0;
+	virtual FormatResult FormatTrack(
+	        const uint8_t cylinder, const uint8_t head,
+	        const std::span<const uint8_t> ids, const uint8_t fill,
+	        const uint8_t requested, const uint8_t size_code,
+	        const uint16_t rate_kbps, const bool fm = false,
+	        const std::optional<uint8_t> gap            = {},
+	        const std::optional<uint32_t> written_cells = {}) = 0;
 };
 
 #endif

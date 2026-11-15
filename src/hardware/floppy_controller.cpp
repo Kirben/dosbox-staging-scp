@@ -1002,9 +1002,23 @@ uint8_t format_status(const FloppyFormatResult result)
 	return 0x20;
 }
 
-uint8_t commit_track_format()
+uint8_t commit_track_format(const bool interrupted = false)
 {
 	const auto ids = std::span(fdc.format_ids).first(fdc.formatted_ids * FormatIdSize);
+	std::optional<uint32_t> written_cells = {};
+	if (interrupted && fdc.formatted_ids == fdc.command[3] &&
+	    PIC_FullIndex() < fdc.format_deadline_ms) {
+		// SC counts fields, but the write gate remains active through
+		// gap 4b.
+		const auto cycle   = fdc.media->GetFormatCycleMs(fdc.cylinder,
+		                                                 fdc.head);
+		const auto elapsed = std::clamp(
+		        PIC_FullIndex() - (fdc.format_deadline_ms - cycle), 0.0, cycle);
+		written_cells = static_cast<uint32_t>(
+		        std::min(std::floor(elapsed * (fdc.fm ? 1 : 2) *
+		                            fdc.format_rate_kbps),
+		                 static_cast<double>(UINT32_MAX)));
+	}
 	return format_status(FLOPPY_FormatTrack(*fdc.disk,
 	                                        fdc.media.get(),
 	                                        fdc.cylinder,
@@ -1015,7 +1029,8 @@ uint8_t commit_track_format()
 	                                        fdc.command[2],
 	                                        fdc.format_rate_kbps,
 	                                        fdc.fm,
-	                                        fdc.command[4]));
+	                                        fdc.command[4],
+	                                        written_cells));
 }
 
 void finish_track_format(const uint8_t status)
@@ -1024,7 +1039,7 @@ void finish_track_format(const uint8_t status)
 		finish_data(status);
 		return;
 	}
-	const auto result         = commit_track_format();
+	const auto result         = commit_track_format(status != 0);
 	const auto offset         = (fdc.formatted_ids - 1) * FormatIdSize;
 	const auto& ids           = fdc.format_ids;
 	const FloppySector sector = {ids[offset],
@@ -2065,7 +2080,8 @@ void write_dor(io_port_t, const io_val_t value, io_width_t)
 		if (writing_data && !preserve_interrupted_write()) {
 			LOG_WARNING("FDC: Could not save sector write interrupted by reset");
 		}
-		if (formatting_track && fdc.formatted_ids && commit_track_format()) {
+		if (formatting_track && fdc.formatted_ids &&
+		    commit_track_format(true)) {
 			LOG_WARNING("FDC: Could not save track format interrupted by reset");
 		}
 		reset_controller();
@@ -2170,13 +2186,12 @@ void FLOPPY_DetachDisk(const size_t unit)
 	}
 }
 
-FloppyFormatResult FLOPPY_FormatTrack(imageDisk& disk, FloppyMedia* media,
-                                      const uint32_t cylinder, const uint32_t head,
-                                      const std::span<const uint8_t> ids,
-                                      const uint8_t fill, const uint8_t requested,
-                                      const uint8_t size_code,
-                                      uint16_t rate_kbps, const bool fm,
-                                      const std::optional<uint8_t> gap)
+FloppyFormatResult FLOPPY_FormatTrack(
+        imageDisk& disk, FloppyMedia* media, const uint32_t cylinder,
+        const uint32_t head, const std::span<const uint8_t> ids,
+        const uint8_t fill, const uint8_t requested, const uint8_t size_code,
+        uint16_t rate_kbps, const bool fm, const std::optional<uint8_t> gap,
+        const std::optional<uint32_t> written_cells)
 {
 	using Result = FloppyFormatResult;
 	if (disk.IsWriteProtected()) {
@@ -2202,7 +2217,8 @@ FloppyFormatResult FLOPPY_FormatTrack(imageDisk& disk, FloppyMedia* media,
 		                           size_code,
 		                           rate_kbps,
 		                           fm,
-		                           gap)) {
+		                           gap,
+		                           written_cells)) {
 		case ScpResult::Success: return Result::Success;
 		case ScpResult::InvalidLayout: return Result::InvalidLayout;
 		case ScpResult::WriteError: return Result::WriteError;
