@@ -1770,10 +1770,9 @@ static Bitu DOS_27Handler(void)
 	return CBRET_NONE;
 }
 
-static uint16_t access_floppy_bios_sector(const fatDrive& drive,
-                                          const bool read, const uint32_t sector,
-                                          const uint16_t buffer_segment,
-                                          const uint16_t buffer_offset)
+static std::optional<uint16_t> access_floppy_bios_sector(
+        const fatDrive& drive, const bool read, const uint32_t sector,
+        const uint16_t buffer_segment, const uint16_t buffer_offset)
 {
 	std::optional<uint8_t> unit = {};
 	for (uint8_t candidate = 0; candidate < 2; ++candidate) {
@@ -1783,7 +1782,9 @@ static uint16_t access_floppy_bios_sector(const fatDrive& drive,
 		}
 	}
 	if (!unit) {
-		return 0x8002;
+		// Floppy FAT images can also be mounted at DOS letters without
+		// an A/B BIOS attachment. Those drives retain their sector view.
+		return {};
 	}
 	const auto heads   = drive.GetLogicalHeads();
 	const auto sectors = drive.GetLogicalSectorsPerTrack();
@@ -1845,13 +1846,16 @@ static uint16_t DOS_SectorAccess(const bool read)
 		}
 		if (drive->loadedDisk && !drive->loadedDisk->hardDrive) {
 			const auto status = access_floppy_bios_sector(
-			        *drive, read, sectorNum++, bufferSeg, bufferOff);
+			        *drive, read, sectorNum, bufferSeg, bufferOff);
 			if (status) {
-				return status;
+				if (*status) {
+					return *status;
+				}
+				bufferOff = static_cast<uint16_t>(
+				        bufferOff + sizeof(sectorBuf));
+				++sectorNum;
+				continue;
 			}
-			bufferOff = static_cast<uint16_t>(bufferOff +
-			                                  sizeof(sectorBuf));
-			continue;
 		}
 		if (read) {
 			if (drive->readSector(sectorNum++, sectorBuf)) {
