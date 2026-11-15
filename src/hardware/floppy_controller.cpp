@@ -94,6 +94,10 @@ struct Drive {
 };
 
 struct Seek {
+	int direction        = 0;
+	int remaining_steps  = 0;
+	double step_ms       = 0;
+	bool recalibrating   = false;
 	uint8_t cylinder     = 0;
 	uint8_t pcn          = 0;
 	uint8_t status       = 0;
@@ -1646,6 +1650,29 @@ void complete_seek(const uint32_t unit)
 	update_irq();
 }
 
+void step_seek(const uint32_t unit)
+{
+	auto& seek = fdc.seeks[unit];
+	if (motor_on(unit) && unit == (fdc.dor & 3u)) {
+		auto& drive         = fdc.drives[unit];
+		const auto cylinder = check_cast<uint8_t>(
+		        std::clamp(int{drive.cylinder} + seek.direction, 0, 255));
+		if (cylinder != drive.cylinder && BIOS_GetDisk(unit)) {
+			FLOPPY_SetDiskChanged(unit, false);
+		}
+		drive.cylinder = cylinder;
+		if (!seek.recalibrating) {
+			drive.pcn = check_cast<uint8_t>(int{drive.pcn} +
+			                                seek.direction);
+		}
+	}
+	if (--seek.remaining_steps) {
+		PIC_AddEvent(step_seek, seek.step_ms, unit);
+	} else {
+		complete_seek(unit);
+	}
+}
+
 void execute_command(const Command command)
 {
 	switch (command) {
@@ -1736,6 +1763,10 @@ void execute_command(const Command command)
                                 std::clamp(cylinder + distance, 0, 255));
 			seek.pcn = fdc.command[2];
 		}
+		seek.direction     = command == Command::Recalibrate
+		                           ? -1
+		                           : (fdc.command[2] > pcn ? 1 : -1);
+		seek.recalibrating = command == Command::Recalibrate;
 		// Seek has no result phase of its own. Keep accepting commands,
 		// and latch the drive independently until Sense Interrupt.
 		const auto step_ms = fdc.timing_specified
@@ -1747,8 +1778,10 @@ void execute_command(const Command command)
 		// 250 kbit/s). This is a compatibility approximation, not
 		// measured 82077AA microcode timing. A zero-step seek must not
 		// interrupt the host in the final OUT.
-		PIC_AddEvent(complete_seek,
-		             timer_ms(0.012) + steps * step_ms,
+		seek.remaining_steps = steps;
+		seek.step_ms         = step_ms;
+		PIC_AddEvent(steps ? step_seek : complete_seek,
+		             timer_ms(0.012) + (steps ? step_ms : 0),
 		             check_cast<uint32_t>(unit));
 		break;
 	}
@@ -1965,6 +1998,7 @@ void reset_controller()
 	PIC_RemoveEvents(complete_empty_track_sector);
 	PIC_RemoveEvents(start_loaded_data);
 	PIC_RemoveEvents(complete_seek);
+	PIC_RemoveEvents(step_seek);
 	PIC_RemoveEvents(complete_read_id);
 	PIC_RemoveEvents(transfer_sector);
 	PIC_RemoveEvents(transfer_track_sector);
