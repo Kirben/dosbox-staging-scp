@@ -81,7 +81,8 @@ public:
 	FormatResult FormatTrack(const uint8_t, const uint8_t,
 	                         const std::span<const uint8_t>, const uint8_t,
 	                         const uint8_t, const uint8_t, const uint16_t,
-	                         const bool, const std::optional<uint8_t>) override
+	                         const bool, const std::optional<uint8_t>,
+	                         const std::optional<uint32_t>) override
 	{
 		return FormatResult::InvalidLayout;
 	}

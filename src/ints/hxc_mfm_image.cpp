@@ -894,7 +894,7 @@ std::shared_ptr<FloppyMfmTrack> FloppyTrackImage::format_track_cells(
 	}
 	const auto encoding_bits = bits;
 	const auto count         = format.ids.size() / 4;
-	const auto partial       = count < format.requested;
+	const auto partial = count < format.requested || format.written_cells;
 	if (partial) {
 		// Retain enough resolution for faster fields in the surviving
 		// suffix.
@@ -913,11 +913,14 @@ std::shared_ptr<FloppyMfmTrack> FloppyTrackImage::format_track_cells(
 	                                                              *format.gap,
 	                                                              format.fm)
 	                : 0;
-	const auto cutoff = format.gap ? check_cast<size_t>(std::min<uint64_t>(
-	                                         bits,
-	                                         uint64_t{written_bytes} * 16 *
-	                                                 bits / encoding_bits))
-	                               : bits * count / format.requested;
+	const auto cutoff = format.gap
+	                          ? check_cast<size_t>(std::min<uint64_t>(
+	                                    bits,
+	                                    uint64_t{format.written_cells.value_or(
+	                                            check_cast<uint32_t>(
+	                                                    written_bytes * 16))} *
+	                                            bits / encoding_bits))
+	                          : bits * count / format.requested;
 	if (partial && source && !source->weak_cells.empty()) {
 		captured->weak_cells.resize(bits);
 	}
@@ -1076,7 +1079,7 @@ std::shared_ptr<FloppyMfmTrack> FloppyTrackImage::format_track_cells(
 			}
 		}
 	}
-	if (format.gap && !partial) {
+	if (format.gap && (!partial || format.written_cells)) {
 		// Gap 4b runs to index, retaining the preceding data bit for
 		// MFM clock generation. Nothing wraps into the first field.
 		while (position < encoding_bits) {

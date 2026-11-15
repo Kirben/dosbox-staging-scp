@@ -459,3 +459,18 @@ explicit weak-bit mask. Capture flags that control TC.EXE's physical write-back
 and the alignment padding outside each declared track extent are not modeled
 as separate read-time behavior. These are limits of conformance, not claims of
 complete implementation of every TC.EXE write-back option.
+
+
+`Guest.FloppyFormatFinalGap` interrupts formatting after the last requested data
+field, while gap 4b is still being written. Reset and motor-loss cases must retain
+both the new field and the unwritten old suffix after a fresh mount. Read ID,
+Read Data and a two-field DMA Read Track verify the result for SCP, MFM, 86F and
+TransCopy; normal completion erases the old suffix, and early terminal count is
+an additional partial-format control. Source capture bytes remain unchanged.
+
+Overlay version 13 appends a four-byte little-endian cell cutoff after each
+format record's GPL byte (zero means no explicit cutoff). A nonzero cutoff uses
+the partial-format marker even when all requested ID tuples have arrived. The
+cutoff counts encoding cells from index at the format command's clock, including
+cells written in gap 4b. Older overlays retain their prior interpretation; new
+overlays continue using an older version unless a cutoff is required.

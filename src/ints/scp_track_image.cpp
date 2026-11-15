@@ -44,6 +44,7 @@ constexpr uint8_t DeletedMarkOverlayVersion = 9;
 constexpr uint8_t EncodingOverlayVersion      = 10;
 constexpr uint8_t GapOverlayVersion           = 11;
 constexpr uint8_t PartialWriteOverlayVersion  = 12;
+constexpr uint8_t FormatCutoffOverlayVersion  = 13;
 constexpr uint32_t LegacySizeCode           = 2;
 constexpr size_t ChrnSize                   = 4;
 
@@ -618,8 +619,9 @@ bool FloppyTrackImage::LoadOverlay()
 	     header != overlay_header(capture_fingerprint, DeletedMarkOverlayVersion) &&
 	     header != overlay_header(capture_fingerprint, EncodingOverlayVersion) &&
 	     header != overlay_header(capture_fingerprint, GapOverlayVersion) &&
+	     header != overlay_header(capture_fingerprint, PartialWriteOverlayVersion) &&
 	     header != overlay_header(capture_fingerprint,
-	                              PartialWriteOverlayVersion))) {
+	                              FormatCutoffOverlayVersion))) {
 		return false;
 	}
 	const auto version         = header[6];
@@ -652,6 +654,17 @@ bool FloppyTrackImage::LoadOverlay()
 			const auto gap      = version >= GapOverlayVersion
 			                            ? fgetc(input.get())
 			                            : 0;
+			uint32_t written_cells = 0;
+			if (version >= FormatCutoffOverlayVersion) {
+				for (auto byte = 0; byte < 4; ++byte) {
+					const auto value = fgetc(input.get());
+					if (value == EOF) {
+						return false;
+					}
+					written_cells |= check_cast<uint32_t>(value)
+					              << (byte * 8);
+				}
+			}
 			const auto has_gap  = version >= GapOverlayVersion &&
 			                      (encoding & 2);
 			if (count <= 0 || fill == EOF || requested < count ||
@@ -664,7 +677,8 @@ bool FloppyTrackImage::LoadOverlay()
 			    (size_code != 0xff && (size_code < 0 || size_code > 7)) ||
 			    (size_code != 0xff &&
 			     (size_t{128} << size_code) * count > 64 * 1024) ||
-			    (partial && requested == count) ||
+			    (partial && requested == count && !written_cells) ||
+			    (written_cells && (!partial || !has_gap)) ||
 			    (version == 2 && !overlay.empty())) {
 				return false;
 			}
@@ -676,6 +690,9 @@ bool FloppyTrackImage::LoadOverlay()
 			format.size_code   = check_cast<uint8_t>(size_code);
 			format.rate_kbps   = rate_kbps;
 			format.fm          = (encoding & 1) != 0;
+			if (written_cells) {
+				format.written_cells = written_cells;
+			}
 			if (has_gap) {
 				format.gap = check_cast<uint8_t>(gap);
 			}
@@ -881,7 +898,13 @@ bool FloppyTrackImage::SaveOverlay(const Overlay& entries,
 			        return has_partial(format.prior_writes);
 		        });
 	        });
-	const auto version = partial        ? PartialWriteOverlayVersion
+	const auto cutoff = std::ranges::any_of(formats, [](const auto& track) {
+		return std::ranges::any_of(track.second, [](const auto& format) {
+			return format.written_cells.has_value();
+		});
+	});
+	const auto version = cutoff         ? FormatCutoffOverlayVersion
+	                   : partial        ? PartialWriteOverlayVersion
 	                   : gapped         ? GapOverlayVersion
 	                   : fm             ? EncodingOverlayVersion
 	                   : deleted        ? DeletedMarkOverlayVersion
@@ -939,12 +962,20 @@ bool FloppyTrackImage::SaveOverlay(const Overlay& entries,
 			                            file) == data.bytes.size();
 		}
 	};
+	const auto write_cells = [&](const uint32_t count) {
+		std::array<uint8_t, 4> bytes = {};
+		for (size_t i = 0; i < bytes.size(); ++i) {
+			bytes[i] = static_cast<uint8_t>(count >> (i * 8));
+		}
+		return fwrite(bytes.data(), 1, bytes.size(), file) == bytes.size();
+	};
 	for (const auto& [address, history] : formats) {
 		for (const auto& format : history) {
 			write_sectors(format.prior_writes);
 			const auto count = check_cast<uint8_t>(
 			        format.ids.size() / ChrnSize);
-			const auto partial      = count < format.requested;
+			const auto partial      = count < format.requested ||
+			                          format.written_cells;
 			const std::array record = {address[0],
 			                           partial ? PartialFormatMarker
 			                                   : TrackFormatMarker,
@@ -968,6 +999,8 @@ bool FloppyTrackImage::SaveOverlay(const Overlay& entries,
 			                 file) != EOF) &&
 			          (version < GapOverlayVersion ||
 			           fputc(format.gap.value_or(0), file) != EOF) &&
+			          (version < FormatCutoffOverlayVersion ||
+			           write_cells(format.written_cells.value_or(0))) &&
 			          fwrite(format.ids.data(), 1, format.ids.size(), file) ==
 			                  format.ids.size();
 		}
@@ -1215,7 +1248,7 @@ void FloppyTrackImage::ApplyTrackFormat(const TrackAddress& address,
 	const auto visible = GetTrack(address[0], address[1]);
 	const std::vector<FloppySector> previous(visible.begin(), visible.end());
 	const auto count   = format.ids.size() / ChrnSize;
-	const auto partial = count < format.requested;
+	const auto partial = count < format.requested || format.written_cells;
 	if (!partial) {
 		track.cycle_ms        = track.format_cycle_ms;
 		track.revolution_ends = {1.0};
@@ -1267,9 +1300,14 @@ void FloppyTrackImage::ApplyTrackFormat(const TrackAddress& address,
 			                         ? track.revolution_ends[revolution - 1]
 			                         : 0;
 			const auto duration = track.revolution_ends[revolution] - start;
-			const auto cutoff = start +
-			                    duration * static_cast<double>(count) /
-			                            format.requested;
+			const auto fraction = format.written_cells
+			                            ? *format.written_cells /
+			                                      (duration * track.cycle_ms *
+			                                       (format.fm ? 1 : 2) *
+			                                       format.rate_kbps)
+			                            : static_cast<double>(count) /
+			                                      format.requested;
+			const auto cutoff = start + duration * fraction;
 			for (const auto& sector : previous) {
 				if (sector.revolution == revolution &&
 				    sector.cycle_fraction >= cutoff) {
@@ -1296,14 +1334,16 @@ FloppyTrackImage::FormatResult FloppyTrackImage::FormatTrack(
         const uint8_t cylinder, const uint8_t head,
         const std::span<const uint8_t> ids, const uint8_t fill,
         const uint8_t requested, const uint8_t size_code,
-        const uint16_t rate_kbps, const bool fm, const std::optional<uint8_t> gap)
+        const uint16_t rate_kbps, const bool fm, const std::optional<uint8_t> gap,
+        const std::optional<uint32_t> written_cells)
 {
 	if (IsWriteProtected()) {
 		return FormatResult::WriteError;
 	}
 	const TrackAddress address = {cylinder, head};
 	const auto count           = ids.size() / ChrnSize;
-	if (count > requested || size_code > 7 || !IsFloppyDataRate(rate_kbps) ||
+	if ((written_cells && (!*written_cells || !gap)) || count > requested ||
+	    size_code > 7 || !IsFloppyDataRate(rate_kbps) ||
 	    (size_t{128} << size_code) * count > 64 * 1024 ||
 	    !IsValidTrackFormat(address, ids)) {
 		return FormatResult::InvalidLayout;
@@ -1312,7 +1352,7 @@ FloppyTrackImage::FormatResult FloppyTrackImage::FormatTrack(
 	auto prior    = TakeTrackWrites(entries, address);
 	auto formats  = track_formats;
 	auto& history = formats[address];
-	if (count == requested) {
+	if (count == requested && !written_cells) {
 		history.clear();
 		prior.clear();
 	}
@@ -1324,7 +1364,8 @@ FloppyTrackImage::FormatResult FloppyTrackImage::FormatTrack(
 	        size_code,
 	        rate_kbps,
 	        fm,
-	        gap
+	        gap,
+	        written_cells
         });
 	if (!SaveOverlay(entries, formats)) {
 		return FormatResult::WriteError;
