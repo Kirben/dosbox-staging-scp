@@ -4,11 +4,14 @@
 """Check command-sized Read Track CRCs and physical completion timing."""
 
 import argparse
+from binascii import crc_hqx
 from pathlib import Path
+from struct import pack
 from tempfile import TemporaryDirectory
 
 from run_floppy_transfer_edges_probe import DMA, RESET, one_sector
 from run_floppy_zero_sector_probe import encode_tracks
+from run_hxc_mfm_probe import MFM
 from run_transcopy_layout_probe import encode_field_fixture, run_guest
 
 
@@ -84,8 +87,10 @@ def check_read(dosbox, nasm, directory, extension, case):
     mov cx,9
     call send_command
     call wait_result
+    mov byte [stage],3
     cmp byte [ids+1],{status_1}
     jne done
+    mov byte [stage],4
     cmp byte [ids+2],{status_2}
     jne done
     inc byte [stage]
@@ -140,10 +145,83 @@ def main():
         for extension in ("tc", "mfm", "scp", "86f"):
             check_read(args.dosbox.resolve(), args.nasm, directory, extension,
                        args.case)
+            if args.case == "crc":
+                check_invalid_id_size(args.dosbox.resolve(), args.nasm,
+                                      directory, extension)
             if args.case == "timing":
                 check_read(args.dosbox.resolve(), args.nasm, directory,
                            extension, "long-control")
             print(f".{extension}: Read Track {args.case} passed", flush=True)
+
+
+# pylint: disable-next=too-many-locals
+def check_invalid_id_size(dosbox, nasm, directory, extension):
+    """Retain a real DAM despite an unsupported N in a good or damaged ID."""
+    for size_code, bad_id_crc, deleted in ((2, False, False), (8, False, False),
+                                          (255, False, False), (8, True, False),
+                                          (255, True, True)):
+        cells = one_sector(2)
+        sync = cells.find(b'\x44\x89' * 3)
+        if deleted:
+            data_sync = cells.find(b'\x44\x89' * 3, sync + 6)
+            data = b'\xf8' + b'\x77' * 512
+            crc = crc_hqx(b'\xa1' * 3 + data, 0xffff)
+            previous, encoded = 1, bytearray()
+            for byte in data + pack('>H', crc) + b'\x4e':
+                encoded.extend(MFM[previous][byte])
+                previous = byte & 1
+            cells[data_sync + 6:data_sync + 6 + len(encoded)] = encoded
+        crc = crc_hqx(bytes((0xa1, 0xa1, 0xa1, 0xfe, 0, 0, 1, size_code)),
+                      0xffff) ^ int(bad_id_crc)
+        previous, encoded = 1, bytearray()
+        for byte in bytes((size_code,)) + pack('>H', crc) + b'\x4e':
+            encoded.extend(MFM[previous][byte])
+            previous = byte & 1
+        cells[sync + 14:sync + 22] = encoded
+        image = directory / f'id-size-{size_code}-{bad_id_crc}-{deleted}.{extension}'
+        original = encode_tracks(extension, [cells])
+        image.write_bytes(original)
+        status_1 = (4 if size_code != 2 else 0) | (0x20 if bad_id_crc else 0)
+        status_2 = 0x40 if deleted else 0
+        checks = RESET + DMA.replace('mov cx,512', 'mov cx,528') + f'''
+    in al,08h
+    mov si,command
+    mov cx,9
+    call send_command
+    call wait_result
+    cmp byte [ids],0
+    jne done
+    mov byte [stage],3
+    cmp byte [ids+1],{status_1}
+    jne done
+    mov byte [stage],4
+    cmp byte [ids+2],{status_2}
+    jne done
+    mov byte [stage],5
+    cmp byte [ids+6],{size_code}
+    jne done
+    inc byte [stage]
+    in al,08h
+    test al,4
+    jz done
+    mov si,buffer
+    mov cx,512
+payload:
+    lodsb
+    cmp al,77h
+    jne done
+    loop payload
+    mov cx,16
+guard:
+    lodsb
+    cmp al,0a5h
+    jne done
+    loop guard
+    jmp checked
+command db 42h,0,0,0,1,2,1,54h,0ffh
+''' + ROUTINES + 'checked:\n'
+        run_guest(dosbox, nasm, directory, image, checks)
+        assert image.read_bytes() == original
 
 
 if __name__ == "__main__":

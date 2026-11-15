@@ -647,7 +647,7 @@ void transfer_track_sector(uint32_t)
 	}
 	const auto& sector = track[fdc.track_offset];
 	select_field(sector);
-	if (sector.data.empty()) {
+	if (sector.data.empty() && !sector.has_data_mark) {
 		finish_data(fdc.track_status_1 | 0x01, fdc.track_status_2 | 0x01);
 		return;
 	}
