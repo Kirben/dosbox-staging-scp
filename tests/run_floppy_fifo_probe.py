@@ -8,7 +8,7 @@ from struct import unpack
 from tempfile import TemporaryDirectory
 
 from run_floppy_format_index_probe import CLOCK_SETUP, DECLARATIONS
-from run_floppy_transfer_edges_probe import DMA, RESET, one_sector, program
+from run_floppy_transfer_edges_probe import DMA, RESET, ROUTINES, one_sector, program
 from run_floppy_zero_sector_probe import encode_tracks
 from run_transcopy_layout_probe import run_guest
 
@@ -430,6 +430,80 @@ format_still_busy:
     print(f".{extension} format: progressive ID DMA, TC before result and persistence passed",
           flush=True)
 
+def check_threshold(dosbox, nasm, directory, threshold, writing):
+    """FIFOTHR encodes threshold minus one in both transfer directions."""
+    image = directory / f"threshold-{threshold}-{writing}.img"
+    image.write_bytes(fixture("img"))
+    checks = RESET
+    command = (3, 0xdf, 3, 0x13, 0, threshold, 0,
+               0x45 if writing else 0x46, 0, 0, 0, 1, 2, 1, 0x54, 0xff)
+    for byte in command:
+        checks += f"mov dx,3f5h\nmov al,{byte}\nout dx,al\n"
+    status = 0xb0 if writing else 0xf0
+    if writing:
+        checks += """
+    cli
+    mov ecx,2000000
+initial_request:
+    mov dx,3f4h
+    in al,dx
+    and al,0f0h
+    cmp al,0b0h
+    je fill_ready
+    dec ecx
+    jnz initial_request
+    jmp done
+fill_ready:
+    mov dx,3f5h
+    mov cx,16
+initial_fill:
+    mov al,55h
+    out dx,al
+    loop initial_fill
+"""
+    checks += f"""
+    cli
+    mov ecx,2000000
+threshold_poll:
+    mov dx,3f4h
+    in al,dx
+    and al,0f0h
+    cmp al,{status}
+    je threshold_ready
+    dec ecx
+    jnz threshold_poll
+    jmp done
+threshold_ready:
+    xor bx,bx
+threshold_byte:
+    inc dx
+    {'mov al,55h' if writing else ''}
+    {'out dx,al' if writing else 'in al,dx'}
+    inc bx
+    cmp bx,16
+    ja done
+    dec dx
+    in al,dx
+    and al,0f0h
+    cmp al,{status}
+    je threshold_byte
+    cmp bx,{max(1, 15 - threshold)}
+    jne done
+    sti
+    mov dx,3f2h
+    mov al,18h
+    out dx,al
+    mov al,1ch
+    out dx,al
+    call drain_reset
+    jmp checked
+""" + ROUTINES + "checked:\n"
+    run_guest(dosbox, nasm, directory, image, checks, read_only=not writing,
+              extra_commands=("config -set cpu cpu_cycles=1000000",))
+    print(f"FIFOTHR={threshold} {'write' if writing else 'read'}: burst count passed",
+          flush=True)
+
+
 def main():
     """Exercise progressive reads and interrupted writes on all six formats."""
     parser = argparse.ArgumentParser(description=__doc__)
@@ -441,7 +515,7 @@ def main():
         for extension in ("img", "ima", "scp", "mfm", "86f", "tc"):
             first = check_read(args.dosbox.resolve(), args.nasm, directory, extension, 15, False)
             last = check_read(args.dosbox.resolve(), args.nasm, directory, extension, 0, False)
-            assert abs(last - first - 0.480) < 0.04, (extension, first, last)
+            assert abs(last - first - 0.448) < 0.04, (extension, first, last)
             check_read(args.dosbox.resolve(), args.nasm, directory, extension, None, True)
             check_read(args.dosbox.resolve(), args.nasm, directory, extension, 15, True)
             check_read(args.dosbox.resolve(), args.nasm, directory, extension, 0x2f, True)
@@ -454,6 +528,9 @@ def main():
             check_format(args.dosbox.resolve(), args.nasm, directory, extension)
             for writing in (False, True):
                 check_pio(args.dosbox.resolve(), args.nasm, directory, extension, writing)
+        for threshold in (0, 4, 10, 15):
+            for writing in (False, True):
+                check_threshold(args.dosbox.resolve(), args.nasm, directory, threshold, writing)
 
 
 if __name__ == "__main__":
