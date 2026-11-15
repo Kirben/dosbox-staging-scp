@@ -115,6 +115,7 @@ private:
 	                      const FloppySector& sector, const bool create_data_mark,
 	                      const std::optional<uint32_t> write_bits = {});
 	bool HasOverlappingFields(const uint32_t cylinder, const uint32_t head) const;
+	bool within_decoded_budget(const std::span<const FloppySector> additional) const;
 	void ApplyOverlaySector(const OverlayKey& key, const OverlaySector& data);
 	std::string overlay_path     = {};
 	uint64_t capture_fingerprint = 0;
@@ -140,7 +141,7 @@ private:
 	        const std::span<const uint8_t> bitstream, const size_t bit_count = 0,
 	        const size_t index = 0, const bool detect_weak = false,
 	        std::shared_ptr<FloppyMfmTrack> captured = {},
-	        const bool fm                            = false);
+	        const bool fm = false, bool* exceeded_budget = nullptr);
 	static std::vector<FloppySector> DecodeRevolutions(
 	        const std::span<const std::shared_ptr<FloppyMfmTrack>> revolutions,
 	        const std::span<const double> ends, const bool fm = false);

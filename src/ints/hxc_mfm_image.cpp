@@ -81,6 +81,25 @@ struct AddressMark {
 
 constexpr auto SyncCrc = uint16_t{0xcdb4}; // CRC after three A1 bytes
 
+// Overlapping IDs can each advertise a whole track's worth of data. Input
+// byte limits alone therefore cannot bound the decoded representation.
+constexpr size_t MaxDecodedTrackBytes = 8 * 1024 * 1024;
+constexpr size_t MaxDecodedImageBytes = 128 * 1024 * 1024;
+
+bool account_decoded_sector(const FloppySector& sector, size_t& used,
+                            const size_t limit)
+{
+	for (const auto size : {sector.data.size(),
+	                        sector.extended_data.size(),
+	                        sector.weak_mask.size()}) {
+		if (size > limit - used) {
+			return false;
+		}
+		used += size;
+	}
+	return true;
+}
+
 std::vector<bool> find_weak_cells(const MfmBitstream track)
 {
 	// TransCopy no-flux regions contain at least 16 consecutive zero cells.
@@ -561,8 +580,17 @@ void FloppySector::UpdateTrackData(const bool create_data_mark,
 std::vector<FloppySector> FloppyTrackImage::DecodeTrack(
         const std::span<const uint8_t> bytes, const size_t bit_count,
         const size_t index, const bool detect_weak,
-        std::shared_ptr<FloppyMfmTrack> captured, const bool fm)
+        std::shared_ptr<FloppyMfmTrack> captured, const bool fm, bool* exceeded_budget)
 {
+	if (exceeded_budget) {
+		*exceeded_budget = false;
+	}
+	const auto resource_limit = [&]() -> std::vector<FloppySector> {
+		if (exceeded_budget) {
+			*exceeded_budget = true;
+		}
+		return {};
+	};
 	constexpr auto SyncWord    = 0x4489;
 	constexpr auto IdMark      = 0xfe;
 	constexpr auto DataMark    = 0xfb;
@@ -602,6 +630,7 @@ std::vector<FloppySector> FloppyTrackImage::DecodeTrack(
 	}
 
 	std::vector<FloppySector> sectors = {};
+	size_t decoded_bytes              = 0;
 	for (size_t i = 0; i < marks.size(); ++i) {
 		const auto id = marks[i];
 		if (id.type != IdMark) {
@@ -637,6 +666,9 @@ std::vector<FloppySector> FloppyTrackImage::DecodeTrack(
 		const auto data = marks[(i + 1) % marks.size()];
 		if (data.type != IdMark && sector.size_code <= 7) {
 			const auto size = size_t{128} << sector.size_code;
+			if (size > MaxDecodedTrackBytes - decoded_bytes) {
+				return resource_limit();
+			}
 			// Once a data mark is found, the controller consumes
 			// the entire field, including embedded address marks
 			// and index crossings.
@@ -707,6 +739,10 @@ std::vector<FloppySector> FloppyTrackImage::DecodeTrack(
 				                  field + (size + 1) * ByteBits);
 				if (size > sector.data.size() &&
 				    field_crc == stored_crc) {
+					if (size > MaxDecodedTrackBytes - decoded_bytes -
+					                   sector.data.size()) {
+						return resource_limit();
+					}
 					sector.extended_data.resize(size);
 					for (size_t j = 0; j < size; ++j) {
 						sector.extended_data[j] = read_byte(
@@ -715,6 +751,9 @@ std::vector<FloppySector> FloppyTrackImage::DecodeTrack(
 					break;
 				}
 			}
+		}
+		if (!account_decoded_sector(sector, decoded_bytes, MaxDecodedTrackBytes)) {
+			return resource_limit();
 		}
 		sectors.push_back(std::move(sector));
 	}
@@ -1027,6 +1066,24 @@ std::shared_ptr<FloppyMfmTrack> FloppyTrackImage::format_track_cells(
 	return captured;
 }
 
+bool FloppyTrackImage::within_decoded_budget(const std::span<const FloppySector> additional) const
+{
+	size_t used = 0;
+	for (const auto& track : tracks) {
+		for (const auto& sector : track.sectors) {
+			if (!account_decoded_sector(sector, used, MaxDecodedImageBytes)) {
+				return false;
+			}
+		}
+	}
+	for (const auto& sector : additional) {
+		if (!account_decoded_sector(sector, used, MaxDecodedImageBytes)) {
+			return false;
+		}
+	}
+	return true;
+}
+
 std::unique_ptr<FloppyTrackImage> FloppyTrackImage::FromBitstreamCapture(
         const BitstreamCapture& capture, const std::string& path,
         const bool read_only, const uint64_t fingerprint, std::string& error)
@@ -1053,15 +1110,33 @@ std::unique_ptr<FloppyTrackImage> FloppyTrackImage::FromBitstreamCapture(
 		                        ? find_weak_cells({raw->cells, raw->bit_count})
 		                        : captured.weak_cells;
 		track.raw_tracks.push_back(raw);
-		track.sectors = DecodeTrack(
-		        raw->cells, raw->bit_count, raw->index, false, raw);
+		bool exceeded_budget      = false;
+		const auto resource_limit = [&]() {
+			error = "floppy decoded data exceeds resource limits";
+		};
+		track.sectors = DecodeTrack(raw->cells,
+		                            raw->bit_count,
+		                            raw->index,
+		                            false,
+		                            raw,
+		                            false,
+		                            &exceeded_budget);
+		if (exceeded_budget) {
+			resource_limit();
+			return {};
+		}
 		if (track.sectors.empty()) {
 			track.sectors = DecodeTrack(raw->cells,
 			                            raw->bit_count,
 			                            raw->index,
 			                            false,
 			                            raw,
-			                            true);
+			                            true,
+			                            &exceeded_budget);
+			if (exceeded_budget) {
+				resource_limit();
+				return {};
+			}
 		}
 		if (track.sectors.empty()) {
 			// A container's sampling clock can differ from the
@@ -1083,7 +1158,12 @@ std::unique_ptr<FloppyTrackImage> FloppyTrackImage::FromBitstreamCapture(
 					                            sampled->index,
 					                            false,
 					                            sampled,
-					                            fm);
+					                            fm,
+					                            &exceeded_budget);
+					if (exceeded_budget) {
+						resource_limit();
+						return {};
+					}
 					if (!track.sectors.empty()) {
 						break;
 					}
@@ -1092,6 +1172,10 @@ std::unique_ptr<FloppyTrackImage> FloppyTrackImage::FromBitstreamCapture(
 					break;
 				}
 			}
+		}
+		if (!image->within_decoded_budget({})) {
+			resource_limit();
+			return {};
 		}
 		image->UpdateLogicalGeometry(check_cast<uint32_t>(i / image->heads),
 		                             check_cast<uint32_t>(i % image->heads),
