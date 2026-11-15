@@ -33,6 +33,9 @@ class WorkflowTest(unittest.TestCase):
         self.source.mkdir()
         (self.source / "src").mkdir()
         (self.source / "src/input.cpp").write_text("tested source\n")
+        (self.source / "tests").mkdir()
+        (self.source / "tests/CMakeLists.txt").write_text(
+            "add_floppy_guest_test(Probe probe.py)\n")
         (self.source / ".gitignore").write_text(WORKFLOW.STAMP + "\n")
         self.build = self.root / "build"
         (self.build / "tests").mkdir(parents=True)
@@ -51,7 +54,8 @@ class WorkflowTest(unittest.TestCase):
 
     def stamp(self):
         """Create a simulated successful full run for gate unit testing."""
-        return {"schema": 1, "group": "full", "passed": True,
+        return {"schema": 2, "group": "full", "passed": True,
+                "floppy_tests": WORKFLOW.required_floppy_tests(self.source),
                 "source_digest": WORKFLOW.manifest_digest(WORKFLOW.input_manifest(self.source)),
                 "artifacts": {str(path): WORKFLOW.digest_file(path) for path in
                               (self.build / "dosbox", self.build / "tests/dosbox_tests",
@@ -123,6 +127,45 @@ class WorkflowTest(unittest.TestCase):
         (self.source / "src/input.cpp").unlink()
         WORKFLOW.synchronize(self.source, target, WORKFLOW.input_manifest(self.source), self.build)
         self.assertFalse((target / "src/input.cpp").exists())
+
+    def test_missing_or_disabled_guest_registration_is_rejected(self):
+        """Ordinary native tests cannot substitute for omitted floppy probes."""
+        names = WORKFLOW.required_floppy_tests(self.source)
+        tests = [{"name": name, "properties": []} for name in names]
+        with patch.object(WORKFLOW.subprocess, "check_output",
+                          return_value=json.dumps({"tests": tests[:-1]})):
+            with self.assertRaises(ValueError):
+                WORKFLOW.verify_full_registration(self.source, self.build, {})
+        tests[-1]["properties"] = [{"name": "DISABLED", "value": True}]
+        with patch.object(WORKFLOW.subprocess, "check_output",
+                          return_value=json.dumps({"tests": tests})):
+            with self.assertRaises(ValueError):
+                WORKFLOW.verify_full_registration(self.source, self.build, {})
+        tests[-1]["properties"] = []
+        with patch.object(WORKFLOW.subprocess, "check_output",
+                          return_value=json.dumps({"tests": tests})):
+            self.assertEqual(names, WORKFLOW.verify_full_registration(
+                self.source, self.build, {}))
+
+    def test_full_results_require_executed_probes(self):
+        """A successful CTest exit cannot authorize skipped or unexecuted probes."""
+        names = WORKFLOW.required_floppy_tests(self.source)
+        report = self.build / "results.xml"
+        cases = [f'<testcase name="{name}" status="run"/>' for name in names]
+        report.write_text("<testsuite>" + "".join(cases[:-1]) + "</testsuite>")
+        with self.assertRaises(ValueError):
+            WORKFLOW.verify_full_results(report, names)
+        cases[-1] = f'<testcase name="{names[-1]}" status="notrun"><skipped/></testcase>'
+        report.write_text("<testsuite>" + "".join(cases) + "</testsuite>")
+        with self.assertRaises(ValueError):
+            WORKFLOW.verify_full_results(report, names)
+        cases[-1] = f'<testcase name="{names[-1]}" status="run"/>'
+        report.write_text("<testsuite>" + "".join(cases) + "</testsuite>")
+        WORKFLOW.verify_full_results(report, names)
+        stamp = self.stamp()
+        stamp.pop("floppy_tests")
+        with self.assertRaises(ValueError):
+            WORKFLOW.validate_stamp(self.source, stamp)
 
 
 if __name__ == "__main__":
