@@ -664,7 +664,18 @@ std::vector<FloppySector> FloppyTrackImage::DecodeTrack(
 		sector.data_bit = (id.bit + sector.data_delay_bits) % track_bits;
 
 		const auto data = marks[(i + 1) % marks.size()];
-		if (data.type != IdMark && sector.size_code <= 7) {
+		if (data.type != IdMark) {
+			// Read Track uses the command's N, even when the ID's N
+			// cannot describe a supported logical sector size.
+			const auto field       = data.bit + mark_bits;
+			sector.has_data_mark   = true;
+			sector.data_bit        = field % track_bits;
+			sector.data_delay_bits = (field + track_bits - id.bit) %
+			                         track_bits;
+			sector.weak_seed = data.bit;
+			sector.deleted   = data.type == DeletedMark;
+		}
+		if (sector.has_data_mark && sector.size_code <= 7) {
 			const auto size = size_t{128} << sector.size_code;
 			if (size > MaxDecodedTrackBytes - decoded_bytes) {
 				return resource_limit();
@@ -673,12 +684,6 @@ std::vector<FloppySector> FloppyTrackImage::DecodeTrack(
 			// the entire field, including embedded address marks
 			// and index crossings.
 			const auto field       = data.bit + mark_bits;
-			sector.mfm_track       = captured;
-			sector.data_bit        = field % track_bits;
-			sector.data_delay_bits = (field + track_bits - id.bit) %
-			                         track_bits;
-			sector.weak_seed = data.bit;
-			sector.deleted   = data.type == DeletedMark;
 			sector.data.resize(size);
 			crc = update_crc(crc_seed, data.type);
 			for (size_t j = 0; j < size; ++j) {

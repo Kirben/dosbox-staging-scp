@@ -103,6 +103,7 @@ struct FloppySector {
 	size_t id_bit                             = 0;
 	size_t data_delay_bits                    = 0;
 	bool fm                                   = false;
+	bool has_data_mark                        = false;
 
 	// Sample one physical turn and return whether its data CRC is bad.
 	bool SampleWeakData(const uint64_t turn, std::vector<uint8_t>& sampled) const;
