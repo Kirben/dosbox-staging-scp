@@ -427,6 +427,16 @@ check_watchdog:
     cmp al,90h
     jne report
 
+    ; Expiry must not require disabling the adapter before another trigger.
+    mov al,0e1h
+    out 0f2h,al
+    mov al,0a1h
+    out 0f2h,al
+    mov cx,60
+    call wait_ticks
+    cmp byte [watchdog_count],2
+    jne report
+
     mov byte [stage],9
     ; Disable and reset in the guest, then prove a canceled timer stays quiet.
     xor al,al
@@ -439,7 +449,7 @@ check_watchdog:
     out 0f2h,al
     mov cx,60
     call wait_ticks
-    cmp byte [watchdog_count],1
+    cmp byte [watchdog_count],2
     jne report
 
     mov byte [stage],10
@@ -449,7 +459,7 @@ check_watchdog:
     out 0f2h,al
     mov cx,60
     call wait_ticks
-    cmp byte [watchdog_count],2
+    cmp byte [watchdog_count],3
     jne report
     mov al,81h
     out 0f2h,al
@@ -474,7 +484,7 @@ check_watchdog:
     jne report
     mov cx,60
     call wait_ticks
-    cmp byte [watchdog_count],2
+    cmp byte [watchdog_count],3
     jne report
     in al,MSR
     cmp al,80h

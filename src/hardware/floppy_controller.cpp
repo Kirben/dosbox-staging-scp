@@ -2043,6 +2043,9 @@ void write_pcjr_dor(io_port_t, const io_val_t value, const io_width_t width)
 	} else if ((previous & PcjrWatchdogTrigger) &&
 	           !(pcjr_dor & PcjrWatchdogTrigger)) {
 		PIC_RemoveEvents(pcjr_watchdog_expired);
+		// A new trigger starts another cycle even after the previous
+		// timeout. Leave any edge already latched by the PIC alone.
+		pcjr_watchdog_asserted = false;
 		PIC_AddEvent(pcjr_watchdog_expired, PcjrWatchdogMs);
 	}
 
