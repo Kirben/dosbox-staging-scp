@@ -1233,9 +1233,10 @@ void finish_read_overrun()
 	const auto track = (fdc.command[0] & 0x1f) ==
 	                   static_cast<int>(Command::ReadTrack);
 	const auto crc   = fdc.sector_data_crc_error ? 0x20 : 0;
-	finish_data(0x10 | (track ? fdc.track_status_1 : crc),
-	            track ? fdc.track_status_2
-	                  : crc | (data_mark_mismatch() ? 0x40 : 0));
+	finish_data(check_cast<uint8_t>(0x10 | (track ? fdc.track_status_1 : crc)),
+	            check_cast<uint8_t>(
+	                    track ? fdc.track_status_2
+	                          : crc | (data_mark_mismatch() ? 0x40 : 0)));
 }
 
 void byte_transfer_event(uint32_t)
