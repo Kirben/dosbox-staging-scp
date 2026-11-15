@@ -140,6 +140,7 @@ struct Controller {
 	bool pio_writing                          = false;
 	bool pio_waiting_crc                      = false;
 	bool pio_underrun                         = false;
+	bool pio_overrun                                   = false;
 	bool sector_data_crc_error                = false;
 	bool sector_transfer_ready                = false;
 	double sector_end_ms                      = 0;
@@ -572,6 +573,7 @@ void start_pio_transfer(const size_t size,
                         const std::span<const uint8_t> source = {},
                         const std::optional<size_t> host_size = {})
 {
+	fdc.pio_overrun = false;
 	fdc.pio_writing = source.empty();
 	fdc.pio_data.assign(size, 0);
 	if (!source.empty()) {
@@ -1211,6 +1213,16 @@ void dma_fifo_event(uint32_t)
 	refresh_fifo_request();
 }
 
+void finish_read_overrun()
+{
+	const auto track = (fdc.command[0] & 0x1f) ==
+	                   static_cast<int>(Command::ReadTrack);
+	const auto crc   = fdc.sector_data_crc_error ? 0x20 : 0;
+	finish_data(0x10 | (track ? fdc.track_status_1 : crc),
+	            track ? fdc.track_status_2
+	                  : crc | (data_mark_mismatch() ? 0x40 : 0));
+}
+
 void byte_transfer_event(uint32_t)
 {
 	auto& bytes = fdc.bytes;
@@ -1227,10 +1239,10 @@ void byte_transfer_event(uint32_t)
 			bytes.overrun = !bytes.terminal_count;
 			defer_byte_completion();
 		} else {
-			const auto track = (fdc.command[0] & 0x1f) ==
-			                   static_cast<int>(Command::ReadTrack);
-			finish_data((track ? fdc.track_status_1 : 0) | 0x10,
-			            track ? fdc.track_status_2 : 0);
+			// Overrun stops host delivery, not the current sector's
+			// CRC check.
+			bytes.overrun = true;
+			defer_byte_completion();
 		}
 		return;
 	}
@@ -1315,8 +1327,12 @@ void complete_byte_transfer(uint32_t)
 			}
 		}
 	} else if (overrun) {
-		const auto saved = !writing || commit_sector_write(data);
-		finish_data(saved ? 0x10 : 0x20);
+		if (writing) {
+			const auto saved = commit_sector_write(data);
+			finish_data(saved ? 0x10 : 0x20);
+		} else {
+			finish_read_overrun();
+		}
 	} else if (command == Command::ReadTrack) {
 		fdc.track_transfer_ready = false;
 		finish_track_sector(terminal, fdc.track_transfer_ms);
@@ -1379,6 +1395,10 @@ void pio_byte_event(uint32_t)
 		finish_data(0x04);
 		return;
 	}
+	if (fdc.pio_overrun) {
+		finish_read_overrun();
+		return;
+	}
 	if (fdc.pio_underrun) {
 		const auto written = commit_sector_write(fdc.pio_data);
 		finish_data(written ? 0x10 : 0x20);
@@ -1386,9 +1406,7 @@ void pio_byte_event(uint32_t)
 	}
 	if (fdc.pio_ready) {
 		const auto command = static_cast<Command>(fdc.command[0] & 0x1f);
-		if (command == Command::ReadTrack) {
-			finish_data(fdc.track_status_1 | 0x10, fdc.track_status_2);
-		} else if (command == Command::FormatTrack && fdc.media) {
+		if (command == Command::FormatTrack && fdc.media) {
 			finish_track_format(0x10);
 		} else {
 			if (is_write_command(command)) {
@@ -1405,7 +1423,14 @@ void pio_byte_event(uint32_t)
 				                      fdc.sector_end_ms -
 				                              PIC_FullIndex()));
 			} else {
-				finish_data(0x10);
+				fdc.pio_overrun = true;
+				fdc.pio_ready   = false;
+				fdc.irq_pending = false;
+				update_irq();
+				PIC_AddEvent(pio_byte_event,
+				             std::max(0.0,
+				                      fdc.sector_end_ms -
+				                              PIC_FullIndex()));
 			}
 		}
 		return;
