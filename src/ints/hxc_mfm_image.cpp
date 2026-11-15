@@ -400,14 +400,29 @@ std::shared_ptr<FloppyMfmTrack> FloppyMfmTrack::Sample(const uint64_t cycle,
 		return {};
 	}
 	const auto position = [&](const size_t bit) -> std::optional<size_t> {
-		const auto rounded = round_nonnegative(
-		        static_cast<double>(bit) *
-		        static_cast<double>(decoded->bit_count) /
-		        static_cast<double>(bit_count));
-		if (!rounded || !std::in_range<size_t>(*rounded)) {
+		if (bit > bit_count) {
 			return {};
 		}
-		return static_cast<size_t>(*rounded);
+		// Separator acquisition can produce uneven cells. Preserve the
+		// physical timestamp of index and each revolution boundary.
+		const auto time  = bit == 0 ? 0.0
+		                 : cell_ends.empty()
+		                         ? static_cast<double>(bit) /
+                                                  static_cast<double>(bit_count)
+		                         : cell_ends[bit - 1];
+		const auto upper = std::lower_bound(decoded->cell_ends.begin(),
+		                                    decoded->cell_ends.end(),
+		                                    time);
+		if (upper == decoded->cell_ends.end()) {
+			return decoded->bit_count;
+		}
+		const auto lower_index = check_cast<size_t>(
+		        upper - decoded->cell_ends.begin());
+		const auto lower_time = lower_index
+		                              ? decoded->cell_ends[lower_index - 1]
+		                              : 0.0;
+		return time - lower_time < *upper - time ? lower_index
+		                                         : lower_index + 1;
 	};
 	const auto decoded_index = position(index);
 	if (!decoded_index) {

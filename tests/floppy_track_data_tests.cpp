@@ -4,6 +4,7 @@
 
 #include <algorithm>
 #include <array>
+#include <cmath>
 #include <limits>
 
 #include <gtest/gtest.h>
@@ -317,6 +318,59 @@ TEST(FloppyTrackData, ResampleIndexAndRevolutionBoundaries)
 	EXPECT_EQ(slow->revolution_ends_bits, std::vector<size_t>({4, 8}));
 	EXPECT_EQ(raw.index, size_t{3});
 	EXPECT_EQ(raw.revolution_ends_bits, std::vector<size_t>({8, 16}));
+}
+
+TEST(FloppyTrackData, ResamplePhysicalIndexTimestamp)
+{
+	const std::array<uint64_t, 8> transitions = {
+	        3600, 7200, 10800, 14400, 18800, 23200, 27600, 32000};
+	const auto raw = FloppyMfmTrack::RecoverFlux(transitions, 32000, 2000, true);
+	ASSERT_TRUE(raw);
+	raw->index                = 7;
+	raw->revolution_ends_bits = {7, raw->bit_count};
+	const auto original_times = raw->cell_ends;
+	const auto sampled        = raw->Sample(0, 0.032, 500);
+	ASSERT_TRUE(sampled);
+	ASSERT_GT(sampled->index, size_t{0});
+	EXPECT_DOUBLE_EQ(sampled->cell_ends[sampled->index - 1], raw->cell_ends[6]);
+	EXPECT_EQ(sampled->revolution_ends_bits.front(), sampled->index);
+	EXPECT_EQ(sampled->revolution_ends_bits.back(), sampled->bit_count);
+	EXPECT_EQ(raw->index, size_t{7});
+	EXPECT_EQ(raw->cell_ends, original_times);
+}
+
+TEST(FloppyTrackData, ResampleVariableClockRevolutionTimestamp)
+{
+	std::vector<uint64_t> transitions = {};
+	uint64_t time                     = 0;
+	for (const auto interval : {3600u, 4400u}) {
+		for (size_t i = 0; i < 25'000; ++i) {
+			time += interval;
+			transitions.push_back(time);
+		}
+	}
+	const auto raw = FloppyMfmTrack::RecoverFlux(transitions, time, 2000, true);
+	ASSERT_TRUE(raw);
+	raw->index                = 50'007;
+	raw->revolution_ends_bits = {raw->index, raw->bit_count};
+	const auto sampled        = raw->Sample(0, 200, 500);
+	ASSERT_TRUE(sampled);
+	const auto physical_time = raw->cell_ends[raw->index - 1];
+	const auto upper         = std::lower_bound(sampled->cell_ends.begin(),
+                                            sampled->cell_ends.end(),
+                                            physical_time);
+	ASSERT_NE(upper, sampled->cell_ends.end());
+	const auto boundary = sampled->index;
+	ASSERT_GT(boundary, size_t{0});
+	const auto selected = sampled->cell_ends[boundary - 1];
+	EXPECT_LE(std::abs(selected - physical_time),
+	          std::abs(*upper - physical_time));
+	if (upper != sampled->cell_ends.begin()) {
+		EXPECT_LE(std::abs(selected - physical_time),
+		          std::abs(*(upper - 1) - physical_time));
+	}
+	EXPECT_EQ(sampled->revolution_ends_bits.front(), boundary);
+	EXPECT_EQ(sampled->revolution_ends_bits.back(), sampled->bit_count);
 }
 
 TEST(FloppyTrackData, ResampleTimestampsBeyond32Bits)
