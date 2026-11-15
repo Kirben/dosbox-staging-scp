@@ -5,11 +5,12 @@
 
 import argparse
 from pathlib import Path
-from struct import pack_into
+from struct import pack_into, unpack_from
 from tempfile import TemporaryDirectory
 
 from run_floppy_read_deleted_probe import make_track
 from run_hxc_mfm_probe import MFM
+from run_floppy_zero_sector_probe import encode_tracks
 from run_transcopy_layout_probe import run_guest
 
 
@@ -78,6 +79,30 @@ data_{index}:
     return code
 
 
+def nonstandard_capture(extension):
+    """Retain a 500-kbps waveform without a conventional geometry-table match."""
+    original = capture(500, 300, 17)
+    if extension == 'mfm':
+        return original
+    cells = original[19 + 160 * 11:]
+    image = bytearray(encode_tracks(extension, [cells]))
+    if extension == 'tc':
+        image[0x100] = 2
+    elif extension == '86f':
+        record = unpack_from('<I', image, 8)[0]
+        pack_into('<H', image, record, 8)
+    else:
+        record = unpack_from('<I', image, 16)[0]
+        duration, count, offset = unpack_from('<III', image, record + 4)
+        pack_into('<I', image, record + 4, duration // 2)
+        for position in range(record + offset, record + offset + count * 2, 2):
+            value = unpack_from('>H', image, position)[0]
+            assert value % 2 == 0
+            pack_into('>H', image, position, value // 2)
+        pack_into('<I', image, 12, sum(image[16:]) & 0xffffffff)
+    return image
+
+
 def main():
     """Check BIOS rate selection, drive switches and overlay restart persistence."""
     parser = argparse.ArgumentParser(description=__doc__)
@@ -86,8 +111,8 @@ def main():
     args = parser.parse_args()
     with TemporaryDirectory() as temporary:
         folder = Path(temporary)
-        control = folder / 'control.ima'
-        control.write_bytes(b'\x77' * (360 * 1024))
+        control = folder / 'control.mfm'
+        control.write_bytes(capture(250, 300, 9))
         mount = (f'mount 1 "{control}" -t floppy -fs none -ro',)
         for rate, rpm, sectors in ((250, 300, 9), (300, 360, 9),
                                    (500, 300, 18), (500, 360, 15),
@@ -103,6 +128,17 @@ def main():
             assert Path(str(image) + '.overlay').exists()
             print(f'{rate} kbps/{rpm} RPM: BIOS reads, Verify, drive switches, '
                   'write/restart and original-image guard passed', flush=True)
+        for extension in ('mfm', 'scp', '86f', 'tc'):
+            image = folder / f'nonstandard.{extension}'
+            original = nonstandard_capture(extension)
+            image.write_bytes(original)
+            for written, writing in ((False, True), (True, False)):
+                run_guest(args.dosbox.resolve(), args.nasm, folder, image,
+                          checks(written, writing), extra_commands=mount,
+                          read_only=False)
+            assert image.read_bytes() == original
+            print(f'{extension}: nonstandard HD BIOS reads, Verify, writes, '
+                  '250/500-kbps drive switching and restart passed', flush=True)
 
 
 if __name__ == '__main__':

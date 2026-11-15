@@ -43,6 +43,8 @@ public:
 	                                          const uint32_t head) const override;
 	double GetFormatCycleMs(const uint32_t cylinder,
 	                        const uint32_t head) const override;
+	double GetDataRateKbps(const uint32_t cylinder,
+	                       const uint32_t head) const override;
 
 	std::span<const FloppySector> GetTrack(const uint32_t cylinder,
 	                                       const uint32_t head) const override;

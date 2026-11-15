@@ -1345,6 +1345,33 @@ std::vector<FloppySector> FloppyTrackImage::SampleTrack(const uint32_t cylinder,
 	return sectors;
 }
 
+double FloppyTrackImage::GetDataRateKbps(const uint32_t cylinder,
+                                         const uint32_t head) const
+{
+	if (cylinder >= cylinders || head >= heads) {
+		return 0;
+	}
+	const auto& track = tracks[cylinder * heads + head];
+	for (const auto& sector : GetTrack(cylinder, head)) {
+		if (sector.fm || sector.id_crc_error || !sector.mfm_track ||
+		    sector.revolution >= track.revolution_ends.size()) {
+			continue;
+		}
+		const auto start = sector.revolution
+		                         ? track.revolution_ends[sector.revolution - 1]
+		                         : 0;
+		const auto duration = (track.revolution_ends[sector.revolution] -
+		                       start) *
+		                      track.cycle_ms;
+		if (duration > 0) {
+			return static_cast<double>(sector.mfm_track->GetRevolutionBitCount(
+			               sector.revolution)) /
+			       (2 * duration);
+		}
+	}
+	return 0;
+}
+
 double FloppyTrackImage::GetCycleMs(const uint32_t cylinder, const uint32_t head) const
 {
 	return cylinder < cylinders && head < heads

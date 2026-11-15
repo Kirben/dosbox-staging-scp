@@ -137,6 +137,12 @@ public:
 	                                                  const uint32_t head) const = 0;
 	virtual double GetFormatCycleMs(const uint32_t cylinder,
 	                                const uint32_t head) const = 0;
+	// Measured MFM data clock, independent of logical CHS geometry.
+	// Zero means no usable physical field is available.
+	virtual double GetDataRateKbps(const uint32_t, const uint32_t) const
+	{
+		return 0;
+	}
 	virtual std::span<const FloppySector> GetTrack(const uint32_t cylinder,
 	                                               const uint32_t head) const = 0;
 	// Command-time field decoding is separate from the logical sector view.
