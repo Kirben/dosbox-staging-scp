@@ -102,8 +102,9 @@ bool account_decoded_sector(const FloppySector& sector, size_t& used,
 
 std::vector<bool> find_weak_cells(const MfmBitstream track)
 {
-	// TransCopy no-flux regions contain at least 16 consecutive zero cells.
-	constexpr size_t MinWeakRun = 16;
+	// A recovered MFM stream permits three zero cells between transitions.
+	// Preserve that leading interval; only the excess cells are ambiguous.
+	constexpr size_t StableZeroCells = 3;
 	std::vector<bool> weak(track.bit_count);
 	size_t first_transition = 0;
 	while (first_transition < track.bit_count &&
@@ -120,8 +121,8 @@ std::vector<bool> find_weak_cells(const MfmBitstream track)
 		if (!bit_at(track, bit)) {
 			continue;
 		}
-		if (bit - start >= MinWeakRun) {
-			for (auto cell = start; cell < bit; ++cell) {
+		if (bit - start > StableZeroCells) {
+			for (auto cell = start + StableZeroCells; cell < bit; ++cell) {
 				weak[cell % track.bit_count] = true;
 			}
 		}
@@ -348,8 +349,22 @@ std::shared_ptr<FloppyMfmTrack> FloppyMfmTrack::Sample(const uint64_t cycle,
                                                        const uint16_t rate_kbps) const
 {
 	auto sampled = std::make_shared<FloppyMfmTrack>(*this);
-	for (size_t bit = 0; bit < weak_cells.size(); ++bit) {
-		if (!weak_cells[bit]) {
+	const auto cell_ns = bit_count ? duration_ms * 1'000'000 /
+	                                         static_cast<double>(bit_count)
+	                               : 0;
+	const auto selected_cell_ns = rate_kbps ? 500'000.0 / rate_kbps : 0;
+	const auto recover_clock = rate_kbps && bit_count && duration_ms > 0 &&
+	                           !(cell_ns >= selected_cell_ns * 0.9 &&
+	                             cell_ns <= selected_cell_ns * 1.1);
+	// Do not mistake an oversampled legal interval for missing flux. Infer
+	// TC ambiguity on the selected grid; explicit surface masks stay on the
+	// original grid and retain their existing resampling behavior.
+	if (infer_weak_cells && recover_clock) {
+		sampled->weak_cells.clear();
+	}
+	sampled->infer_weak_cells = false;
+	for (size_t bit = 0; bit < sampled->weak_cells.size(); ++bit) {
+		if (!sampled->weak_cells[bit]) {
 			continue;
 		}
 		// The same physical cell has one value during a turn, including
@@ -374,8 +389,6 @@ std::shared_ptr<FloppyMfmTrack> FloppyMfmTrack::Sample(const uint64_t cycle,
 	if (!duration_ns || !*duration_ns) {
 		return {};
 	}
-	const auto cell_ns = duration_ms * 1'000'000 / static_cast<double>(bit_count);
-	const auto selected_cell_ns = 500'000.0 / rate_kbps;
 	// Bitstream captures already contain recovered cells. Preserve their
 	// exact positions when the selected separator can lock to that clock.
 	if (cell_ns >= selected_cell_ns * 0.9 && cell_ns <= selected_cell_ns * 1.1) {
@@ -437,6 +450,11 @@ std::shared_ptr<FloppyMfmTrack> FloppyMfmTrack::Sample(const uint64_t cycle,
 			return {};
 		}
 		decoded->revolution_ends_bits.push_back(*decoded_end);
+	}
+	if (infer_weak_cells) {
+		decoded->weak_cells = find_weak_cells(
+		        {decoded->cells, decoded->bit_count});
+		return decoded->Sample(cycle);
 	}
 	return decoded;
 }
@@ -1134,6 +1152,7 @@ std::unique_ptr<FloppyTrackImage> FloppyTrackImage::FromBitstreamCapture(
 		raw->bit_count  = captured.bit_count ? captured.bit_count
 		                                     : captured.cells.size() * 8;
 		raw->index      = captured.index;
+		raw->infer_weak_cells = captured.detect_weak;
 		raw->weak_cells = captured.detect_weak
 		                        ? find_weak_cells({raw->cells, raw->bit_count})
 		                        : captured.weak_cells;
