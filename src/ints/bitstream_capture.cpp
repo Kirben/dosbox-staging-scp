@@ -160,6 +160,78 @@ std::vector<BitstreamCaptureMark> transcopy_mark_timing(
 	return marks;
 }
 
+void transcopy_continuous_turn(const std::span<const uint8_t> recorded,
+                               BitstreamCaptureTrack& track)
+{
+	// Original TC files retain the beginning of another revolution after
+	// the declared byte count. Use two matching IAMs to select a continuous
+	// turn instead of replaying the separator's initial acquisition cells.
+	const auto declared_bits = track.bit_count;
+	if (recorded.size() * 8 <= declared_bits || declared_bits < 128) {
+		return;
+	}
+	const auto cell = [&](const size_t bit) {
+		return (recorded[bit / 8] >> (7 - bit % 8)) & 1u;
+	};
+	std::array<size_t, 2> iams = {};
+	size_t count               = 0;
+	auto first_id              = declared_bits;
+	uint64_t window            = 0;
+	for (size_t bit = 0; bit < 64; ++bit) {
+		window = (window << 1) | cell(bit);
+	}
+	for (size_t bit = 0; bit + 64 <= recorded.size() * 8; ++bit) {
+		if (window == 0x4489448944895554ull && bit < declared_bits) {
+			first_id = std::min(first_id, bit);
+		}
+		if (window == 0x5224522452245552ull) {
+			if (count == iams.size()) {
+				return;
+			}
+			iams[count++] = bit;
+		}
+		if (bit + 64 < recorded.size() * 8) {
+			window = (window << 1) | cell(bit + 64);
+		}
+	}
+	if (count != 2 || iams[0] >= first_id || iams[1] < declared_bits ||
+	    iams[1] + 128 > recorded.size() * 8) {
+		return;
+	}
+	const auto period_bits = iams[1] - iams[0];
+	// Allow only a small discrepancy in the byte-granular length. Do not
+	// infer a turn from unrelated or ambiguous padding.
+	if (period_bits + 128 < declared_bits || period_bits > declared_bits + 128) {
+		return;
+	}
+	for (size_t bit = 0; bit < 128; ++bit) {
+		if (cell(iams[0] + bit) != cell(iams[1] + bit)) {
+			return;
+		}
+	}
+	if (std::ranges::any_of(track.address_marks, [&](const auto& mark) {
+		    return mark.bit < iams[0];
+	    })) {
+		return;
+	}
+	const auto index = track.index < iams[0] ? track.index + declared_bits
+	                                         : track.index;
+	if (index >= iams[1]) {
+		return;
+	}
+	std::vector<uint8_t> cells((period_bits + 7) / 8, 0);
+	for (size_t bit = 0; bit < period_bits; ++bit) {
+		cells[bit / 8] |= static_cast<uint8_t>(cell(iams[0] + bit)
+		                                       << (7 - bit % 8));
+	}
+	for (auto& mark : track.address_marks) {
+		mark.bit -= iams[0];
+	}
+	track.cells     = std::move(cells);
+	track.bit_count = period_bits;
+	track.index     = index - iams[0];
+}
+
 uint32_t capture_read_le(const std::span<const uint8_t> bytes)
 {
 	uint32_t value = 0;
@@ -200,6 +272,7 @@ std::optional<BitstreamCapture> ParseTransCopyCapture(const std::span<const uint
 	capture.cylinders        = last + 1u;
 	capture.heads            = heads;
 	capture.tracks.resize(capture.cylinders * heads);
+	std::vector<bool> mfm_tracks(capture.tracks.size(), false);
 	std::map<size_t, size_t> extents = {};
 	auto data_start                  = bytes.size();
 	for (size_t entry = 0; entry < MaxCylinders * 2; ++entry) {
@@ -274,6 +347,15 @@ std::optional<BitstreamCapture> ParseTransCopyCapture(const std::span<const uint
 			track.bit_count   = bit_count;
 			track.index       = static_cast<size_t>(index);
 			track.detect_weak = true;
+			mfm_tracks[cylinder * heads + head] =
+			        track_type == static_cast<uint8_t>(
+			                              TransCopyType::MfmHighDensity) ||
+			        track_type ==
+			                static_cast<uint8_t>(
+			                        TransCopyType::MfmDoubleDensity360) ||
+			        track_type ==
+			                static_cast<uint8_t>(
+			                        TransCopyType::MfmDoubleDensity);
 			if (track_type == static_cast<uint8_t>(
 			                          TransCopyType::MfmDoubleDensity) ||
 			    track_type == static_cast<uint8_t>(
@@ -281,6 +363,24 @@ std::optional<BitstreamCapture> ParseTransCopyCapture(const std::span<const uint
 				track.address_marks = transcopy_mark_timing(
 				        bytes, entry, data_start, skew, track);
 			}
+		}
+	}
+	for (size_t cylinder = 0; cylinder < capture.cylinders; ++cylinder) {
+		for (size_t head = 0; head < heads; ++head) {
+			auto& track = capture.tracks[cylinder * heads + head];
+			if (track.cells.empty() ||
+			    !mfm_tracks[cylinder * heads + head]) {
+				continue;
+			}
+			const auto offset = read_track_offset(bytes,
+			                                      cylinder * 2 + head);
+			const auto extent = extents.find(offset);
+			const auto next   = std::next(extent);
+			const auto end    = next == extents.end() ? bytes.size()
+			                                          : next->first;
+			const auto size   = std::min(end - offset,
+			                             track.cells.size() * 2);
+			transcopy_continuous_turn(bytes.subspan(offset, size), track);
 		}
 	}
 	return capture;
