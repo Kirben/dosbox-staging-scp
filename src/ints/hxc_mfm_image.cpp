@@ -1201,6 +1201,17 @@ std::unique_ptr<FloppyTrackImage> FloppyTrackImage::FromBitstreamCapture(
 				}
 			}
 		}
+		for (auto& sector : track.sectors) {
+			const auto mark = std::ranges::find(captured.address_marks,
+			                                    sector.id_bit,
+			                                    &BitstreamCaptureMark::bit);
+			if (mark != captured.address_marks.end()) {
+				sector.cycle_fraction = mark->cycle_fraction;
+				track.recorded_address_times = true;
+			}
+		}
+		// Keep backing-field order stable for existing physical overlay
+		// slots.
 		if (!image->within_decoded_budget({})) {
 			resource_limit();
 			return {};
@@ -1363,7 +1374,18 @@ std::vector<FloppySector> FloppyTrackImage::SampleTrack(const uint32_t cylinder,
 		});
 		if (original != logical.end()) {
 			sector.overlay_slot = original->overlay_slot;
+			if (track.recorded_address_times) {
+				sector.cycle_fraction = original->cycle_fraction;
+			}
 		}
+	}
+	if (track.recorded_address_times) {
+		std::stable_sort(sectors.begin(),
+		                 sectors.end(),
+		                 [](const auto& left, const auto& right) {
+			                 return left.cycle_fraction <
+			                        right.cycle_fraction;
+		                 });
 	}
 	return sectors;
 }

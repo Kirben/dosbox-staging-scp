@@ -10,6 +10,11 @@
 #include <string>
 #include <vector>
 
+struct BitstreamCaptureMark {
+	size_t bit            = 0;
+	double cycle_fraction = 0;
+};
+
 // Container data, independent of sector decoding, BIOS/FDC state, and overlays.
 struct BitstreamCaptureTrack {
 	std::vector<uint8_t> cells   = {};
@@ -18,6 +23,8 @@ struct BitstreamCaptureTrack {
 	double cycle_ms              = 200.0;
 	bool detect_weak             = false;
 	std::vector<bool> weak_cells = {};
+	// Optional physical address-mark positions, distinct from recovered cells.
+	std::vector<BitstreamCaptureMark> address_marks = {};
 };
 
 struct BitstreamCapture {

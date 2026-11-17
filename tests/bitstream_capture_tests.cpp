@@ -63,6 +63,89 @@ TEST(BitstreamCapture, TransCopyPreservesPhysicalPlacementIndexAndUndecodedCells
 	EXPECT_TRUE(capture->tracks[2].detect_weak);
 }
 
+std::vector<uint8_t> timed_transcopy_capture()
+{
+	std::vector<uint8_t> bytes(0x4100);
+	bytes[0]     = 0x5a;
+	bytes[1]     = 0xa5;
+	bytes[0x100] = 7;
+	bytes[0x103] = 1;
+	bytes[0x104] = 1;
+	bytes[0x306] = 0x40;
+	write_le16(bytes, 0x505, 256);
+	const std::array<uint16_t, 4> intervals = {4000, 8000, 12000, 16000};
+	for (size_t i = 0; i < intervals.size(); ++i) {
+		write_le16(bytes, 0x905 + 2 * i, intervals[i]);
+	}
+	for (const size_t offset : {8u, 32u, 64u}) {
+		const auto iam = offset == 8;
+		for (size_t i = 0; i < 3; ++i) {
+			bytes[0x4000 + offset + 2 * i]     = iam ? 0x52 : 0x44;
+			bytes[0x4000 + offset + 2 * i + 1] = iam ? 0x24 : 0x89;
+		}
+		const auto value = iam ? 0xfc : 0xfe;
+		uint16_t word    = 0;
+		for (auto bit = 7; bit >= 0; --bit) {
+			word = static_cast<uint16_t>((word << 2) |
+			                             ((value >> bit) & 1));
+		}
+		bytes[0x4000 + offset + 6] = static_cast<uint8_t>(word >> 8);
+		bytes[0x4000 + offset + 7] = static_cast<uint8_t>(word);
+	}
+	return bytes;
+}
+
+TEST(BitstreamCapture, TransCopyAddressMarkTimingIncludesIamAndSkew)
+{
+	for (const auto skew : {uint16_t{0}, uint16_t{10000}}) {
+		auto bytes = timed_transcopy_capture();
+		write_le16(bytes, 0x105, skew);
+		write_le16(bytes, 0x905, static_cast<uint16_t>(4000 + skew));
+		std::string error  = {};
+		const auto capture = ParseTransCopyCapture(bytes, error);
+		ASSERT_TRUE(capture) << error;
+		const auto& track = capture->tracks[0];
+		ASSERT_EQ(track.address_marks.size(), 3u);
+		for (size_t i = 0; i < 3; ++i) {
+			EXPECT_EQ(track.address_marks[i].bit,
+			          (std::array<size_t, 3>{64, 256, 512}[i]));
+			EXPECT_DOUBLE_EQ(track.address_marks[i].cycle_fraction,
+			                 (std::array<double, 3>{0.1, 0.3, 0.6}[i] +
+			                  skew / 40000.0));
+		}
+		EXPECT_EQ(track.cells,
+		          std::vector<uint8_t>(bytes.begin() + 0x4000, bytes.end()));
+	}
+}
+
+TEST(BitstreamCapture, TransCopyInvalidOptionalTimingRetainsRawFallback)
+{
+	for (const auto damage : {0, 1, 2, 3, 4}) {
+		auto bytes = timed_transcopy_capture();
+		if (damage == 0) {
+			std::fill(bytes.begin() + 0x905, bytes.begin() + 0x925, 0);
+		}
+		if (damage == 1) {
+			write_le16(bytes, 0x907, 0);
+		}
+		if (damage == 2) {
+			write_le16(bytes, 0x90b, 1);
+		}
+		if (damage == 3) {
+			write_le16(bytes, 0x90d, 1);
+		}
+		if (damage == 4) {
+			bytes[0x4000 + 32] = 0;
+		}
+		std::string error  = {};
+		const auto capture = ParseTransCopyCapture(bytes, error);
+		ASSERT_TRUE(capture) << error;
+		EXPECT_TRUE(capture->tracks[0].address_marks.empty()) << damage;
+		EXPECT_EQ(capture->tracks[0].cells,
+		          std::vector<uint8_t>(bytes.begin() + 0x4000, bytes.end()));
+	}
+}
+
 TEST(BitstreamCapture, TransCopyRejectsTruncatedAndInvalidTrackTables)
 {
 	const auto original = stepped_capture();
