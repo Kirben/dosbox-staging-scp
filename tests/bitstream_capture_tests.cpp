@@ -146,6 +146,72 @@ TEST(BitstreamCapture, TransCopyInvalidOptionalTimingRetainsRawFallback)
 	}
 }
 
+std::vector<uint8_t> overlapping_transcopy_capture(const int delta_bits)
+{
+	auto bytes = timed_transcopy_capture();
+	// A real MFM FC includes the clock between its last two zero data bits.
+	bytes[0x400f] |= 2;
+	bytes.resize(0x4200, 0);
+	const auto first  = size_t{64};
+	const auto second = static_cast<size_t>(2048 + 64 + delta_bits);
+	for (size_t bit = 0; bit < 128; ++bit) {
+		const auto source      = first + bit;
+		const auto destination = second + bit;
+		const auto value = (bytes[0x4000 + source / 8] >> (7 - source % 8)) &
+		                   1;
+		bytes[0x4000 + destination / 8] |= static_cast<uint8_t>(
+		        value << (7 - destination % 8));
+	}
+	return bytes;
+}
+
+TEST(BitstreamCapture, TransCopyUsesRecordedOverlapForContinuousTurn)
+{
+	for (const auto delta_bits : {-3, 5}) {
+		auto bytes         = overlapping_transcopy_capture(delta_bits);
+		std::string error  = {};
+		const auto capture = ParseTransCopyCapture(bytes, error);
+		ASSERT_TRUE(capture) << error;
+		const auto& track = capture->tracks[0];
+		EXPECT_EQ(track.bit_count, static_cast<size_t>(2048 + delta_bits));
+		EXPECT_EQ(track.index, 1984u);
+		EXPECT_DOUBLE_EQ(track.cycle_ms, 4.096);
+		ASSERT_EQ(track.address_marks.size(), 3u);
+		EXPECT_EQ(track.address_marks[0].bit, 0u);
+		EXPECT_EQ(track.address_marks[1].bit, 192u);
+		EXPECT_DOUBLE_EQ(track.address_marks[1].cycle_fraction, 0.3);
+		for (size_t bit = 0; bit < track.bit_count; ++bit) {
+			EXPECT_EQ((track.cells[bit / 8] >> (7 - bit % 8)) & 1,
+			          (bytes[0x4000 + (bit + 64) / 8] >>
+			           (7 - (bit + 64) % 8)) &
+			                  1);
+		}
+	}
+}
+
+TEST(BitstreamCapture, TransCopyUncertainOverlapKeepsDeclaredTurn)
+{
+	for (auto damage = 0; damage < 4; ++damage) {
+		auto bytes = overlapping_transcopy_capture(damage == 0 ? 129 : -3);
+		if (damage == 1) {
+			std::fill(bytes.begin() + 0x4100, bytes.end(), 0);
+		}
+		if (damage == 2) {
+			bytes[0x4110] ^= 1;
+		}
+		if (damage == 3) {
+			std::copy_n(bytes.begin() + 0x4008, 8, bytes.begin() + 0x4080);
+		}
+		std::string error  = {};
+		const auto capture = ParseTransCopyCapture(bytes, error);
+		ASSERT_TRUE(capture) << error;
+		EXPECT_EQ(capture->tracks[0].bit_count, 2048u) << damage;
+		EXPECT_EQ(capture->tracks[0].cells,
+		          std::vector<uint8_t>(bytes.begin() + 0x4000,
+		                               bytes.begin() + 0x4100));
+	}
+}
+
 TEST(BitstreamCapture, TransCopyRejectsTruncatedAndInvalidTrackTables)
 {
 	const auto original = stepped_capture();
