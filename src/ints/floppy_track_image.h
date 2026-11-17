@@ -137,6 +137,7 @@ private:
 		std::vector<std::shared_ptr<FloppyMfmTrack>> raw_tracks = {};
 		std::shared_ptr<const FluxTrack> flux                   = {};
 		bool cells_changed                                = false;
+		bool recorded_address_times                             = false;
 		std::array<bool, 2> encoding_fields_ready = {};
 		double cycle_ms                                   = 200.0;
 		double format_cycle_ms                            = 200.0;

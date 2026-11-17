@@ -1243,6 +1243,7 @@ void FloppyTrackImage::ApplyTrackFormat(const TrackAddress& address,
 	const auto count   = format.ids.size() / ChrnSize;
 	const auto partial = count < format.requested || format.written_cells;
 	if (!partial) {
+		track.recorded_address_times = false;
 		track.cycle_ms        = track.format_cycle_ms;
 		track.revolution_ends = {1.0};
 	}
@@ -1314,6 +1315,35 @@ void FloppyTrackImage::ApplyTrackFormat(const TrackAddress& address,
 			                 return left.cycle_fraction <
 			                        right.cycle_fraction;
 		                 });
+	}
+	if (partial && track.recorded_address_times) {
+		const auto cells = format.written_cells.value_or(check_cast<uint32_t>(
+		        (floppy_format::lead_bytes(format.fm) +
+		         count * floppy_format::sector_bytes(format.size_code,
+		                                             format.gap.value_or(0),
+		                                             format.fm)) *
+		        16));
+		const auto cutoff = format.gap ? cells / (track.cycle_ms *
+		                                          (format.fm ? 1 : 2) *
+		                                          format.rate_kbps)
+		                               : static_cast<double>(count) /
+		                                         format.requested;
+		for (auto& sector : sectors) {
+			const auto original = std::ranges::find_if(
+			        previous, [&](const auto& other) {
+				        return other.cycle_fraction >= cutoff &&
+				               other.id_bit == sector.id_bit &&
+				               other.fm == sector.fm &&
+				               other.cylinder == sector.cylinder &&
+				               other.head == sector.head &&
+				               other.id == sector.id &&
+				               other.size_code == sector.size_code &&
+				               other.revolution == sector.revolution;
+			        });
+			if (original != previous.end()) {
+				sector.cycle_fraction = original->cycle_fraction;
+			}
+		}
 	}
 	track.sectors               = std::move(sectors);
 	track.dirty                 = true;

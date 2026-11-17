@@ -77,6 +77,89 @@ size_t read_track_offset(const std::span<const uint8_t> bytes, const size_t entr
 	       BlockBytes;
 }
 
+std::vector<BitstreamCaptureMark> transcopy_mark_timing(
+        const std::span<const uint8_t> bytes, const size_t entry,
+        const size_t data_start, const uint16_t skew,
+        const BitstreamCaptureTrack& track)
+{
+	// NewRisingSun's v5 description specifies 16 DD timing words, including
+	// IAMs and a final remainder. Older/abbreviated headers need no table.
+	constexpr size_t TimingOffset = 0x905;
+	constexpr size_t Entries      = 16;
+	const auto offset             = TimingOffset + entry * Entries * 2;
+	if (offset > data_start || Entries * 2 > data_start - offset ||
+	    track.bit_count < 64) {
+		return {};
+	}
+	std::array<uint16_t, Entries> ticks = {};
+	size_t used                         = 0;
+	for (size_t i = 0; i < ticks.size(); ++i) {
+		ticks[i] = read_le16(bytes, offset + i * 2);
+		if (ticks[i]) {
+			used = i + 1;
+		}
+	}
+	if (used < 2) {
+		return {};
+	}
+	const auto bit_at = [&](const size_t bit) {
+		const auto position = bit % track.bit_count;
+		return (track.cells[position / 8] >> (7 - position % 8)) & 1u;
+	};
+	uint64_t window = 0;
+	for (size_t bit = 0; bit < 64; ++bit) {
+		window = (window << 1) | bit_at(bit);
+	}
+	std::vector<BitstreamCaptureMark> marks = {};
+	for (size_t bit = 0; bit < track.bit_count; ++bit) {
+		const auto sync = window >> 16;
+		if (sync == 0x448944894489ull || sync == 0x522452245224ull) {
+			uint8_t value = 0;
+			for (auto i = 0; i < 8; ++i) {
+				value = static_cast<uint8_t>(
+				        (value << 1) |
+				        ((window >> (14 - 2 * i)) & 1u));
+			}
+			if ((sync == 0x448944894489ull && value == 0xfe) ||
+			    (sync == 0x522452245224ull && value == 0xfc)) {
+				marks.push_back({bit, 0});
+				if (marks.size() >= Entries) {
+					return {};
+				}
+			}
+		}
+		window = (window << 1) | bit_at(bit + 64);
+	}
+	if (marks.empty() || used != marks.size() + 1) {
+		return {};
+	}
+	uint32_t total = 0;
+	for (size_t i = 0; i < used; ++i) {
+		if (i && !ticks[i]) {
+			return {};
+		}
+		total += ticks[i];
+	}
+	const auto start = skew == NoSkew ? 0u : skew % SkewTicksPerTurn;
+	if (total <= start) {
+		return {};
+	}
+	const auto period = total - start;
+	// Optional tables can contain uninitialized memory. Require a complete
+	// set of marks and a plausible normalized revolution; otherwise retain
+	// the raw-cell fallback instead of inventing positions.
+	if (period < 36'000 || period > 44'000) {
+		return {};
+	}
+	uint32_t elapsed = 0;
+	for (size_t i = 0; i < marks.size(); ++i) {
+		elapsed += ticks[i];
+		marks[i].cycle_fraction = static_cast<double>(elapsed % period) /
+		                          static_cast<double>(period);
+	}
+	return marks;
+}
+
 uint32_t capture_read_le(const std::span<const uint8_t> bytes)
 {
 	uint32_t value = 0;
@@ -118,6 +201,13 @@ std::optional<BitstreamCapture> ParseTransCopyCapture(const std::span<const uint
 	capture.heads            = heads;
 	capture.tracks.resize(capture.cylinders * heads);
 	std::map<size_t, size_t> extents = {};
+	auto data_start                  = bytes.size();
+	for (size_t entry = 0; entry < MaxCylinders * 2; ++entry) {
+		const auto offset = read_track_offset(bytes, entry);
+		if (offset) {
+			data_start = std::min(data_start, offset);
+		}
+	}
 	for (size_t cylinder = 0; cylinder <= last; ++cylinder) {
 		const auto captured = cylinder >= first &&
 		                      (cylinder - first) % step == 0;
@@ -184,6 +274,13 @@ std::optional<BitstreamCapture> ParseTransCopyCapture(const std::span<const uint
 			track.bit_count   = bit_count;
 			track.index       = static_cast<size_t>(index);
 			track.detect_weak = true;
+			if (track_type == static_cast<uint8_t>(
+			                          TransCopyType::MfmDoubleDensity) ||
+			    track_type == static_cast<uint8_t>(
+			                          TransCopyType::MfmDoubleDensity360)) {
+				track.address_marks = transcopy_mark_timing(
+				        bytes, entry, data_start, skew, track);
+			}
 		}
 	}
 	return capture;
