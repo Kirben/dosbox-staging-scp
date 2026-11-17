@@ -53,6 +53,8 @@ struct FloppyMfmTrack {
 	std::vector<double> cell_ends = {};
 	// Cumulative cell boundaries when several captured turns share one stream.
 	std::vector<size_t> revolution_ends_bits = {};
+	// TC sampling cells can be finer than the programmed separator clock.
+	bool infer_weak_cells = false;
 
 	std::shared_ptr<FloppyMfmTrack> Sample(const uint64_t cycle,
 	                                       const double duration_ms = 0,

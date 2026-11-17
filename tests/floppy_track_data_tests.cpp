@@ -14,6 +14,56 @@
 
 CHECK_NARROWING();
 
+TEST(FloppyTrackData, InferTcWeaknessAfterClockRecovery)
+{
+	FloppyMfmTrack raw = {};
+	raw.cells.assign(32, 0x80);
+	raw.bit_count        = 256;
+	raw.infer_weak_cells = true;
+	raw.weak_cells.resize(raw.bit_count);
+	for (size_t bit = 0; bit < raw.bit_count; ++bit) {
+		raw.weak_cells[bit] = bit % 8 >= 4;
+	}
+	auto reference             = raw;
+	reference.infer_weak_cells = false;
+	reference.weak_cells.clear();
+	const auto expected = reference.Sample(0, 0.256, 250);
+	ASSERT_TRUE(expected);
+	for (uint64_t cycle = 0; cycle < 16; ++cycle) {
+		const auto sampled = raw.Sample(cycle, 0.256, 250);
+		ASSERT_TRUE(sampled);
+		EXPECT_EQ(sampled->cells, expected->cells);
+		EXPECT_EQ(sampled->index, expected->index);
+		EXPECT_TRUE(sampled->weak_cells.empty());
+		EXPECT_FALSE(sampled->infer_weak_cells);
+	}
+	EXPECT_TRUE(raw.infer_weak_cells);
+	EXPECT_TRUE(raw.weak_cells[4]);
+}
+
+TEST(FloppyTrackData, InferMissingTransitionsOnRecoveredGrid)
+{
+	FloppyMfmTrack raw = {};
+	for (int i = 0; i < 16; ++i) {
+		raw.cells.insert(raw.cells.end(), {0x80, 0x00});
+	}
+	raw.bit_count        = 256;
+	raw.infer_weak_cells = true;
+	const auto first     = raw.Sample(0, 0.256, 250);
+	ASSERT_TRUE(first);
+	bool changed = false;
+	for (uint64_t cycle = 1; cycle < 16; ++cycle) {
+		const auto sampled  = raw.Sample(cycle, 0.256, 250);
+		const auto repeated = raw.Sample(cycle, 0.256, 250);
+		ASSERT_TRUE(sampled);
+		ASSERT_TRUE(repeated);
+		EXPECT_EQ(sampled->cells, repeated->cells);
+		changed |= sampled->cells != first->cells;
+	}
+	EXPECT_TRUE(changed);
+	EXPECT_TRUE(raw.weak_cells.empty());
+}
+
 TEST(FloppyTrackData, PreserveGapPhaseChangesAcrossIndex)
 {
 	FloppySector sector = {};
