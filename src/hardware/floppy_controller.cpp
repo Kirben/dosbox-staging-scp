@@ -78,6 +78,9 @@ enum class Command {
 	ReadData         = 0x06,
 	ReadDeletedData  = 0x0c,
 	WriteDeletedData = 0x09,
+	ScanEqual        = 0x11,
+	ScanLowOrEqual   = 0x19,
+	ScanHighOrEqual  = 0x1d,
 	Verify           = 0x16,
 	Recalibrate      = 0x07,
 	SenseInterrupt   = 0x08,
@@ -173,6 +176,7 @@ struct Controller {
 	bool irq_pending                          = false;
 	bool seek_irq_pending                     = false;
 	bool skipped_control_mark                 = false;
+	std::vector<uint8_t> scan_sector          = {};
 	bool missing_address_mark                 = false;
 	bool non_dma                              = false;
 	bool timing_specified                     = false;
@@ -314,6 +318,7 @@ void finish_data(const uint8_t status_1, const uint8_t status_2 = 0,
 		                 : 0);
 	}
 	fdc.pio_data.clear();
+	fdc.scan_sector.clear();
 	fdc.pio_ready       = false;
 	fdc.pio_underrun    = false;
 	const auto status_0 = check_cast<uint8_t>(
@@ -806,10 +811,24 @@ bool commit_sector_write(const std::span<const uint8_t> data)
 	                                                             data);
 }
 
+bool is_scan_command(const Command command)
+{
+	return command == Command::ScanEqual || command == Command::ScanLowOrEqual ||
+	       command == Command::ScanHighOrEqual;
+}
+
 void advance_data_sector()
 {
+	const auto command     = static_cast<Command>(fdc.command[0] & 0x1f);
+	const auto scanning    = is_scan_command(command);
+	const auto step        = scanning ? fdc.command[8] : 1;
+	const auto next_sector = fdc.sector + step;
 	if (fdc.sector != fdc.command[6]) {
-		++fdc.sector;
+		if (scanning && next_sector > fdc.command[6]) {
+			finish_data(0x80, 0x04);
+			return;
+		}
+		fdc.sector = static_cast<uint8_t>(next_sector);
 		schedule_next_sector();
 	} else if ((fdc.command[0] & 0x80) && fdc.head == 0 && fdc.disk->heads > 1) {
 		fdc.head = 1;
@@ -817,14 +836,19 @@ void advance_data_sector()
 		fdc.sector = 1;
 		schedule_next_sector();
 	} else {
-		finish_data(0x80);
+		if (scanning) {
+			finish_data(0, 0x04, true);
+		} else {
+			finish_data(0x80);
+		}
 	}
 }
 
 bool data_mark_mismatch()
 {
 	const auto command = static_cast<Command>(fdc.command[0] & 0x1f);
-	if (command != Command::ReadData && command != Command::ReadDeletedData) {
+	if (command != Command::ReadData &&
+	    command != Command::ReadDeletedData && !is_scan_command(command)) {
 		return false;
 	}
 	const auto* sector = fdc.track_sector;
@@ -833,6 +857,31 @@ bool data_mark_mismatch()
 	}
 	const auto deleted = sector && sector->deleted;
 	return deleted != (command == Command::ReadDeletedData);
+}
+
+void finish_scan(const Command command, const std::span<const uint8_t> host,
+                 const bool terminal_count)
+{
+	if (fdc.sector_data_crc_error && host.size() == fdc.scan_sector.size()) {
+		finish_data(0x20, 0x20);
+		return;
+	}
+	bool equal     = true;
+	bool satisfied = true;
+	for (size_t i = 0; i < host.size(); ++i) {
+		const auto disk_byte = fdc.scan_sector[i];
+		equal &= disk_byte == host[i];
+		satisfied &= command == Command::ScanLowOrEqual
+		                   ? disk_byte <= host[i]
+		           : command == Command::ScanHighOrEqual
+		                   ? disk_byte >= host[i]
+		                   : disk_byte == host[i];
+	}
+	if (satisfied || terminal_count) {
+		finish_data(0, satisfied ? (equal ? 0x08 : 0) : 0x04, true);
+	} else {
+		advance_data_sector();
+	}
 }
 
 void finish_sector_transfer(const std::span<const uint8_t> write_data,
@@ -883,6 +932,7 @@ void transfer_sector(uint32_t)
 	const auto command = static_cast<Command>(fdc.command[0] & 0x1f);
 	const auto* field  = fdc.track_sector;
 	const auto writing = is_write_command(command);
+	const auto scanning = is_scan_command(command);
 	const auto skip    = data_mark_mismatch() && (fdc.command[0] & 0x20);
 	if (!fdc.sector_transfer_ready &&
 	    (!field || (!field->id_crc_error && (writing || !field->data.empty())))) {
@@ -950,6 +1000,10 @@ void transfer_sector(uint32_t)
 		advance_data_sector();
 		return;
 	}
+	if (scanning && data_mark_mismatch()) {
+		finish_data(0, 0x40);
+		return;
+	}
 	if (const auto* sector = fdc.track_sector) {
 		if (!writing && sector->data.empty()) {
 			finish_data(0x01, 0x01);
@@ -968,7 +1022,11 @@ void transfer_sector(uint32_t)
 		return;
 	}
 
-	const auto host_size = fdc.command[5] == 0
+	if (scanning) {
+		fdc.scan_sector.assign(data.begin(), data.end());
+	}
+	const auto input     = writing || scanning;
+	const auto host_size = !scanning && fdc.command[5] == 0
 	                             ? std::min(data.size(), size_t{fdc.command[8]})
 	                             : data.size();
 	if (!host_size && !writing) {
@@ -984,17 +1042,16 @@ void transfer_sector(uint32_t)
 		fdc.write_started_ms = PIC_FullIndex();
 	}
 	if (fdc.non_dma && !fdc.fifo_enabled) {
-		start_pio_transfer(writing ? data.size() : host_size,
-		                   writing ? std::span<const uint8_t>{}
-		                           : data.first(host_size),
+		start_pio_transfer(input ? data.size() : host_size,
+		                   input ? std::span<const uint8_t>{}
+		                         : data.first(host_size),
 		                   host_size);
 		return;
 	}
 	// DTL limits host bytes, not the physical N=0 write. The rest of
 	// the 128-byte field remains zero and is clocked before its CRC.
-	start_byte_transfer(writing ? data.size() : host_size,
-	                    writing ? std::span<const uint8_t>{}
-	                            : data.first(host_size),
+	start_byte_transfer(input ? data.size() : host_size,
+	                    input ? std::span<const uint8_t>{} : data.first(host_size),
 	                    host_size);
 }
 
@@ -1139,8 +1196,13 @@ void defer_byte_completion()
 		fdc.irq_pending = false;
 		update_irq();
 	}
+	const auto command = static_cast<Command>(fdc.command[0] & 0x1f);
+	const auto short_scan = is_scan_command(command) && bytes.terminal_count &&
+	                        bytes.disk_offset < bytes.data.size();
 	PIC_AddEvent(complete_byte_transfer,
-	             std::max(0.0, fdc.sector_end_ms - PIC_FullIndex()));
+	             short_scan
+	                     ? 0.0
+	                     : std::max(0.0, fdc.sector_end_ms - PIC_FullIndex()));
 }
 
 void refresh_fifo_request()
@@ -1350,6 +1412,12 @@ void complete_byte_transfer(uint32_t)
 				PIC_AddEvent(format_track_sector, 0);
 			}
 		}
+	} else if (is_scan_command(command)) {
+		if (overrun) {
+			finish_data(0x10);
+		} else {
+			finish_scan(command, std::span(data).first(received), terminal);
+		}
 	} else if (overrun) {
 		if (writing) {
 			const auto saved = commit_sector_write(data);
@@ -1370,8 +1438,9 @@ void complete_byte_transfer(uint32_t)
 void finish_pio_transfer()
 {
 	const auto command = static_cast<Command>(fdc.command[0] & 0x1f);
-	if ((command == Command::ReadData || command == Command::ReadDeletedData ||
-	     is_write_command(command) || command == Command::ReadTrack ||
+	if ((command == Command::ReadData ||
+	     command == Command::ReadDeletedData || is_write_command(command) ||
+	     is_scan_command(command) || command == Command::ReadTrack ||
 	     (command == Command::FormatTrack && fdc.media)) &&
 	    !fdc.pio_waiting_crc && PIC_FullIndex() < fdc.sector_end_ms) {
 		// Defer once: rounding at the target timestamp must not queue
@@ -1390,6 +1459,9 @@ void finish_pio_transfer()
 		break;
 	case Command::WriteDeletedData:
 	case Command::WriteData: finish_sector_transfer(data, false); break;
+	case Command::ScanEqual:
+	case Command::ScanLowOrEqual:
+	case Command::ScanHighOrEqual: finish_scan(command, data, false); break;
 	case Command::ReadData:
 	case Command::ReadDeletedData: finish_sector_transfer({}, false); break;
 	case Command::FormatTrack:
@@ -1513,6 +1585,10 @@ void start_data(const Command command)
 	    (is_write_command(command) || command == Command::FormatTrack)) {
 		// Sector-only images cannot retain an FM track layout.
 		fdc.track_sector = nullptr;
+		finish_data(0x04);
+		return;
+	}
+	if (is_scan_command(command) && (fdc.command[8] < 1 || fdc.command[8] > 2)) {
 		finish_data(0x04);
 		return;
 	}
@@ -1875,6 +1951,9 @@ void execute_command(const Command command)
 	case Command::ReadData:
 	case Command::ReadDeletedData:
 	case Command::ReadTrack:
+	case Command::ScanEqual:
+	case Command::ScanLowOrEqual:
+	case Command::ScanHighOrEqual:
 	case Command::Verify: start_data(command); break;
 	default:
 		fdc.result[0] = 0x80;
@@ -1893,6 +1972,9 @@ size_t command_length(const Command command)
 	case Command::ReadData:
 	case Command::ReadDeletedData:
 	case Command::ReadTrack:
+	case Command::ScanEqual:
+	case Command::ScanLowOrEqual:
+	case Command::ScanHighOrEqual:
 	case Command::Verify: return 9;
 	case Command::Seek:
 	case Command::Specify: return 3;
