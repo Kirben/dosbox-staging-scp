@@ -586,7 +586,8 @@ def main():
             check_format(args.dosbox.resolve(), args.nasm, directory, extension)
             for writing in (False, True):
                 check_pio(args.dosbox.resolve(), args.nasm, directory, extension, writing)
-        for threshold in (0, 4, 10, 15):
+        # Check adjacent codes at both ends of the Intel FIFOTHR range.
+        for threshold in (0, 1, 4, 10, 14, 15):
             for writing in (False, True):
                 check_threshold(args.dosbox.resolve(), args.nasm, directory, threshold, writing)
 
