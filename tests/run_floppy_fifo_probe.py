@@ -504,7 +504,7 @@ threshold_byte:
           flush=True)
 
 
-def check_enhanced_commands(dosbox, nasm, directory):
+def check_enhanced_commands(dosbox, nasm, directory, use_dsr):
     """Check result lengths, IRQ behavior and LOCK's software-reset scope."""
     image = directory / "enhanced-commands.img"
     image.write_bytes(fixture("img"))
@@ -541,7 +541,37 @@ def check_enhanced_commands(dosbox, nasm, directory):
     def dump(specify, mode, locked, configure, precomp):
         return send(0x0e) + reply(0, 0, 0, 0, specify, mode, 0, locked, configure, precomp)
 
-    reset = "mov dx,3f2h\nmov al,18h\nout dx,al\n" + RESET
+    reset_routine = ""
+    if use_dsr:
+        reset = "call reset_dsr\n"
+        reset_routine = """
+reset_dsr:
+    call clear_irq
+    mov dx,3f4h
+    mov al,82h
+    out dx,al
+    mov dx,3f4h
+    in al,dx
+    cmp al,80h
+    jne done
+    mov bh,0c0h
+    mov cx,4
+check_reset_status:
+    mov dx,3f5h
+    mov al,8
+    out dx,al
+    in al,dx
+    cmp al,bh
+    jne done
+    in al,dx
+    test al,al
+    jnz done
+    inc bh
+    loop check_reset_status
+    ret
+"""
+    else:
+        reset = "mov dx,3f2h\nmov al,18h\nout dx,al\n" + RESET
     checks = RESET + "call clear_irq\n"
     checks += send(0x10) + reply(0x90)
     checks += dump(0, 0, 0, 0x20, 0)
@@ -557,8 +587,21 @@ def check_enhanced_commands(dosbox, nasm, directory):
     checks += dump(0, 0, 0, 5, 7)
     checks += reset + "call clear_irq\n"
     checks += dump(0, 0, 0, 0x20, 0)
-    run_guest(dosbox, nasm, directory, image, program(checks))
-    print("VERSION, DUMPREG and LOCK/UNLOCK across DOR resets passed", flush=True)
+    if use_dsr:
+        checks += """
+    mov dx,3f2h
+    mov al,18h
+    out dx,al
+    mov dx,3f4h
+    mov al,82h
+    out dx,al
+    in al,dx
+    test al,al
+    jnz done
+""" + RESET + "call clear_irq\n" + send(0x10) + reply(0x90)
+    run_guest(dosbox, nasm, directory, image, program(checks, reset_routine))
+    register = "DSR" if use_dsr else "DOR"
+    print(f"VERSION, DUMPREG and LOCK/UNLOCK across {register} resets passed", flush=True)
 
 
 def main():
@@ -569,7 +612,8 @@ def main():
     args = parser.parse_args()
     with TemporaryDirectory() as temp:
         directory = Path(temp)
-        check_enhanced_commands(args.dosbox.resolve(), args.nasm, directory)
+        for use_dsr in (False, True):
+            check_enhanced_commands(args.dosbox.resolve(), args.nasm, directory, use_dsr)
         for extension in ("img", "ima", "scp", "mfm", "86f", "tc"):
             first = check_read(args.dosbox.resolve(), args.nasm, directory, extension, 15, False)
             last = check_read(args.dosbox.resolve(), args.nasm, directory, extension, 0, False)

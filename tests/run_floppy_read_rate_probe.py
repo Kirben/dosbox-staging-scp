@@ -15,17 +15,14 @@ from run_floppy_zero_sector_probe import encode_tracks
 from run_transcopy_layout_probe import run_guest
 
 
-def command_checks(selector, opcode, label, rate=250):
+def command_checks(selector, opcode, label, rate=250, *, port=0x3f7):
     """Read one 250-kbps track at the selected separator clock."""
     correct = (500, 300, 250, 1000)[selector] == rate
     data_read = opcode in (0x46, 0x42)
-    checks = DMA.replace("mov cx,512", "mov cx,528") + f"""
-    in al,08h
-    mov dx,3f7h
-    mov al,{selector}
-    out dx,al
-    inc byte [stage]
-"""
+    checks = DMA.replace("mov cx,512", "mov cx,528") + "in al,08h\n"
+    if port is not None:
+        checks += f"mov dx,{port}\nmov al,{selector}\nout dx,al\n"
+    checks += "inc byte [stage]\n"
     if opcode == 0x4a:
         checks += "    call read_id\n"
     else:
@@ -72,8 +69,19 @@ def check_image(dosbox, nasm, directory, extension):
     for index, selector in enumerate((2, 0, 2, 1, 2, 3, 2)):
         for opcode in (0x4a, 0x46, 0x42, 0x56):
             label = f"{index}_{opcode}"
-            checks += command_checks(selector, opcode, label)
+            # Read ID and Read Data select the rate through the DSR.
+            port = 0x3f4 if opcode in (0x4a, 0x46) else 0x3f7
+            checks += command_checks(selector, opcode, label, port=port)
             commands += f"command_{label} db {opcode},0,0,0,1,2,1,54h,0ffh\n"
+    if extension == "scp":
+        for selector in (0, 2):
+            checks += f"""
+    mov dx,3f4h
+    mov al,{0x80 | selector}
+    out dx,al
+    call drain_reset
+"""
+            checks += command_checks(selector, 0x4a, f"reset_{selector}", port=None)
     checks += "    jmp checked\n" + commands + ROUTINES + "checked:\n"
     run_guest(dosbox, nasm, directory, image, checks,
               extra_commands=("config -set cpu cpu_cycles=20000",))
