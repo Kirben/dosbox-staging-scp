@@ -44,6 +44,7 @@ constexpr auto PcjrWatchdogTrigger = 0x40;
 constexpr auto PcjrWatchdogMs = 3000.0;
 
 constexpr size_t FormatIdSize = 4;
+constexpr size_t DataResultSize = 7;
 
 // A fixed DACK service interval models finite host service time, not ISA
 // arbitration.
@@ -83,6 +84,9 @@ enum class Command {
 	ReadId           = 0x0a,
 	FormatTrack      = 0x0d,
 	Seek             = 0x0f,
+	DumpRegisters    = 0x0e,
+	Version          = 0x10,
+	Lock             = 0x14,
 };
 
 struct Drive {
@@ -111,12 +115,16 @@ struct Controller {
 	bool fm                 = false;
 	bool fifo_enabled       = false;
 	uint8_t fifo_threshold  = 1;
+	bool fifo_locked          = false;
+	uint8_t configure_flags   = 0;
+	uint8_t precomp_track     = 0;
+	uint8_t last_sector_count = 0;
 	double transfer_byte_ms = 8.0 / DefaultDataRateKbps;
 
 	std::array<Drive, 2> drives                        = {};
 	std::array<Seek, 4> seeks                          = {};
 	std::array<uint8_t, 9> command                     = {};
-	std::array<uint8_t, 7> result                      = {};
+	std::array<uint8_t, 10> result                     = {};
 	std::array<uint8_t, FormatIdSize * 255> format_ids = {};
 	size_t track_revolution                            = 0;
 	size_t track_remaining                             = 0;
@@ -334,7 +342,7 @@ void finish_data(const uint8_t status_1, const uint8_t status_2 = 0,
 		// interrupt.
 		mem_writeb(BIOS_DRIVE_ACTIVE, mem_readb(BIOS_DRIVE_ACTIVE) | 0x80);
 	}
-	begin_result(fdc.result.size(), true);
+	begin_result(DataResultSize, true);
 }
 
 double rotation_cycle_ms()
@@ -1471,6 +1479,11 @@ void acknowledge_pio_byte()
 
 void start_data(const Command command)
 {
+	if (command == Command::FormatTrack) {
+		fdc.last_sector_count = fdc.command[3];
+	} else if (command != Command::ReadId && command != Command::Verify) {
+		fdc.last_sector_count = fdc.command[6];
+	}
 	fdc.write_started_ms      = -1;
 	fdc.fm                    = (fdc.command[0] & 0x40) == 0;
 	pio_byte_ms               = (fdc.fm ? 16.0 : 8.0) / data_rate_kbps;
@@ -1717,7 +1730,36 @@ void step_seek(const uint32_t unit)
 void execute_command(const Command command)
 {
 	switch (command) {
+	case Command::Version:
+		fdc.result[0] = 0x90;
+		begin_result(1, false);
+		break;
+	case Command::DumpRegisters:
+		// Units 2 and 3 and perpendicular recording are unimplemented.
+		fdc.result = {fdc.drives[0].pcn,
+		              fdc.drives[1].pcn,
+		              0,
+		              0,
+		              check_cast<uint8_t>((fdc.step_rate << 4) | fdc.head_unload),
+		              check_cast<uint8_t>((fdc.head_load << 1) | fdc.non_dma),
+		              fdc.last_sector_count,
+		              check_cast<uint8_t>(fdc.fifo_locked ? 0x80 : 0),
+		              check_cast<uint8_t>(fdc.configure_flags |
+		                                  (fdc.fifo_enabled ? 0 : 0x20) |
+		                                  (fdc.fifo_threshold - 1)),
+		              fdc.precomp_track};
+		begin_result(fdc.result.size(), false);
+		break;
+	case Command::Lock:
+		fdc.fifo_locked = (fdc.command[0] & 0x80) != 0;
+		fdc.result[0]   = fdc.fifo_locked ? 0x10 : 0;
+		begin_result(1, false);
+		break;
 	case Command::Configure:
+		// Keep EIS and POLL readable without changing seek or polling
+		// behavior.
+		fdc.configure_flags = fdc.command[2] & 0x50;
+		fdc.precomp_track   = fdc.command[3];
 		fdc.fifo_enabled   = (fdc.command[2] & 0x20) == 0;
 		fdc.fifo_threshold = check_cast<uint8_t>((fdc.command[2] & 0x0f) + 1);
 		break;
@@ -2034,7 +2076,7 @@ bool preserve_interrupted_write()
 	                                          original);
 }
 
-void reset_controller()
+void reset_controller(const bool software_reset = false)
 {
 	PIC_RemoveEvents(complete_empty_track_sector);
 	PIC_RemoveEvents(start_loaded_data);
@@ -2057,7 +2099,18 @@ void reset_controller()
 		fdc.bytes = {};
 	}
 	const auto drives = fdc.drives;
-	fdc               = {};
+	const auto locked         = software_reset && fdc.fifo_locked;
+	const auto fifo_enabled   = fdc.fifo_enabled;
+	const auto fifo_threshold = fdc.fifo_threshold;
+	const auto precomp_track  = fdc.precomp_track;
+	fdc                       = {};
+	// The 82077AA LOCK bit preserves EFIFO, FIFOTHR and PRETRK.
+	if (locked) {
+		fdc.fifo_locked    = true;
+		fdc.fifo_enabled   = fifo_enabled;
+		fdc.fifo_threshold = fifo_threshold;
+		fdc.precomp_track  = precomp_track;
+	}
 	// Resetting the controller does not move the physical drive heads.
 	fdc.drives = drives;
 	for (auto& drive : fdc.drives) {
@@ -2085,7 +2138,7 @@ void write_dor(io_port_t, const io_val_t value, io_width_t)
 		    commit_track_format(true)) {
 			LOG_WARNING("FDC: Could not save track format interrupted by reset");
 		}
-		reset_controller();
+		reset_controller(true);
 	} else if (writing_data && motor_on(unit) &&
 	           (!(value & (0x10u << unit)) || (value & 3u) != unit)) {
 		// Persist at the model's drive-unavailable boundary. Mechanical
@@ -2365,8 +2418,8 @@ BiosCommandResult bios_command(const uint8_t unit, const uint32_t cylinder,
 	}
 
 	if (shutdown || fdc.phase != Phase::Result || fdc.result_count ||
-	    fdc.result_length != fdc.result.size()) {
-		reset_controller();
+	    fdc.result_length != DataResultSize) {
+		reset_controller(true);
 		update_irq();
 		return {.error = 0x80};
 	}
