@@ -2178,6 +2178,17 @@ void write_dor(io_port_t, const io_val_t value, io_width_t)
 	update_irq();
 }
 
+void write_dsr(const io_port_t port, const io_val_t value, const io_width_t width)
+{
+	// DSR reset clears itself. A reset held by the DOR takes precedence.
+	const auto dor = fdc.dor;
+	if ((value & 0x80) && (dor & ResetReleased)) {
+		write_dor(0x3f2, dor & ~ResetReleased, width);
+		write_dor(0x3f2, dor, width);
+	}
+	write_ccr(port, value, width);
+}
+
 void pcjr_watchdog_expired(uint32_t)
 {
 	if (!pcjr_watchdog_asserted) {
@@ -2740,6 +2751,7 @@ void FLOPPY_Init()
 		IO_RegisterReadHandler(0xf5, read_data, io_width_t::byte);
 		IO_RegisterWriteHandler(0xf5, write_data, io_width_t::byte);
 	} else {
+		IO_RegisterWriteHandler(0x3f4, write_dsr, io_width_t::byte);
 		IO_RegisterReadHandler(0x3f7, read_dir, io_width_t::byte);
 		IO_RegisterWriteHandler(0x3f7, write_ccr, io_width_t::byte);
 	}
