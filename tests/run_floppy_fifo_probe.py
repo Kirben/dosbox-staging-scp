@@ -504,6 +504,63 @@ threshold_byte:
           flush=True)
 
 
+def check_enhanced_commands(dosbox, nasm, directory):
+    """Check result lengths, IRQ behavior and LOCK's software-reset scope."""
+    image = directory / "enhanced-commands.img"
+    image.write_bytes(fixture("img"))
+
+    def send(*values):
+        return "mov dx,3f5h\n" + "".join(
+            f"mov al,{value}\nout dx,al\n" for value in values
+        )
+
+    def reply(*values):
+        code = """
+    mov dx,3f4h
+    in al,dx
+    and al,0d0h
+    cmp al,0d0h
+    jne done
+    inc dx
+"""
+        code += "".join(f"in al,dx\ncmp al,{value}\njne done\n" for value in values)
+        return code + """
+    dec dx
+    in al,dx
+    and al,0d0h
+    cmp al,80h
+    jne done
+    push ds
+    xor ax,ax
+    mov ds,ax
+    test byte [043eh],80h
+    pop ds
+    jnz done
+"""
+
+    def dump(specify, mode, locked, configure, precomp):
+        return send(0x0e) + reply(0, 0, 0, 0, specify, mode, 0, locked, configure, precomp)
+
+    reset = "mov dx,3f2h\nmov al,18h\nout dx,al\n" + RESET
+    checks = RESET + "call clear_irq\n"
+    checks += send(0x10) + reply(0x90)
+    checks += dump(0, 0, 0, 0x20, 0)
+    checks += send(3, 0xab, 0x17) + send(0x13, 0, 0x55, 7)
+    checks += dump(0xab, 0x17, 0, 0x55, 7)
+    checks += send(0x94) + reply(0x10)
+    checks += dump(0xab, 0x17, 0x80, 0x55, 7)
+    checks += reset + "call clear_irq\n"
+    checks += dump(0, 0, 0x80, 5, 7)
+    checks += reset + "call clear_irq\n"
+    checks += dump(0, 0, 0x80, 5, 7)
+    checks += send(0x14) + reply(0)
+    checks += dump(0, 0, 0, 5, 7)
+    checks += reset + "call clear_irq\n"
+    checks += dump(0, 0, 0, 0x20, 0)
+    run_guest(dosbox, nasm, directory, image, program(checks))
+    print("VERSION, DUMPREG and LOCK/UNLOCK across DOR resets passed", flush=True)
+
+
 def main():
     """Exercise progressive reads and interrupted writes on all six formats."""
     parser = argparse.ArgumentParser(description=__doc__)
@@ -512,6 +569,7 @@ def main():
     args = parser.parse_args()
     with TemporaryDirectory() as temp:
         directory = Path(temp)
+        check_enhanced_commands(args.dosbox.resolve(), args.nasm, directory)
         for extension in ("img", "ima", "scp", "mfm", "86f", "tc"):
             first = check_read(args.dosbox.resolve(), args.nasm, directory, extension, 15, False)
             last = check_read(args.dosbox.resolve(), args.nasm, directory, extension, 0, False)
