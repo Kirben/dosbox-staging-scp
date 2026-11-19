@@ -172,6 +172,8 @@ struct Controller {
 	size_t result_length                      = 0;
 	uint8_t dor                               = 0;
 	uint8_t reset_unit                        = 4;
+	bool reset_poll_pending                   = false;
+	bool reset_poll_irq                       = false;
 	uint8_t cylinder                          = 0;
 	uint8_t head                              = 0;
 	uint8_t sector                            = 0;
@@ -228,7 +230,8 @@ void update_irq()
 	if (is_machine_pcjr()) {
 		return;
 	}
-	const auto asserted = (fdc.irq_pending || fdc.seek_irq_pending) &&
+	const auto asserted = (fdc.irq_pending || fdc.seek_irq_pending ||
+	                       fdc.reset_poll_irq) &&
 	                      (fdc.dor & InterruptEnabled);
 	if (asserted == irq_asserted) {
 		return;
@@ -284,6 +287,25 @@ void begin_result(const size_t length, const bool interrupt)
 double timer_ms(const double milliseconds)
 {
 	return milliseconds * 500.0 / data_rate_kbps;
+}
+
+constexpr uint8_t PollDisabled = 0x10;
+
+void complete_reset_poll(uint32_t)
+{
+	fdc.reset_poll_pending = false;
+	fdc.reset_unit         = 0;
+	fdc.reset_poll_irq     = true;
+	update_irq();
+}
+
+void schedule_reset_poll()
+{
+	if (fdc.reset_poll_pending && !(fdc.configure_flags & PollDisabled) &&
+	    fdc.phase == Phase::Command && !fdc.command_count) {
+		// Intel section 8.2 gives a 250 us Configure window at 1 Mbit/s.
+		PIC_AddEvent(complete_reset_poll, timer_ms(0.5));
+	}
 }
 
 double head_load_delay_ms(const size_t unit)
@@ -1895,7 +1917,6 @@ void execute_command(const Command command)
 		begin_result(1, false);
 		break;
 	case Command::Configure:
-		// POLL is retained for register reporting.
 		fdc.configure_flags = fdc.command[2] & 0x50;
 		fdc.precomp_track   = fdc.command[3];
 		fdc.fifo_enabled   = (fdc.command[2] & 0x20) == 0;
@@ -1930,6 +1951,13 @@ void execute_command(const Command command)
 	}
 	case Command::SenseInterrupt: {
 		fdc.seek_irq_pending = false;
+		fdc.reset_poll_irq   = false;
+		if (fdc.reset_poll_pending && !(fdc.configure_flags & PollDisabled)) {
+			// Some guests drain reset status immediately. Let Sense
+			// Interrupt consume it without generating a separate edge.
+			fdc.reset_poll_pending = false;
+			fdc.reset_unit         = 0;
+		}
 		const auto pending   = std::ranges::find_if(
                         fdc.seeks, [](const auto& seek) { return seek.pending; });
 		if (fdc.reset_unit < 4) {
@@ -2080,11 +2108,15 @@ void write_data(io_port_t, const io_val_t value, io_width_t)
 	if (!(fdc.dor & ResetReleased) || fdc.phase != Phase::Command) {
 		return;
 	}
+	if (!fdc.command_count && fdc.reset_poll_pending) {
+		PIC_RemoveEvents(complete_reset_poll);
+	}
 	fdc.command[fdc.command_count++] = check_cast<uint8_t>(value);
 	const auto command = static_cast<Command>(fdc.command.front() & 0x1f);
 	if (fdc.command_count == command_length(command)) {
 		fdc.command_count = 0;
 		execute_command(command);
+		schedule_reset_poll();
 	}
 }
 
@@ -2114,6 +2146,7 @@ io_val_t read_data(io_port_t, io_width_t)
 	const auto value = fdc.result[fdc.result_count++];
 	if (fdc.result_count == fdc.result_length) {
 		fdc.phase = Phase::Command;
+		schedule_reset_poll();
 	}
 	return value;
 }
@@ -2236,6 +2269,7 @@ bool preserve_interrupted_write()
 
 void reset_controller(const bool software_reset = false)
 {
+	PIC_RemoveEvents(complete_reset_poll);
 	PIC_RemoveEvents(complete_empty_track_sector);
 	PIC_RemoveEvents(start_loaded_data);
 	PIC_RemoveEvents(complete_seek);
@@ -2315,8 +2349,12 @@ void write_dor(io_port_t, const io_val_t value, io_width_t)
 		}
 	}
 	if ((value & ResetReleased) && !(previous & ResetReleased)) {
-		fdc.reset_unit  = 0;
-		fdc.irq_pending = true;
+		if (is_machine_pcjr()) {
+			fdc.reset_unit = 0;
+		} else {
+			fdc.reset_poll_pending = true;
+			schedule_reset_poll();
+		}
 	}
 	if ((value & ResetReleased) && formatting_track && !media_ready(unit)) {
 		PIC_RemoveEvents(format_track_sector);
@@ -2817,7 +2855,7 @@ uint8_t FLOPPY_BiosFormat(const uint8_t unit, const uint32_t cylinder,
 bool FLOPPY_CanStartBiosCommand()
 {
 	return fdc.phase == Phase::Command && !fdc.command_count &&
-	       !fdc.irq_pending && !fdc.seek_irq_pending &&
+	       !fdc.irq_pending && !fdc.seek_irq_pending && !fdc.reset_poll_irq &&
 	       std::ranges::none_of(fdc.seeks,
 	                            [](const auto& seek) { return seek.active; });
 }
@@ -2862,7 +2900,11 @@ void FLOPPY_BiosReset(const uint8_t unit)
 	if (is_machine_pcjr()) {
 		fdc.non_dma = true;
 	} else {
-		const auto shutdown = CALLBACK_Idle();
+		bool shutdown = false;
+		do {
+			shutdown = CALLBACK_Idle();
+		} while (!shutdown && fdc.reset_poll_pending &&
+		         !(fdc.configure_flags & PollDisabled));
 		PIC_SetIRQMask(FloppyIrq, was_masked);
 		if (shutdown) {
 			return;
