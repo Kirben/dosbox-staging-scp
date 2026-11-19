@@ -225,6 +225,11 @@ org 100h
 %ifdef PIO_RATE
 check_pio_rate:
     mov byte [stage],15
+    ; The guest polls MSR for every byte. Keep the BIOS IRQ6 handler
+    ; out of the byte-timing measurement.
+    in al,21h
+    or al,40h
+    out 21h,al
     mov dx,3f2h
     mov al,1ch
     out dx,al
@@ -233,6 +238,13 @@ check_pio_rate:
     out dx,al
 
     mov dx,3f5h
+    mov cx,4
+.reset_status:
+    mov al,8
+    out dx,al
+    in al,dx
+    in al,dx
+    loop .reset_status
     mov si,specify
     mov cx,3
     call .send
