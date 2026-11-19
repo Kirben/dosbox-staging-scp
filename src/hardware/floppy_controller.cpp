@@ -112,6 +112,7 @@ struct Seek {
 	bool active          = false;
 	bool pending         = false;
 	bool relative        = false;
+	bool implied         = false;
 };
 
 struct Controller {
@@ -267,6 +268,7 @@ void start_byte_transfer(const size_t size,
                          const std::span<const uint8_t> source = {},
                          const std::optional<size_t> host_size = {});
 void start_loaded_data(uint32_t);
+void step_seek(uint32_t);
 
 void begin_result(const size_t length, const bool interrupt)
 {
@@ -309,6 +311,13 @@ void finish_data(const uint8_t status_1, const uint8_t status_2 = 0,
 	}
 	PIC_RemoveEvents(start_loaded_data);
 	const auto unit = selected_unit();
+	auto& seek                  = fdc.seeks[unit];
+	const auto interrupted_seek = seek.active && seek.implied;
+	if (interrupted_seek) {
+		PIC_RemoveSpecificEvents(step_seek, check_cast<uint32_t>(unit));
+		seek         = {};
+		fdc.cylinder = static_cast<uint8_t>(fdc.drives[unit].cylinder);
+	}
 	if (unit < fdc.drives.size() && fdc.phase == Phase::Execution &&
 	    motor_on(unit)) {
 		fdc.drives[unit].head_loaded_until_ms =
@@ -323,7 +332,9 @@ void finish_data(const uint8_t status_1, const uint8_t status_2 = 0,
 	fdc.pio_ready       = false;
 	fdc.pio_underrun    = false;
 	const auto status_0 = check_cast<uint8_t>(
-	        (((status_1 || status_2) && !terminal_count) ? 0x40 : 0) |
+	        (interrupted_seek                              ? 0x60
+	         : ((status_1 || status_2) && !terminal_count) ? 0x40
+	                                                       : 0) |
 	        (fdc.head << 2) | selected_unit());
 	const auto* sector   = fdc.track_sector;
 	const auto command   = static_cast<Command>(fdc.command[0] & 0x1f);
@@ -1550,6 +1561,18 @@ void acknowledge_pio_byte()
 	update_irq();
 }
 
+double seek_step_delay_ms()
+{
+	return fdc.timing_specified ? timer_ms(16.0 - fdc.step_rate) : DefaultStepMs;
+}
+
+bool allows_implied_seek(const Command command)
+{
+	return command == Command::ReadData ||
+	       command == Command::ReadDeletedData || is_write_command(command) ||
+	       command == Command::Verify || is_scan_command(command);
+}
+
 void start_data(const Command command)
 {
 	if (command == Command::FormatTrack) {
@@ -1576,8 +1599,30 @@ void start_data(const Command command)
 	                   ? 1
 	                   : fdc.command[4];
 
-	if (!media_ready(unit) || fdc.head >= fdc.disk->heads ||
-	    !cylinder_addressable || cylinder >= fdc.disk->cylinders) {
+	if (!media_ready(unit) || fdc.head >= fdc.disk->heads) {
+		finish_data(0x04);
+		return;
+	}
+	const auto distance = int{fdc.command[2]} - fdc.drives[unit].pcn;
+	if ((fdc.configure_flags & 0x40) && allows_implied_seek(command) && distance) {
+		auto& seek = fdc.seeks[unit];
+		if (seek.active || seek.pending) {
+			finish_data(0x04);
+			return;
+		}
+		seek                 = {};
+		seek.active          = true;
+		seek.implied         = true;
+		seek.direction       = distance > 0 ? 1 : -1;
+		seek.remaining_steps = std::abs(distance);
+		seek.step_ms         = seek_step_delay_ms();
+		fdc.phase            = Phase::Execution;
+		PIC_AddEvent(step_seek,
+		             timer_ms(0.012) + seek.step_ms,
+		             check_cast<uint32_t>(unit));
+		return;
+	}
+	if (!cylinder_addressable || cylinder >= fdc.disk->cylinders) {
 		finish_data(0x04);
 		return;
 	}
@@ -1789,6 +1834,10 @@ void complete_seek(const uint32_t unit)
 void step_seek(const uint32_t unit)
 {
 	auto& seek = fdc.seeks[unit];
+	if (seek.implied && !media_ready(unit)) {
+		finish_data(0x04);
+		return;
+	}
 	if (motor_on(unit) && unit == (fdc.dor & 3u)) {
 		auto& drive         = fdc.drives[unit];
 		const auto cylinder = check_cast<uint16_t>(
@@ -1808,6 +1857,10 @@ void step_seek(const uint32_t unit)
 	}
 	if (--seek.remaining_steps) {
 		PIC_AddEvent(step_seek, seek.step_ms, unit);
+	} else if (seek.implied) {
+		// The data command owns the result phase and IRQ.
+		seek = {};
+		start_data(static_cast<Command>(fdc.command[0] & 0x1f));
 	} else {
 		complete_seek(unit);
 	}
@@ -1842,8 +1895,7 @@ void execute_command(const Command command)
 		begin_result(1, false);
 		break;
 	case Command::Configure:
-		// Keep EIS and POLL readable without changing seek or polling
-		// behavior.
+		// POLL is retained for register reporting.
 		fdc.configure_flags = fdc.command[2] & 0x50;
 		fdc.precomp_track   = fdc.command[3];
 		fdc.fifo_enabled   = (fdc.command[2] & 0x20) == 0;
@@ -1954,9 +2006,7 @@ void execute_command(const Command command)
 		seek.recalibrating = command == Command::Recalibrate;
 		// Seek has no result phase of its own. Keep accepting commands,
 		// and latch the drive independently until Sense Interrupt.
-		const auto step_ms = fdc.timing_specified
-		                           ? timer_ms(16.0 - fdc.step_rate)
-		                           : DefaultStepMs;
+		const auto step_ms = seek_step_delay_ms();
 		// Model finite command processing separately from mechanical
 		// steps. Intel's iSBX 218A reference documents a 12 us
 		// command/parameter processing interval at 500 kbit/s (24 us at
@@ -2278,7 +2328,8 @@ void write_dor(io_port_t, const io_val_t value, io_width_t)
 			PIC_RemoveEvents(transfer_sector);
 			PIC_RemoveEvents(missing_sector);
 		}
-		if (writing_data || fdc.bytes.active || !fdc.pio_data.empty()) {
+		if (writing_data || fdc.seeks[unit].implied ||
+		    fdc.bytes.active || !fdc.pio_data.empty()) {
 			finish_data(0x04);
 			return;
 		}
