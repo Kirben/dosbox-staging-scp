@@ -3,6 +3,7 @@
 """Exercise 82077AA Scan status and host-to-controller transfers."""
 
 import argparse
+from dataclasses import dataclass
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
@@ -12,7 +13,16 @@ from run_floppy_zero_sector_probe import encode_tracks
 from run_transcopy_layout_probe import run_guest
 
 
-def scan_program(opcode, patterns, result, *, step=1, eot=1, count=512, tc=True):
+@dataclass(frozen=True)
+class ScanCommand:
+    """Scan opcode and the track parameters that control sector stepping."""
+
+    opcode: int
+    eot: int = 1
+    step: int = 1
+
+
+def scan_program(command, patterns, expected, *, count=512, tc=True):
     """Send the comparison bytes via DMA and check the result and IRQ6."""
     dma = DMA.replace("mov al,46h", "mov al,4ah")
     dma = dma.replace("mov al,0ffh\n    out 05h,al", f"mov al,{(count - 1) & 255}\n    out 05h,al")
@@ -35,14 +45,14 @@ def scan_program(opcode, patterns, result, *, step=1, eot=1, count=512, tc=True)
     in al,08h
     and al,4
 """ + f"cmp al,{4 if tc else 0}\njne done\n"
-    commands = (f"scan_command db {opcode},0,0,0,1,2,{eot},54h,{step}\n"
-                + "expected_result db " + ",".join(map(str, result)) + "\n")
+    commands = (f"scan_command db {command.opcode},0,0,0,1,2,{command.eot},54h,{command.step}\n"
+                + "expected_result db " + ",".join(map(str, expected)) + "\n")
     return program(checks, commands)
 
 
-def check(args, directory, extension, fields, body, *, pio=False):
+def check(args, image, fields, body, *, pio=False):
     """Run one command against raw or encoded media and verify no media writes."""
-    image = directory / f"scan.{extension}"
+    extension = image.suffix[1:]
     if extension in ("img", "ima"):
         raw = bytearray(360 * 1024)
         for sector, _, _, marker in fields:
@@ -51,10 +61,10 @@ def check(args, directory, extension, fields, body, *, pio=False):
     else:
         original = encode_tracks(extension, [make_track(fields, 2)])
     image.write_bytes(original)
-    run_guest(args.dosbox.resolve(), args.nasm, directory, image, body,
+    run_guest(args.dosbox.resolve(), args.nasm, image.parent, image, body,
               machine="pcjr" if pio else None, read_only=False)
     assert image.read_bytes() == original
-    assert not list(directory.glob("*.overlay"))
+    assert not list(image.parent.glob("*.overlay"))
 
 
 def pio_program():
@@ -142,8 +152,8 @@ def main():
         directory = Path(temporary)
         formats = ("img", "scp") if args.smoke else ("img", "ima", "scp", "mfm", "86f", "tc")
         for extension in formats:
-            check(args, directory, extension, normal,
-                  scan_program(0x51, ((0x77, 512),), result(8)))
+            check(args, directory / f"scan.{extension}", normal,
+                  scan_program(ScanCommand(0x51), ((0x77, 512),), result(8)))
         for opcode, patterns, expected in (
             (0x51, ((0x78, 512),), 4),
             (0x59, ((0x78, 512),), 0),
@@ -151,27 +161,30 @@ def main():
             (0x59, ((0x78, 511), (0x76, 1)), 4),
             (0x5d, ((0x76, 511), (0x78, 1)), 4),
         ):
-            check(args, directory, "img", normal, scan_program(opcode, patterns, result(expected)))
-        check(args, directory, "scp", normal,
-              scan_program(0x51, ((0x77, 128), (0x11, 384)), result(8), count=128))
-        check(args, directory, "scp", normal,
-              scan_program(0x51, ((0x11, 512),), result(4), count=128))
-        check(args, directory, "scp", normal,
-              scan_program(0x51, ((0x11, 512),), result(4), count=1024, tc=False))
+            check(args, directory / "scan.img", normal,
+                  scan_program(ScanCommand(opcode), patterns, result(expected)))
+        check(args, directory / "scan.scp", normal,
+              scan_program(ScanCommand(0x51), ((0x77, 128), (0x11, 384)), result(8), count=128))
+        check(args, directory / "scan.scp", normal,
+              scan_program(ScanCommand(0x51), ((0x11, 512),), result(4), count=128))
+        check(args, directory / "scan.scp", normal,
+              scan_program(ScanCommand(0x51), ((0x11, 512),), result(4), count=1024, tc=False))
         sectors = normal + ((2, 0xfb, "", 0x33), (3, 0xfb, "", 0x55))
-        check(args, directory, "scp", sectors,
-              scan_program(0x51, ((0x11, 512), (0x55, 512)), result(8, 3),
-                           step=2, eot=3, count=1024))
+        check(args, directory / "scan.scp", sectors,
+              scan_program(ScanCommand(0x51, eot=3, step=2),
+                           ((0x11, 512), (0x55, 512)), result(8, 3), count=1024))
         deleted = ((1, 0xf8, "", 0x77), (2, 0xfb, "", 0x33))
-        check(args, directory, "scp", deleted,
-              scan_program(0x51, ((0x77, 512),), result(0x40, st0=0x40), eot=2, tc=False))
-        check(args, directory, "scp", deleted,
-              scan_program(0x71, ((0x33, 512),), result(0x48, 2), eot=2))
-        check(args, directory, "scp", ((1, 0xfb, "data", 0x77),),
-              scan_program(0x51, ((0x77, 512),), result(0x20, st0=0x40, st1=0x20)))
-        check(args, directory, "scp", ((1, 0xfb, "id", 0x77),),
-              scan_program(0x51, ((0x77, 512),), result(0, st0=0x40, st1=0x20), tc=False))
-        check(args, directory, "scp", normal, pio_program(), pio=True)
+        check(args, directory / "scan.scp", deleted,
+              scan_program(ScanCommand(0x51, eot=2), ((0x77, 512),),
+                           result(0x40, st0=0x40), tc=False))
+        check(args, directory / "scan.scp", deleted,
+              scan_program(ScanCommand(0x71, eot=2), ((0x33, 512),), result(0x48, 2)))
+        check(args, directory / "scan.scp", ((1, 0xfb, "data", 0x77),),
+              scan_program(ScanCommand(0x51), ((0x77, 512),), result(0x20, st0=0x40, st1=0x20)))
+        check(args, directory / "scan.scp", ((1, 0xfb, "id", 0x77),),
+              scan_program(ScanCommand(0x51), ((0x77, 512),),
+                           result(0, st0=0x40, st1=0x20), tc=False))
+        check(args, directory / "scan.scp", normal, pio_program(), pio=True)
     print("Floppy Scan command regressions passed", flush=True)
 
 

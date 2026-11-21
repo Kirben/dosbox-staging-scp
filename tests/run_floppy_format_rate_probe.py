@@ -151,7 +151,9 @@ ED_WRITE = DMA.replace("mov al,0a5h", "mov al,0a7h").replace(
 """
 
 # pylint: disable-next=too-many-arguments,too-many-positional-arguments,too-many-locals
-def check_rate(dosbox, nasm, directory, extension, rate, selector, bios=False, *, perpendicular=False):
+def check_rate(
+    dosbox, nasm, directory, extension, rate, selector, bios=False, *, perpendicular=False
+):
     """Reformat an original 250-kbps track at the selected clock."""
     prefix = 'ed' if perpendicular else 'bios' if bios else 'rate'
     image = directory / f"{prefix}{rate}.{extension}"
