@@ -80,6 +80,31 @@ TEST_F(Cpu8088Test, PopCsPreservesNextIpWithNewSegment)
 	EXPECT_EQ(reg_sp, 0x1000);
 }
 
+TEST_F(Cpu8088Test, MovCsFetchesNextInstructionFromNewSegment)
+{
+	// President's Choice uses MOV CS,AX to enter a relocated code segment.
+	code(std::array<uint8_t, 3>{0x8e, 0xc8, 0x90});
+	reg_ax = 0x4000;
+	mem_writeb(0x40102, 0x43); // INC BX
+	reg_bx = 0;
+	run();
+	EXPECT_EQ(SegValue(cs), 0x4000);
+	EXPECT_EQ(reg_ip, 0x102);
+	run();
+	EXPECT_EQ(reg_bx, 1);
+	EXPECT_EQ(reg_ip, 0x103);
+}
+
+TEST_F(Cpu8088Test, MovCsReadsMemoryUsingOldSegment)
+{
+	code(std::array<uint8_t, 4>{0x8e, 0x0e, 0x34, 0x12});
+	mem_writew(SegPhys(ds) + 0x1234, 0x4000);
+	run();
+	EXPECT_EQ(SegValue(cs), 0x4000);
+	EXPECT_EQ(SegValue(ds), 0x3000);
+	EXPECT_EQ(reg_ip, 0x104);
+}
+
 TEST_F(Cpu8088Test, LodeRunnerSegmentRestoreSequence)
 {
 	// PUSH AX; PUSH CS; POP CS; POP AX, with the original single-byte 0Fh.
