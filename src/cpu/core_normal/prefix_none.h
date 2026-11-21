@@ -514,6 +514,16 @@
 			if (rm >= 0xc0 ) {GetEArw;val=*earw;}
 			else {GetEAa;val=LoadMw(eaa);}
 			switch (which) {
+			case 0x01: // MOV CS,Ew on 8086/8088
+				if (CPU_ArchitectureType != ArchitectureType::Intel86) {
+					goto illegal_opcode;
+				}
+				reg_eip = static_cast<uint16_t>(GETIP);
+				if (CPU_SetSegGeneral(cs, val)) {
+					RUNEXCEPTION();
+				}
+				LOADIP;
+				break;
 			case 0x02:					/* MOV SS,Ew */
 				CPU_Cycles++; //Always do another instruction
 				[[fallthrough]];
