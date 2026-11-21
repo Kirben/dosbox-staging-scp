@@ -23,7 +23,8 @@ FloppyFormatResult FLOPPY_FormatTrack(
         const uint32_t head, const std::span<const uint8_t> ids, const uint8_t fill,
         const uint8_t requested, const uint8_t size_code, uint16_t rate_kbps = 0,
         const bool fm = false, const std::optional<uint8_t> gap = {},
-        const std::optional<uint32_t> written_cells = {});
+        const std::optional<uint32_t> written_cells = {},
+        const bool extended_gap                     = false);
 
 enum class FloppyBiosTransfer { Read, Write, Verify };
 

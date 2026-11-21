@@ -82,7 +82,7 @@ public:
 	                         const std::span<const uint8_t>, const uint8_t,
 	                         const uint8_t, const uint8_t, const uint16_t,
 	                         const bool, const std::optional<uint8_t>,
-	                         const std::optional<uint32_t>) override
+	                         const std::optional<uint32_t>, const bool) override
 	{
 		return FormatResult::InvalidLayout;
 	}
