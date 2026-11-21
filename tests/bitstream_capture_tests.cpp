@@ -169,6 +169,8 @@ TEST(BitstreamCapture, TransCopyUsesRecordedOverlapForContinuousTurn)
 {
 	for (const auto delta_bits : {-3, 5}) {
 		auto bytes         = overlapping_transcopy_capture(delta_bits);
+		// Simulate disturbed initial acquisition before the first IAM.
+		bytes[0x4000] = 0xff;
 		std::string error  = {};
 		const auto capture = ParseTransCopyCapture(bytes, error);
 		ASSERT_TRUE(capture) << error;
@@ -187,6 +189,20 @@ TEST(BitstreamCapture, TransCopyUsesRecordedOverlapForContinuousTurn)
 			                  1);
 		}
 	}
+}
+
+TEST(BitstreamCapture, TransCopyMatchingOverlapKeepsDeclaredSplice)
+{
+	const auto bytes = overlapping_transcopy_capture(-3);
+	std::string error = {};
+	const auto capture = ParseTransCopyCapture(bytes, error);
+	ASSERT_TRUE(capture) << error;
+	const auto& track = capture->tracks[0];
+	EXPECT_EQ(track.bit_count, 2048u);
+	EXPECT_EQ(track.index, 0u);
+	EXPECT_EQ(track.cells,
+	          std::vector<uint8_t>(bytes.begin() + 0x4000,
+	                               bytes.begin() + 0x4100));
 }
 
 TEST(BitstreamCapture, TransCopyUncertainOverlapKeepsDeclaredTurn)

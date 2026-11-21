@@ -209,6 +209,18 @@ void transcopy_continuous_turn(const std::span<const uint8_t> recorded,
 			return;
 		}
 	}
+	// A matching prefix needs no acquisition repair. Keep the recorded
+	// byte count so sub-byte drift between IAMs cannot move its splice.
+	bool prefix_changed = false;
+	for (size_t bit = 0; bit < iams[0]; ++bit) {
+		if (cell(bit) != cell(period_bits + bit)) {
+			prefix_changed = true;
+			break;
+		}
+	}
+	if (!prefix_changed) {
+		return;
+	}
 	if (std::ranges::any_of(track.address_marks, [&](const auto& mark) {
 		    return mark.bit < iams[0];
 	    })) {
