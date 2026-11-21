@@ -931,7 +931,8 @@ std::shared_ptr<FloppyMfmTrack> FloppyTrackImage::format_track_cells(
 	                ? floppy_format::lead_bytes(format.fm) +
 	                          count * floppy_format::sector_bytes(format.size_code,
 	                                                              *format.gap,
-	                                                              format.fm)
+	                                                              format.fm,
+	                                                              format.extended_gap)
 	                : 0;
 	const auto cutoff = format.gap
 	                          ? static_cast<size_t>(std::min<uint64_t>(
@@ -1080,7 +1081,10 @@ std::shared_ptr<FloppyMfmTrack> FloppyTrackImage::format_track_cells(
 			crc = update_crc(crc, byte);
 		}
 		append_crc(crc);
-		for (auto gap = 0; gap < (format.fm ? 11 : 22); ++gap) {
+		for (auto gap = 0; gap < (format.fm             ? 11
+		                          : format.extended_gap ? 41
+		                                                : 22);
+		     ++gap) {
 			append(format.fm ? 0xff : 0x4e);
 		}
 		for (auto gap = 0; gap < (format.fm ? 0 : 12); ++gap) {

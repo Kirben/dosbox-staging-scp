@@ -31,9 +31,12 @@ constexpr size_t lead_bytes(const bool fm)
 
 // ID sync/mark/CHRN/CRC, Gap 2, data sync/mark/payload/CRC and Gap 3.
 constexpr size_t sector_bytes(const uint8_t size_code, const uint8_t gap,
-                              const bool fm)
+                              const bool fm, const bool extended_gap = false)
 {
-	return (fm ? 33u : 62u) + (size_t{128} << size_code) + gap;
+	return (fm             ? 33u
+	        : extended_gap ? 81u
+	                       : 62u) +
+	       (size_t{128} << size_code) + gap;
 }
 
 constexpr size_t id_prefix_bytes(const bool fm)
@@ -170,7 +173,8 @@ public:
 	        const uint8_t requested, const uint8_t size_code,
 	        const uint16_t rate_kbps, const bool fm = false,
 	        const std::optional<uint8_t> gap            = {},
-	        const std::optional<uint32_t> written_cells = {}) = 0;
+	        const std::optional<uint32_t> written_cells = {},
+	        const bool extended_gap                     = false) = 0;
 };
 
 #endif

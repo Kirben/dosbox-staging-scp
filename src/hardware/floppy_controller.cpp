@@ -89,6 +89,7 @@ enum class Command {
 	Seek             = 0x0f,
 	DumpRegisters    = 0x0e,
 	Version          = 0x10,
+	Perpendicular    = 0x12,
 	Lock             = 0x14,
 };
 
@@ -123,6 +124,7 @@ struct Controller {
 	bool fifo_locked          = false;
 	uint8_t configure_flags   = 0;
 	uint8_t precomp_track     = 0;
+	uint8_t perpendicular     = 0;
 	uint8_t last_sector_count = 0;
 	double transfer_byte_ms = 8.0 / DefaultDataRateKbps;
 
@@ -142,6 +144,7 @@ struct Controller {
 	uint8_t track_status_2                             = 0;
 	size_t formatted_ids                               = 0;
 	uint16_t format_rate_kbps                 = DefaultDataRateKbps;
+	bool format_extended_gap                           = false;
 	double format_deadline_ms                          = 0;
 	std::shared_ptr<imageDisk> disk           = {};
 	std::shared_ptr<FloppyMedia> media        = {};
@@ -1129,7 +1132,8 @@ uint8_t commit_track_format(const bool interrupted = false)
 	                                        fdc.format_rate_kbps,
 	                                        fdc.fm,
 	                                        fdc.command[4],
-	                                        written_cells));
+	                                        written_cells,
+	                                        fdc.format_extended_gap));
 }
 
 void finish_track_format(const uint8_t status)
@@ -1151,9 +1155,8 @@ void finish_track_format(const uint8_t status)
 
 double track_format_slot_ms()
 {
-	return static_cast<double>(floppy_format::sector_bytes(fdc.command[2],
-	                                                       fdc.command[4],
-	                                                       fdc.fm)) *
+	return static_cast<double>(floppy_format::sector_bytes(
+	               fdc.command[2], fdc.command[4], fdc.fm, fdc.format_extended_gap)) *
 	       pio_byte_ms;
 }
 
@@ -1707,6 +1710,13 @@ void start_loaded_data(uint32_t)
 	}
 	if (command == Command::FormatTrack) {
 		fdc.format_rate_kbps = data_rate_kbps;
+		const auto global_mode = fdc.perpendicular & 3;
+		const auto drive_mode = fdc.perpendicular & (4u << selected_unit());
+		// Table 5-11 extends Gap 2 only for 1 Mbit/s perpendicular
+		// formatting.
+		fdc.format_extended_gap = !fdc.fm && (global_mode == 3 ||
+		                                      (!global_mode && drive_mode &&
+		                                       data_rate_kbps == 1000));
 		const auto raw       = !fdc.media;
 		if (fdc.command[3] == 0 || fdc.command[2] > 7 ||
 		    (raw && (fdc.command[2] != SectorSizeCode ||
@@ -1896,7 +1906,7 @@ void execute_command(const Command command)
 		begin_result(1, false);
 		break;
 	case Command::DumpRegisters:
-		// Units 2 and 3 and perpendicular recording are unimplemented.
+		// Physical units 2 and 3 are unimplemented.
 		fdc.result = {fdc.drives[0].pcn,
 		              fdc.drives[1].pcn,
 		              0,
@@ -1904,13 +1914,20 @@ void execute_command(const Command command)
 		              check_cast<uint8_t>((fdc.step_rate << 4) | fdc.head_unload),
 		              check_cast<uint8_t>((fdc.head_load << 1) | fdc.non_dma),
 		              fdc.last_sector_count,
-		              check_cast<uint8_t>(fdc.fifo_locked ? 0x80 : 0),
+		              check_cast<uint8_t>((fdc.fifo_locked ? 0x80 : 0) |
+		                                  fdc.perpendicular),
 		              check_cast<uint8_t>(fdc.configure_flags |
 		                                  (fdc.fifo_enabled ? 0 : 0x20) |
 		                                  (fdc.fifo_threshold - 1)),
 		              fdc.precomp_track};
 		begin_result(fdc.result.size(), false);
 		break;
+	case Command::Perpendicular: {
+		const auto value = fdc.command[1];
+		const auto drives = (value & 0x80 ? value : fdc.perpendicular) & 0x3c;
+		fdc.perpendicular = check_cast<uint8_t>(drives | (value & 3));
+		break;
+	}
 	case Command::Lock:
 		fdc.fifo_locked = (fdc.command[0] & 0x80) != 0;
 		fdc.result[0]   = fdc.fifo_locked ? 0x10 : 0;
@@ -2083,6 +2100,7 @@ size_t command_length(const Command command)
 	case Command::Seek:
 	case Command::Specify: return 3;
 	case Command::Recalibrate:
+	case Command::Perpendicular:
 	case Command::SenseDriveStatus:
 	case Command::ReadId: return 2;
 	default: return 1;
@@ -2295,7 +2313,11 @@ void reset_controller(const bool software_reset = false)
 	const auto fifo_enabled   = fdc.fifo_enabled;
 	const auto fifo_threshold = fdc.fifo_threshold;
 	const auto precomp_track  = fdc.precomp_track;
+	const auto perpendicular  = fdc.perpendicular;
 	fdc                       = {};
+	if (software_reset) {
+		fdc.perpendicular = perpendicular & 0x3c;
+	}
 	// The 82077AA LOCK bit preserves EFIFO, FIFOTHR and PRETRK.
 	if (locked) {
 		fdc.fifo_locked    = true;
@@ -2453,7 +2475,7 @@ FloppyFormatResult FLOPPY_FormatTrack(
         const uint32_t head, const std::span<const uint8_t> ids,
         const uint8_t fill, const uint8_t requested, const uint8_t size_code,
         uint16_t rate_kbps, const bool fm, const std::optional<uint8_t> gap,
-        const std::optional<uint32_t> written_cells)
+        const std::optional<uint32_t> written_cells, const bool extended_gap)
 {
 	using Result = FloppyFormatResult;
 	if (disk.IsWriteProtected()) {
@@ -2480,7 +2502,8 @@ FloppyFormatResult FLOPPY_FormatTrack(
 		                           rate_kbps,
 		                           fm,
 		                           gap,
-		                           written_cells)) {
+		                           written_cells,
+		                           extended_gap)) {
 		case ScpResult::Success: return Result::Success;
 		case ScpResult::InvalidLayout: return Result::InvalidLayout;
 		case ScpResult::WriteError: return Result::WriteError;
