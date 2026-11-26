@@ -224,7 +224,7 @@ jobs:
           ./scripts/packaging/create-package.sh \
               -p linux \
               build/release-linux \
-              "dosbox-staging-linux-x86_64-$DOSBOX_VERSION_AND_HASH"
+              "dosbox-staging-scp-linux-x86_64-$DOSBOX_VERSION_AND_HASH"
 
 
       - name: Inject external vcpkg dependencies
@@ -235,7 +235,7 @@ jobs:
           wget -nv https://github.com/dosbox-staging/dosbox-staging-ext/releases/download/$VCPKG_EXT_DEPS_VERSION/$ZIP_NAME
           unzip $ZIP_NAME -d vcpkg-deps
 
-          LIB_DIR="dosbox-staging-linux-x86_64-$DOSBOX_VERSION_AND_HASH/lib"
+          LIB_DIR="dosbox-staging-scp-linux-x86_64-$DOSBOX_VERSION_AND_HASH/lib"
           mkdir $LIB_DIR
           cp vcpkg-deps/release/* $LIB_DIR
 
@@ -248,7 +248,7 @@ jobs:
           curl -L https://github.com/johnnovak/Nuked-SC55-CLAP/releases/download/$NUKED_SC55_CLAP_VERSION/$ZIP_NAME -o $ZIP_NAME
           unzip $ZIP_NAME -d nuked-sc55-clap
 
-          PLUGINS_DIR="dosbox-staging-linux-x86_64-$DOSBOX_VERSION_AND_HASH/plugins"
+          PLUGINS_DIR="dosbox-staging-scp-linux-x86_64-$DOSBOX_VERSION_AND_HASH/plugins"
           mkdir $PLUGINS_DIR
           cp nuked-sc55-clap/* $PLUGINS_DIR
 
@@ -256,17 +256,17 @@ jobs:
         uses: actions/download-artifact@v8
         with:
           name: release-notes-html
-          path: "dosbox-staging-linux-x86_64-${{ env.DOSBOX_VERSION_AND_HASH }}"
+          path: "dosbox-staging-scp-linux-x86_64-${{ env.DOSBOX_VERSION_AND_HASH }}"
 
       - name: Create tarball
         # Upload tarball instead of a zip file to preserve file attributes
         run: |
-          tar -cJf "dosbox-staging-linux-x86_64-$DOSBOX_VERSION_AND_HASH.tar.xz" \
-              "dosbox-staging-linux-x86_64-$DOSBOX_VERSION_AND_HASH"
+          tar -cJf "dosbox-staging-scp-linux-x86_64-$DOSBOX_VERSION_AND_HASH.tar.xz" \
+              "dosbox-staging-scp-linux-x86_64-$DOSBOX_VERSION_AND_HASH"
 
       - name: Upload tarball
         uses: actions/upload-artifact@v7
         with:
-          name: dosbox-staging-linux-x86_64-${{ env.DOSBOX_VERSION_AND_HASH }}.tar.xz
-          path: dosbox-staging-linux-x86_64-${{ env.DOSBOX_VERSION_AND_HASH }}.tar.xz
+          name: dosbox-staging-scp-linux-x86_64-${{ env.DOSBOX_VERSION_AND_HASH }}.tar.xz
+          path: dosbox-staging-scp-linux-x86_64-${{ env.DOSBOX_VERSION_AND_HASH }}.tar.xz
           archive: false

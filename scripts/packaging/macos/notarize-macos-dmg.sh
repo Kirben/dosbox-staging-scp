@@ -57,7 +57,7 @@ fi
 ditto "$ATTACHED_VOLUME_PATH" "$TEMP_DIR"
 cd "$TEMP_DIR" || { echo "Failed to change to $TEMP_DIR"; exit 1; }
 
-APP="DOSBox Staging.app"
+APP="DOSBox Staging SCP.app"
 CERT="$DEVELOPER_IDENTITY"
 
 # Remove accidental sed backup files left over from older DMG builds.

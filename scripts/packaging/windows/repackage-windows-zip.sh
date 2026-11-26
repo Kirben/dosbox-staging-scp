@@ -22,7 +22,7 @@ if [[ $IN_ZIP != $IN_ZIP_PREFIX* ]]; then
 	exit 1
 fi
 
-if [[ $IN_ZIP =~ ^(.*/)?dosbox-staging-windows-([^-]*)-(v?)([0-9.]*)- ]]; then
+if [[ $IN_ZIP =~ ^(.*/)?dosbox-staging-scp-windows-([^-]*)-(v?)([0-9.]*)- ]]; then
     ARCH=${BASH_REMATCH[2]}
     VERSION=${BASH_REMATCH[4]}
 else
@@ -30,8 +30,8 @@ else
 	exit 1
 fi
 
-ROOT_DIR=dosbox-staging-v$VERSION
-OUT_ZIP=dosbox-staging-windows-$ARCH-v$VERSION.zip
+ROOT_DIR=dosbox-staging-scp-v$VERSION
+OUT_ZIP=dosbox-staging-scp-windows-$ARCH-v$VERSION.zip
 
 rm -rf "$ROOT_DIR"
 mkdir "$ROOT_DIR"

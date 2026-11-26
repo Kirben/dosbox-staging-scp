@@ -6,7 +6,7 @@
 	<string>en</string>
 
 	<key>CFBundleDisplayName</key>
-	<string>DOSBox Staging</string>
+	<string>DOSBox Staging SCP</string>
 
 	<key>CFBundleExecutable</key>
 	<string>dosbox</string>
@@ -21,7 +21,7 @@
 	<string>6.0</string>
 
 	<key>CFBundleName</key>
-	<string>DOSBox Staging</string>
+	<string>DOSBox Staging SCP</string>
 
 	<key>CFBundlePackageType</key>
 	<string>APPL</string>

@@ -264,7 +264,7 @@ if [ "$platform" = "macos" ]; then
         exit 1
     fi
     macos_dist_dir="${pkg_dir}/dist"
-    macos_content_dir="${macos_dist_dir}/DOSBox Staging.app/Contents"
+    macos_content_dir="${macos_dist_dir}/DOSBox Staging SCP.app/Contents"
 fi
 
 if [ "$platform" = "windows" ] && [ -z "$VC_REDIST_DIR" ]; then

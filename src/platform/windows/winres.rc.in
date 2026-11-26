@@ -20,12 +20,12 @@ BEGIN
         BEGIN
             VALUE "Comments", "(C) 2026 The DOSBox Staging Team, published under GNU GPL"
             VALUE "CompanyName", "DOSBox Staging"
-            VALUE "FileDescription", "DOSBox Staging DOS Emulator"
+            VALUE "FileDescription", "DOSBox Staging SCP DOS Emulator"
             VALUE "FileVersion", "@CMAKE_PROJECT_VERSION_MAJOR@, @CMAKE_PROJECT_VERSION_MINOR@, @CMAKE_PROJECT_VERSION_PATCH@, 0"
             VALUE "InternalName", "dosbox-staging"
             VALUE "LegalCopyright", "Copyright (C) 2026 The DOSBox Staging Team"
             VALUE "OriginalFilename", "dosbox.exe"
-            VALUE "ProductName", "DOSBox Staging"
+            VALUE "ProductName", "DOSBox Staging SCP"
             VALUE "ProductVersion", "@CMAKE_PROJECT_VERSION_MAJOR@, @CMAKE_PROJECT_VERSION_MINOR@, @CMAKE_PROJECT_VERSION_PATCH@, 0"
         END
     END

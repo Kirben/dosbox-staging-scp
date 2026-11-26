@@ -411,7 +411,7 @@ static std::optional<int> maybe_handle_command_line_output_only_actions(
         const CommandLineArguments& args, const char* program_name)
 {
 	if (args.version) {
-		printf(version_msg, DOSBOX_PROJECT_NAME, DOSBOX_GetDetailedVersion());
+		printf(version_msg, DOSBOX_NAME, DOSBOX_GetDetailedVersion());
 		return 0;
 	}
 	if (args.help) {

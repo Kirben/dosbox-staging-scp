@@ -17,7 +17,7 @@
 #define DOSBOX_PROJECT_NAME "dosbox-staging"
 
 // Name of the emulator
-#define DOSBOX_NAME "DOSBox Staging"
+#define DOSBOX_NAME "DOSBox Staging SCP"
 
 // Development team name
 #define DOSBOX_TEAM "The " DOSBOX_NAME " Team"
