@@ -1,5 +1,5 @@
-#define DOSBoxAppName "DOSBox Staging"
-#define DOSBoxAppDirName "DOSBox Staging"
+#define DOSBoxAppName "DOSBox Staging SCP"
+#define DOSBoxAppDirName "DOSBox Staging SCP"
 #define DOSBoxAppVersion "DOSBOX-STAGING-VERSION"
 #define DOSBoxAppInternal "dosbox-staging"
 #define DOSBoxAppURL "https://www.dosbox-staging.org/"
@@ -22,7 +22,7 @@ DisableWelcomePage=no
 DisableProgramGroupPage=yes
 InfoBeforeFile=setup_preamble.txt
 OutputDir=.\
-OutputBaseFilename={#DOSBoxAppInternal}-windows-x64-{#DOSBoxAppVersion}-setup
+OutputBaseFilename=dosbox-staging-scp-windows-x64-{#DOSBoxAppVersion}-setup
 SetupIconFile={#DOSBoxAppInternal}.ico
 Compression=lzma
 SolidCompression=yes
