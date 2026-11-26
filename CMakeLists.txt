@@ -545,6 +545,7 @@ target_link_libraries(libdosboxcommon PRIVATE
 )
 
 target_link_libraries(dosbox PRIVATE
+  $<IF:$<TARGET_EXISTS:iir::iir>,iir::iir,iir::iir_static>
   libdosboxcommon
   $<TARGET_NAME_IF_EXISTS:SDL2::SDL2main>
   $<IF:$<TARGET_EXISTS:SDL2::SDL2>,SDL2::SDL2,SDL2::SDL2-static>
