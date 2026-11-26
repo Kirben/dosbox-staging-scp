@@ -1201,10 +1201,37 @@ void MOUNT::ProcessPaths(const std::string first_path, MountParameters& params,
 						params.type = MountType::CdRomImage;
 						params.fstype = MountFileSystemType::Iso;
 
-					} else if (ext == "img" ||
-					           ext == "ima" || ext == "vhd") {
-
+					} else if (ext == "vhd") {
 						params.type = MountType::HardDiskImage;
+
+					} else if (ext == "vfd" || ext == "flp" ||
+					           ext == "mfm" || ext == "scp" ||
+					           ext == "86f" || ext == "tc" ||
+					           ext == "360" || ext == "720" ||
+					           ext == "1200" || ext == "1440") {
+						params.type = MountType::FloppyImage;
+
+					} else if (ext == "img" ||
+					           ext == "ima" || ext == "dsk") {
+
+						const auto file_size_kb =
+						        static_cast<uint32_t>(
+						                t2.st_size / 1024);
+
+						const auto& geometries =
+						        BIOS_GetDiskGeometryList();
+
+						const bool is_floppy = std::ranges::any_of(
+						        geometries,
+						        [file_size_kb](
+						                const DiskGeometry& geo) {
+							        return geo.ksize ==
+							               file_size_kb;
+						        });
+
+						params.type = is_floppy
+						                    ? MountType::FloppyImage
+						                    : MountType::HardDiskImage;
 					}
 				}
 			}
