@@ -1,14 +1,15 @@
 #define DOSBoxAppName "DOSBox Staging SCP"
 #define DOSBoxAppDirName "DOSBox Staging SCP"
 #define DOSBoxAppVersion "DOSBOX-STAGING-VERSION"
-#define DOSBoxAppInternal "dosbox-staging"
+#define DOSBoxAppInternal "dosbox-staging-scp"
+#define DOSBoxAssetName "dosbox-staging"
 #define DOSBoxAppURL "https://www.dosbox-staging.org/"
 #define DOSBoxAppExeName "dosbox.exe"
 #define DOSBoxAppExeDebuggerName "dosbox_with_debugger.exe"
 #define DOSBoxAppBuildDate GetDateTimeString('yyyymmdd_hhnnss', '', '')
 
 [Setup]
-AppId={{587471B7-02F6-4F25-8D00-70006790653C}
+AppId={{25E96901-FC0B-41C7-BDB5-51A0B6659831}
 AppName={#DOSBoxAppName}
 AppVersion={#DOSBoxAppVersion}
 AppVerName={#DOSBoxAppName} {#DOSBoxAppVersion}
@@ -23,15 +24,15 @@ DisableProgramGroupPage=yes
 InfoBeforeFile=setup_preamble.txt
 OutputDir=.\
 OutputBaseFilename=dosbox-staging-scp-windows-x64-{#DOSBoxAppVersion}-setup
-SetupIconFile={#DOSBoxAppInternal}.ico
+SetupIconFile={#DOSBoxAssetName}.ico
 Compression=lzma
 SolidCompression=yes
 ArchitecturesInstallIn64BitMode=x64
 PrivilegesRequired=lowest
 PrivilegesRequiredOverridesAllowed=commandline dialog
 UninstallDisplayIcon={app}\{#DOSBoxAppExeName}
-WizardSmallImageFile={#DOSBoxAppInternal}.bmp
-WizardImageFile={#DOSBoxAppInternal}-side.bmp
+WizardSmallImageFile={#DOSBoxAssetName}.bmp
+WizardImageFile={#DOSBoxAssetName}-side.bmp
 
 [Messages]
 InfoBeforeLabel=Please read the general information about {#DOSBoxAppName} below.
@@ -70,7 +71,7 @@ Name: "desktopicon"; Description: "{cm:CreateDesktopIcon}"; GroupDescription: "{
 Source: "program\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
 Source: "{#DOSBoxAppExeName}"; DestDir: "{app}"; DestName: "{#DOSBoxAppExeName}"; Flags: ignoreversion
 Source: "{#DOSBoxAppExeDebuggerName}"; DestDir: "{app}"; DestName: "{#DOSBoxAppExeDebuggerName}"; Flags: ignoreversion
-Source: "{#DOSBoxAppInternal}.ico"; DestDir: "{app}"; DestName: "{#DOSBoxAppInternal}.ico"; Flags: ignoreversion
+Source: "{#DOSBoxAssetName}.ico"; DestDir: "{app}"; DestName: "{#DOSBoxAssetName}.ico"; Flags: ignoreversion
 
 [Icons]
 Name: "{group}\{#DOSBoxAppName}"; Filename: "{app}\{#DOSBoxAppExeName}"
